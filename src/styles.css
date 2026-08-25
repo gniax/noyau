@@ -324,6 +324,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .operations-layout { display: grid; grid-template-columns: minmax(280px,.65fr) minmax(0,1.35fr); gap: 10px; align-items: start; }
 .operations-layout .finance-transactions { margin-top: 0; }
 .finance-agent-layout { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(280px,.75fr); gap: 10px; align-items: start; }
+.has-finance-dock { padding-bottom: 150px; }
+.finance-agent-dock { position: fixed; z-index: 18; right: 24px; bottom: 20px; width: min(430px,calc(100vw - 48px)); overflow: hidden; padding: 8px; border: 1px solid #405534; border-radius: 11px; background: #101512f2; box-shadow: 0 20px 60px #000c; backdrop-filter: blur(12px); }
+.finance-agent-dock header { min-height: 27px; display: flex; align-items: center; justify-content: space-between; padding: 0 2px 6px 5px; }
+.finance-agent-dock header span { display: flex; align-items: center; gap: 7px; color: #bdc8c0; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; }
+.finance-agent-dock header i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px #b8ff5e88; }
+.finance-agent-dock header button { width: 27px; height: 27px; border: 1px solid #303a33; border-radius: 6px; background: #171d19; color: var(--green); cursor: pointer; }
+.finance-agent-dock > p { max-height: 74px; overflow-y: auto; margin: 0 0 7px; padding: 8px 10px; border: 1px solid #29332c; border-radius: 7px; background: #0b0f0d; color: #bfcac2; font-size: 9px; line-height: 1.4; }
+.finance-agent-dock form { display: grid; grid-template-columns: minmax(0,1fr) 38px; gap: 6px; }
+.finance-agent-dock input { min-width: 0; height: 40px; padding: 0 11px; border: 1px solid #35423a; border-radius: 7px; background: #080c0a; color: #e0e7e2; font-size: 16px; }
+.finance-agent-dock form button { border: 1px solid #526b42; border-radius: 7px; background: #22301f; color: var(--green); font-size: 18px; }
+.finance-agent-dock form button:disabled { opacity: .4; }
+.finance-form-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
 .finance-chat .panel-head > span { padding: 6px 8px; border: 1px solid #405534; border-radius: 5px; color: var(--green); font: 700 7px/1 ui-monospace,monospace; }
 .finance-chat-messages { height: min(48vh,430px); min-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 15px; border-top: 1px solid var(--line); background: #0a0e0c; }
 .finance-chat-messages article { max-width: 82%; padding: 10px 12px; border: 1px solid #29312c; border-radius: 8px; background: #111613; }
@@ -342,12 +354,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .recurring-list b { color: var(--green); font: 600 9px/1 ui-monospace,monospace; }
 .recurring-list button { width: 24px; height: 24px; border: 0; background: transparent; color: #727c75; font-size: 16px; }
 .paste-key { color: var(--green) !important; border-color: #405534 !important; }
+.terminal-controls:focus-within { padding-bottom: max(6px, env(safe-area-inset-bottom)); }
 
 @media (max-width: 900px) {
   .operations-layout, .finance-agent-layout { grid-template-columns: 1fr; }
+  .finance-form-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 
 @media (max-width: 720px) {
+  .terminal-page { inset: var(--terminal-top,0) auto auto 0; }
   .finance-hero-actions { width: 100%; display: grid; grid-template-columns: 39px minmax(0,1fr); }
   .finance-hero-actions .finance-more nav { left: 0; right: auto; }
   .budget-child-actions { width: 100%; display: grid; grid-template-columns: minmax(0,1fr) 39px; }
@@ -356,4 +371,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .bank-config form { grid-template-columns: 1fr; }
   .bank-config form > * { grid-column: 1 !important; }
   .finance-chat-messages { height: 43vh; }
+  .finance-agent-dock { right: 10px; bottom: max(8px,env(safe-area-inset-bottom)); width: calc(100vw - 20px); }
+  .has-finance-dock { padding-bottom: 160px; }
 }

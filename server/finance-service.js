@@ -14,8 +14,8 @@ export const FINANCE_CATEGORIES = [
 const CATEGORY_IDS = new Set(FINANCE_CATEGORIES.map(({ id }) => id));
 const ESSENTIAL_CATEGORY_IDS = new Set(["housing", "food", "transport", "subscriptions", "health"]);
 const PACED_CATEGORY_IDS = new Set(["food", "transport", "shopping", "health", "leisure", "other"]);
+const SALARY_PATTERN = /salaire|salary|payroll|remuneration|traitement|fiche de paie|virement employeur/;
 const DEFAULT_SETTINGS = {
-  monthlyIncome: 0,
   savingsGoal: 0,
   currentSavings: 0,
   safetyBuffer: 0,
@@ -129,9 +129,10 @@ export class FinanceService {
 
   settings() {
     const saved = this.store.get("settings") || {};
+    const { monthlyIncome: _ignored, ...stored } = saved;
     return {
       ...DEFAULT_SETTINGS,
-      ...saved,
+      ...stored,
       budgets: { ...DEFAULT_SETTINGS.budgets, ...(saved.budgets || {}) },
     };
   }
@@ -256,7 +257,6 @@ export class FinanceService {
   async updateSettings(input = {}) {
     const current = this.settings();
     const next = {
-      monthlyIncome: input.monthlyIncome === undefined ? current.monthlyIncome : money(input.monthlyIncome, "Revenu mensuel"),
       savingsGoal: input.savingsGoal === undefined ? current.savingsGoal : money(input.savingsGoal, "Objectif épargne"),
       currentSavings: input.currentSavings === undefined ? current.currentSavings : money(input.currentSavings, "Épargne actuelle"),
       safetyBuffer: input.safetyBuffer === undefined ? current.safetyBuffer : money(input.safetyBuffer, "Réserve imprévus"),
@@ -348,9 +348,6 @@ export class FinanceService {
     const allTransactions = this.transactions();
     const transactions = allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth));
     const { expenses, recordedIncome, spentByCategory } = aggregate(transactions);
-    const income = recordedIncome || settings.monthlyIncome;
-    const savingsCapacity = round(income - expenses);
-    const savingsRate = income > 0 ? Math.round((savingsCapacity / income) * 100) : 0;
     const budgetTotal = round(Object.values(settings.budgets).reduce((total, value) => total + value, 0));
     const history = [-1, -2, -3]
       .map((offset) => {
@@ -369,6 +366,22 @@ export class FinanceService {
     }
     const now = this.now();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const incomeHistory = [-1, -2, -3, -4, -5, -6]
+      .map((offset) => {
+        const historyMonth = shiftMonth(selectedMonth, offset);
+        const incoming = allTransactions.filter((transaction) => transaction.date.startsWith(historyMonth) && transaction.amount > 0);
+        const salary = round(incoming.filter((transaction) => SALARY_PATTERN.test(normalized(transaction.description))).reduce((total, transaction) => total + transaction.amount, 0));
+        const total = round(incoming.reduce((sum, transaction) => sum + transaction.amount, 0));
+        return { month: historyMonth, salary, total };
+      })
+      .filter(({ total }) => total > 0);
+    const explicitSalaryHistory = incomeHistory.filter(({ salary }) => salary > 0);
+    const inferredIncome = median((explicitSalaryHistory.length ? explicitSalaryHistory : incomeHistory).map(({ salary, total }) => salary || total));
+    const income = selectedMonth < currentMonth ? recordedIncome : round(Math.max(recordedIncome, inferredIncome));
+    const incomeSource = income <= 0 ? "missing" : selectedMonth < currentMonth || recordedIncome >= inferredIncome ? "recorded" : "history";
+    const incomeHistoryMonths = explicitSalaryHistory.length || incomeHistory.length;
+    const savingsCapacity = round(income - expenses);
+    const savingsRate = income > 0 ? Math.round((savingsCapacity / income) * 100) : 0;
     const [year, monthNumber] = selectedMonth.split("-").map(Number);
     const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
     const elapsedDays = selectedMonth < currentMonth ? daysInMonth : selectedMonth === currentMonth ? Math.min(daysInMonth, now.getDate()) : 0;
@@ -425,7 +438,7 @@ export class FinanceService {
     const safetyBuffer = settings.safetyBuffer || automaticBuffer;
     const forecastSurplusAfterBuffer = round(income - projectedExpenses - safetyBuffer);
     const historicalSurpluses = history
-      .map((item) => round((item.recordedIncome || settings.monthlyIncome) - item.expenses - safetyBuffer))
+      .map((item) => round((item.recordedIncome || inferredIncome) - item.expenses - safetyBuffer))
       .filter(Number.isFinite)
       .sort((a, b) => a - b);
     const conservativeHistoricalSurplus = history.length >= 2 ? historicalSurpluses[Math.floor((historicalSurpluses.length - 1) * 0.25)] : null;
@@ -445,7 +458,8 @@ export class FinanceService {
     const essentialBase = round([...ESSENTIAL_CATEGORY_IDS].reduce((total, id) => total + Math.max(settings.budgets[id], categoryPlans[id].historicalAverage, spentByCategory[id]), 0));
     const emergencyTarget = round(essentialBase * settings.emergencyMonths);
     const warnings = [];
-    if (!income) warnings.push({ id: "income", tone: "info", title: "Revenu manquant", detail: "Renseigne revenu mensuel pour calculer capacité épargne." });
+    if (!income) warnings.push({ id: "income", tone: "info", title: "Salaire historique introuvable", detail: "Importe anciens relevés; salaire sera détecté automatiquement." });
+    if (incomeSource === "history") warnings.push({ id: "income-estimate", tone: "info", title: "Salaire estimé", detail: `Médiane automatique de ${incomeHistoryMonths} mois: ${inferredIncome.toFixed(2)} €.` });
     if (history.length < 2) warnings.push({ id: "history", tone: "info", title: "Projection provisoire", detail: "Importe 2 à 3 mois pour fiabiliser reste dépensable et épargne." });
     if (income > 0 && expenses > income) warnings.push({ id: "deficit", tone: "danger", title: "Mois déficitaire", detail: `${round(expenses - income).toFixed(2)} € au-dessus revenus.` });
     if (settings.savingsGoal > protectedSavings) warnings.push({ id: "savings", tone: "warning", title: "Objectif épargne trop haut", detail: `${protectedSavings.toFixed(2)} € soutenables selon dépenses et réserve actuelles.` });
@@ -468,6 +482,9 @@ export class FinanceService {
       month: selectedMonth,
       income: round(income),
       recordedIncome,
+      inferredIncome,
+      incomeSource,
+      incomeHistoryMonths,
       expenses,
       savingsCapacity,
       savingsRate,

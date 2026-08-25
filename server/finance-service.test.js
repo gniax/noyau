@@ -13,12 +13,15 @@ class MemoryStore {
 
 test("finance summary computes savings and budget warnings", async () => {
   const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
-  await service.updateSettings({ monthlyIncome: 2500, savingsGoal: 500, currentSavings: 1000, emergencyMonths: 3, budgets: { food: 400 } });
+  await service.updateSettings({ savingsGoal: 500, currentSavings: 1000, emergencyMonths: 3, budgets: { food: 400 } });
+  await service.addTransaction({ kind: "income", amount: 2500, description: "Salaire", date: "2026-07-28" });
   await service.addTransaction({ kind: "expense", amount: 350, description: "Courses", category: "food", date: "2026-08-10" });
   await service.addTransaction({ kind: "expense", amount: 800, description: "Loyer", category: "housing", date: "2026-08-02" });
 
   const summary = service.summary("2026-08");
   assert.equal(summary.income, 2500);
+  assert.equal(summary.incomeSource, "history");
+  assert.equal(summary.inferredIncome, 2500);
   assert.equal(summary.expenses, 1150);
   assert.equal(summary.savingsCapacity, 1350);
   assert.equal(summary.savingsRate, 54);
@@ -32,8 +35,9 @@ test("finance summary computes savings and budget warnings", async () => {
 
 test("finance plan caps savings and free spending from real history", async () => {
   const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-20T12:00:00Z") });
-  await service.updateSettings({ monthlyIncome: 3000, savingsGoal: 1000, safetyBuffer: 200, budgets: { housing: 1000, food: 450, leisure: 300 } });
+  await service.updateSettings({ savingsGoal: 1000, safetyBuffer: 200, budgets: { housing: 1000, food: 450, leisure: 300 } });
   for (const month of ["05", "06", "07"]) {
+    await service.addTransaction({ kind: "income", amount: 3000, description: "Virement salaire", date: `2026-${month}-01` });
     await service.addTransaction({ kind: "expense", amount: 1000, description: "Loyer", category: "housing", date: `2026-${month}-02` });
     await service.addTransaction({ kind: "expense", amount: 400, description: "Courses", category: "food", date: `2026-${month}-12` });
     await service.addTransaction({ kind: "expense", amount: 600, description: "Sorties", category: "leisure", date: `2026-${month}-18` });
@@ -60,7 +64,8 @@ test("finance service rejects unsafe transaction input", async () => {
 
 test("finance agent records recurring charge and future amount change", async () => {
   const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
-  await service.updateSettings({ monthlyIncome: 2500, safetyBuffer: 150 });
+  await service.updateSettings({ safetyBuffer: 150 });
+  await service.addTransaction({ kind: "income", amount: 2500, description: "Salaire", date: "2026-07-28" });
   const added = await service.financeAgent("Chaque mois je paye 950 euros de loyer", "2026-08");
   assert.equal(added.action, "recurring-added");
   assert.equal(added.recurring[0].description, "loyer");

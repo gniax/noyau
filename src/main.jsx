@@ -525,7 +525,7 @@ function BankingPanel({ banks, month, onSynced }) {
       <details className="bank-config" open={!status?.configured}>
         <summary>Configuration Enable Banking <b>›</b></summary>
         <form onSubmit={saveConfig}>
-          <p>Crée application gratuite, ajoute URL retour exacte, puis charge clé privée RSA PEM. Clé reste serveur; jamais renvoyée navigateur.</p>
+          <p>URL VPN HTTPS fonctionne directement: retour bancaire arrive dans navigateur du téléphone connecté au VPN. Aucun relais public ni exposition dashboard. Enregistre URL exacte, puis charge clé privée RSA PEM.</p>
           <label><span>Application ID</span><input value={config.appId} onChange={(event) => setConfig({ ...config, appId: event.target.value })} required autoComplete="off" placeholder="ID application" /></label>
           <label className="wide"><span>URL retour à enregistrer</span><input value={config.redirectUrl} onChange={(event) => setConfig({ ...config, redirectUrl: event.target.value })} required inputMode="url" /></label>
           <label className="wide bank-key-file"><span>Clé privée RSA (.pem)</span><input type="file" accept=".pem,.key,text/plain" onChange={readKey} required={!status?.keyStored} /><small>{config.privateKey ? "Clé chargée, prête à enregistrer" : status?.keyStored ? "Clé déjà stockée; laisse vide pour conserver" : "Clé requise"}</small></label>
@@ -549,9 +549,37 @@ function BudgetMenu({ onView }) {
       <summary aria-label="Ouvrir menu Budget" title="Menu Budget">＋</summary>
       <nav>
         <button onClick={() => onView("finance-transactions")}><span>±</span><b>Opérations</b><small>Saisie et historique</small></button>
-        <button onClick={() => onView("finance-agent")}><span>◇</span><b>Agent finances</b><small>Charges et prévisions</small></button>
       </nav>
     </details>
+  );
+}
+
+function FinanceAgentDock({ month, onExpand, onChanged }) {
+  const [message, setMessage] = useState("");
+  const [reply, setReply] = useState("");
+  const [sending, setSending] = useState(false);
+  async function send(event) {
+    event.preventDefault();
+    const content = message.trim();
+    if (!content || sending) return;
+    setSending(true);
+    try {
+      const response = await api("/api/finance/agent/message", { method: "POST", body: JSON.stringify({ message: content, month }) });
+      setReply(response.reply);
+      setMessage("");
+      await onChanged?.();
+    } catch (error) {
+      setReply(`Erreur: ${error.message}`);
+    } finally {
+      setSending(false);
+    }
+  }
+  return (
+    <aside className="finance-agent-dock">
+      <header><span><i />Agent finances</span><button onClick={onExpand} aria-label="Agrandir Agent finances" title="Agrandir">↗</button></header>
+      {reply && <p>{reply}</p>}
+      <form onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Parler budget, charges, prévisions…" maxLength="1000" enterKeyHint="send" /><button disabled={sending || !message.trim()}>{sending ? "…" : "↑"}</button></form>
+    </aside>
   );
 }
 
@@ -570,7 +598,6 @@ function FinanceView({ onView }) {
       setData(payload);
       setSettings({
         ...payload.settings,
-        monthlyIncome: String(payload.settings.monthlyIncome || ""),
         savingsGoal: String(payload.settings.savingsGoal || ""),
         currentSavings: String(payload.settings.currentSavings || ""),
         safetyBuffer: String(payload.settings.safetyBuffer || ""),
@@ -598,7 +625,6 @@ function FinanceView({ onView }) {
         method: "PATCH",
         body: JSON.stringify({
           month,
-          monthlyIncome: Number(settings.monthlyIncome || 0),
           savingsGoal: Number(settings.savingsGoal || 0),
           currentSavings: Number(settings.currentSavings || 0),
           safetyBuffer: Number(settings.safetyBuffer || 0),
@@ -629,7 +655,7 @@ function FinanceView({ onView }) {
   const { summary } = data;
   const confidenceLabel = { low: "provisoire", medium: "correcte", high: "solide" }[summary.dataConfidence] || "provisoire";
   return (
-    <div className="page finance-page">
+    <div className="page finance-page has-finance-dock">
       <section className="hero-row finance-hero">
         <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Budget.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p></div>
         <div className="finance-hero-actions"><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
@@ -648,7 +674,7 @@ function FinanceView({ onView }) {
         <div className="panel-head"><div><h3>Calcul réaliste</h3><p>Chaque euro protégé avant dépenses libres</p></div><span className={`confidence ${summary.dataConfidence}`}>FIABILITÉ {confidenceLabel.toUpperCase()}</span></div>
         <div className="spending-plan-body">
           <div className="money-equation">
-            <span><small>Revenus du mois</small><b>{euro(summary.income)}</b></span>
+            <span><small>{summary.incomeSource === "history" ? `Salaire estimé · ${summary.incomeHistoryMonths} mois` : "Revenus reçus"}</small><b>{euro(summary.income)}</b></span>
             <span><small>Déjà dépensé</small><b>− {euro(summary.expenses)}</b></span>
             <span><small>Charges essentielles restantes</small><b>− {euro(summary.futureEssentialExpenses)}</b></span>
             <span><small>Réserve imprévus {summary.safetyBufferAutomatic ? "auto" : "fixe"}</small><b>− {euro(summary.safetyBuffer)}</b></span>
@@ -683,7 +709,7 @@ function FinanceView({ onView }) {
           <div className="insight-list">
             {summary.warnings.map((warning) => <article className={warning.tone} key={warning.id}><i /><span><strong>{warning.title}</strong><small>{warning.detail}</small></span></article>)}
             {summary.recommendations.map((recommendation, index) => <article className="tip" key={recommendation}><i>{index + 1}</i><span><strong>Optimisation</strong><small>{recommendation}</small></span></article>)}
-            {!summary.warnings.length && !summary.recommendations.length && <p className="finance-empty">Ajoute revenus, budgets et dépenses pour générer analyse.</p>}
+            {!summary.warnings.length && !summary.recommendations.length && <p className="finance-empty">Importe opérations pour générer analyse.</p>}
           </div>
         </section>
       </section>
@@ -692,7 +718,6 @@ function FinanceView({ onView }) {
         <form className="panel finance-settings" onSubmit={saveSettings}>
           <div className="panel-head"><div><h3>Plan mensuel</h3><p>Base calcul épargne</p></div><button className="primary" disabled={saving}>{saving ? "…" : "Enregistrer"}</button></div>
           <div className="finance-form-grid">
-            <label><span>Revenu net mensuel</span><input type="number" min="0" step="0.01" value={settings.monthlyIncome} onChange={(event) => setSettings({ ...settings, monthlyIncome: event.target.value })} placeholder="0 €" /></label>
             <label><span>Objectif épargne / mois</span><input type="number" min="0" step="0.01" value={settings.savingsGoal} onChange={(event) => setSettings({ ...settings, savingsGoal: event.target.value })} placeholder="0 €" /></label>
             <label><span>Réserve imprévus (0 = auto)</span><input type="number" min="0" step="0.01" value={settings.safetyBuffer} onChange={(event) => setSettings({ ...settings, safetyBuffer: event.target.value })} placeholder="Auto" /></label>
             <label><span>Épargne actuelle</span><input type="number" min="0" step="0.01" value={settings.currentSavings} onChange={(event) => setSettings({ ...settings, currentSavings: event.target.value })} placeholder="0 €" /></label>
@@ -702,6 +727,7 @@ function FinanceView({ onView }) {
         </form>
       </section>
       <BankingPanel banks={data.banking.banks} month={month} onSynced={load} />
+      <FinanceAgentDock month={month} onExpand={() => onView("finance-agent")} onChanged={load} />
     </div>
   );
 }
@@ -750,7 +776,7 @@ function FinanceTransactionsView({ onView }) {
   }
   const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
   return (
-    <div className="page finance-page finance-operations-page">
+    <div className="page finance-page finance-operations-page has-finance-dock">
       <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · HISTORIQUE LOCAL</p><h1>Opérations.</h1><p className="muted">Saisie manuelle et imports bancaires.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></div></section>
       {error && <p className="finance-error">{error}</p>}
       <section className="operations-layout">
@@ -774,6 +800,7 @@ function FinanceTransactionsView({ onView }) {
           </div>
         </section>
       </section>
+      <FinanceAgentDock month={month} onExpand={() => onView("finance-agent")} onChanged={load} />
     </div>
   );
 }
@@ -824,7 +851,7 @@ function FinanceAgentView({ onView }) {
   }
   return (
     <div className="page finance-agent-page">
-      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · PRÉVISIONS</p><h1>Agent finances.</h1><p className="muted">Transforme phrases en charges datées; calcul reste dépensable automatiquement.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · PRÉVISIONS</p><h1>Agent finances.</h1><p className="muted">Transforme phrases en charges datées; calcul reste dépensable automatiquement.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>− Réduire</button><BudgetMenu onView={onView} /></div></section>
       {error && <p className="finance-error">{error}</p>}
       <section className="finance-agent-layout">
         <section className="panel finance-chat">
@@ -879,6 +906,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   const snapBottomRef = React.useRef(true);
   const ctrlRef = React.useRef(false);
   const altRef = React.useRef(false);
+  const viewportRefreshRef = React.useRef(() => {});
   const [connected, setConnected] = useState(false);
   const [ctrl, setCtrl] = useState(false);
   const [alt, setAlt] = useState(false);
@@ -899,23 +927,46 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const viewport = window.visualViewport;
     document.documentElement.classList.add("terminal-open");
     document.body.classList.add("terminal-open");
-    let frame = null;
-    let lastHeight = 0;
-    const updateHeight = () => {
-      const height = Math.floor(viewport?.height || window.innerHeight);
-      if (Math.abs(height - lastHeight) < 2) return;
-      lastHeight = height;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => document.documentElement.style.setProperty("--terminal-height", `${height}px`));
+    let timer = null;
+    let baseHeight = Math.max(Math.floor(window.innerHeight), Math.floor(viewport?.height || 0));
+    const applyHeight = () => {
+      const rootStyle = document.documentElement.style;
+      const inputFocused = document.activeElement === keyboardRef.current;
+      const layoutHeight = Math.floor(window.innerHeight);
+      const visibleHeight = Math.floor(viewport?.height || layoutHeight);
+      if (!inputFocused) {
+        baseHeight = Math.max(layoutHeight, visibleHeight);
+        rootStyle.removeProperty("--terminal-height");
+        rootStyle.removeProperty("--terminal-top");
+        return;
+      }
+      const keyboardVisible = baseHeight - visibleHeight > 100;
+      if (!keyboardVisible) {
+        rootStyle.removeProperty("--terminal-height");
+        rootStyle.removeProperty("--terminal-top");
+        return;
+      }
+      rootStyle.setProperty("--terminal-height", `${visibleHeight}px`);
+      rootStyle.setProperty("--terminal-top", `${Math.max(0, Math.floor(viewport?.offsetTop || 0))}px`);
     };
-    updateHeight();
+    const updateHeight = (immediate = false) => {
+      clearTimeout(timer);
+      if (immediate === true) applyHeight();
+      else timer = setTimeout(applyHeight, 90);
+    };
+    viewportRefreshRef.current = updateHeight;
+    applyHeight();
     viewport?.addEventListener("resize", updateHeight);
+    viewport?.addEventListener("scroll", updateHeight);
     window.addEventListener("resize", updateHeight);
     return () => {
       viewport?.removeEventListener("resize", updateHeight);
+      viewport?.removeEventListener("scroll", updateHeight);
       window.removeEventListener("resize", updateHeight);
-      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      viewportRefreshRef.current = () => {};
       document.documentElement.style.removeProperty("--terminal-height");
+      document.documentElement.style.removeProperty("--terminal-top");
       document.documentElement.classList.remove("terminal-open");
       document.body.classList.remove("terminal-open");
     };
@@ -947,15 +998,27 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     let socket = null;
     let reconnectTimer = null;
+    let resizeTimer = null;
     let disposed = false;
 
     const resize = () => {
       try {
+        const buffer = terminal.buffer.active;
+        const wasAtBottom = buffer.viewportY >= buffer.baseY;
+        const viewportLine = buffer.viewportY;
+        const previousCols = terminal.cols;
+        const previousRows = terminal.rows;
         fit.fit();
-        if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
+        if (wasAtBottom) terminal.scrollToBottom();
+        else terminal.scrollToLine(Math.min(viewportLine, terminal.buffer.active.baseY));
+        if ((terminal.cols !== previousCols || terminal.rows !== previousRows) && socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
       } catch { /* terminal disposed */ }
     };
-    const observer = new ResizeObserver(resize);
+    const scheduleResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(resize, 100);
+    };
+    const observer = new ResizeObserver(scheduleResize);
     observer.observe(terminalNode.current);
     const inputDisposable = terminal.onData((data) => {
       const activeSocket = socketRef.current;
@@ -1074,6 +1137,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       document.removeEventListener("visibilitychange", resumeConnection);
       window.removeEventListener("online", resumeConnection);
       observer.disconnect();
+      clearTimeout(resizeTimer);
       terminalNode.current?.removeEventListener("touchstart", touchStart, true);
       terminalNode.current?.removeEventListener("touchmove", touchMove, true);
       terminalNode.current?.removeEventListener("touchend", touchEnd, true);
@@ -1101,7 +1165,6 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   function focusKeyboard() {
     if (window.matchMedia("(pointer: coarse)").matches) {
       const input = keyboardRef.current;
-      window.scrollTo(0, 0);
       try {
         input?.focus({ preventScroll: true });
       } catch {
@@ -1264,8 +1327,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
           onInput={nativeInput}
           onPaste={nativePaste}
           onKeyDown={nativeKeyDown}
-          onFocus={() => setKeyboardActive(true)}
-          onBlur={() => setKeyboardActive(false)}
+          onFocus={() => { setKeyboardActive(true); viewportRefreshRef.current(true); }}
+          onBlur={() => { setKeyboardActive(false); viewportRefreshRef.current(true); }}
           aria-label="Clavier terminal"
           autoComplete="off"
           autoCorrect="off"
