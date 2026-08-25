@@ -439,6 +439,7 @@ function FinanceView() {
         monthlyIncome: String(payload.settings.monthlyIncome || ""),
         savingsGoal: String(payload.settings.savingsGoal || ""),
         currentSavings: String(payload.settings.currentSavings || ""),
+        safetyBuffer: String(payload.settings.safetyBuffer || ""),
         budgets: Object.fromEntries(Object.entries(payload.settings.budgets).map(([id, value]) => [id, String(value || "")])),
       });
     } catch (reason) {
@@ -466,6 +467,7 @@ function FinanceView() {
           monthlyIncome: Number(settings.monthlyIncome || 0),
           savingsGoal: Number(settings.savingsGoal || 0),
           currentSavings: Number(settings.currentSavings || 0),
+          safetyBuffer: Number(settings.safetyBuffer || 0),
           emergencyMonths: Number(settings.emergencyMonths),
           budgets: Object.fromEntries(Object.entries(settings.budgets).map(([id, value]) => [id, Number(value || 0)])),
         }),
@@ -476,6 +478,16 @@ function FinanceView() {
     } finally {
       setSaving(false);
     }
+  }
+
+  function useRealisticBudgets() {
+    setSettings((current) => ({
+      ...current,
+      budgets: Object.fromEntries(data.categories.map((category) => {
+        const suggestion = summary.categoryPlans[category.id]?.suggestedBudget || 0;
+        return [category.id, String(suggestion || current.budgets[category.id] || "")];
+      })),
+    }));
   }
 
   async function addTransaction(event) {
@@ -506,6 +518,7 @@ function FinanceView() {
   const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
   if (!data || !settings) return <div className="page finance-page"><section className="hero-row"><div><p className="eyebrow">ARGENT</p><h1>Finances.</h1><p className="muted">{error || "Chargement données locales…"}</p></div></section></div>;
   const { summary } = data;
+  const confidenceLabel = { low: "provisoire", medium: "correcte", high: "solide" }[summary.dataConfidence] || "provisoire";
   return (
     <div className="page finance-page">
       <section className="hero-row finance-hero">
@@ -516,21 +529,42 @@ function FinanceView() {
       {error && <p className="finance-error">{error}</p>}
 
       <section className="finance-metrics">
-        <article><small>REVENUS</small><strong>{euro(summary.income)}</strong><span>{summary.recordedIncome ? "Importés / saisis" : "Prévision mensuelle"}</span></article>
-        <article><small>DÉPENSES</small><strong>{euro(summary.expenses)}</strong><span>{summary.transactionCount} opération{summary.transactionCount > 1 ? "s" : ""}</span></article>
-        <article className={summary.savingsCapacity < 0 ? "negative" : "positive"}><small>CAPACITÉ ÉPARGNE</small><strong>{euro(summary.savingsCapacity)}</strong><span>{summary.savingsRate}% revenus</span></article>
-        <article className={summary.afterGoal < 0 ? "negative" : "positive"}><small>APRÈS OBJECTIF</small><strong>{euro(summary.afterGoal)}</strong><span>Objectif {euro(Number(settings.savingsGoal || 0))}</span></article>
+        <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>ENCORE DÉPENSABLE</small><strong>{euro(summary.safeToSpend)}</strong><span>Sans toucher charges, réserve, épargne</span></article>
+        <article><small>RYTHME MAX</small><strong>{euro(summary.dailyAllowance)}</strong><span>Par jour · {summary.daysRemaining} jour{summary.daysRemaining > 1 ? "s" : ""}</span></article>
+        <article><small>CHARGES À VENIR</small><strong>{euro(summary.futureEssentialExpenses)}</strong><span>Essentiels estimés restants</span></article>
+        <article className="positive"><small>ÉPARGNE PROTÉGÉE</small><strong>{euro(summary.protectedSavings)}</strong><span>{summary.protectedSavings < Number(settings.savingsGoal || 0) ? "Objectif réduit car irréaliste" : "Soutenable selon données"}</span></article>
+      </section>
+
+      <section className="panel spending-plan">
+        <div className="panel-head"><div><h3>Calcul réaliste</h3><p>Chaque euro protégé avant dépenses libres</p></div><span className={`confidence ${summary.dataConfidence}`}>FIABILITÉ {confidenceLabel.toUpperCase()}</span></div>
+        <div className="spending-plan-body">
+          <div className="money-equation">
+            <span><small>Revenus du mois</small><b>{euro(summary.income)}</b></span>
+            <span><small>Déjà dépensé</small><b>− {euro(summary.expenses)}</b></span>
+            <span><small>Charges essentielles restantes</small><b>− {euro(summary.futureEssentialExpenses)}</b></span>
+            <span><small>Réserve imprévus {summary.safetyBufferAutomatic ? "auto" : "fixe"}</small><b>− {euro(summary.safetyBuffer)}</b></span>
+            <span><small>Épargne soutenable protégée</small><b>− {euro(summary.protectedSavings)}</b></span>
+            {summary.flexibleBudgetApplied && <span><small>Plafond budgets libres</small><b>{euro(summary.flexibleBudgetRemaining)}</b></span>}
+          </div>
+          <div className="month-forecast">
+            <small>PROJECTION FIN DE MOIS</small><strong>{euro(summary.projectedExpenses)}</strong><span>dépenses probables</span>
+            <div><b className={summary.projectedSavings >= 0 ? "positive" : "negative"}>{summary.projectedSavings >= 0 ? "+" : "−"}{euro(Math.abs(summary.projectedSavings))}</b><small>{summary.projectedSavings >= 0 ? "marge avant imprévus" : "déficit projeté"}</small></div>
+            <p>{summary.historyMonths} mois historique · {summary.transactionCount} opérations ce mois</p>
+          </div>
+        </div>
       </section>
 
       <section className="finance-layout">
         <section className="panel finance-budgets">
-          <div className="panel-head"><div><h3>Budgets du mois</h3><p>Progression par catégorie</p></div><span>{euro(summary.budgetTotal)}</span></div>
+          <div className="panel-head"><div><h3>Budgets du mois</h3><p>Réel, prévision, limite</p></div><div className="budget-head-actions"><span>{euro(summary.budgetTotal)}</span><button className="ghost" onClick={useRealisticBudgets}>Préremplir réaliste</button></div></div>
           <div className="budget-list">
             {data.categories.map((category) => {
               const spent = summary.spentByCategory[category.id] || 0;
               const budget = Number(settings.budgets[category.id] || 0);
-              const ratio = budget ? Math.round((spent / budget) * 100) : 0;
-              return <div className="budget-row" key={category.id}><span><strong>{category.label}</strong><small>{euro(spent)} / {budget ? euro(budget) : "non défini"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{budget ? `${ratio}%` : "—"}</b></div>;
+              const plan = summary.categoryPlans[category.id];
+              const limit = budget || plan.suggestedBudget;
+              const ratio = limit ? Math.round((spent / limit) * 100) : 0;
+              return <div className="budget-row" key={category.id}><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} réel · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "à définir"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{limit ? `${ratio}%` : "—"}</b></div>;
             })}
           </div>
         </section>
@@ -551,6 +585,7 @@ function FinanceView() {
           <div className="finance-form-grid">
             <label><span>Revenu net mensuel</span><input type="number" min="0" step="0.01" value={settings.monthlyIncome} onChange={(event) => setSettings({ ...settings, monthlyIncome: event.target.value })} placeholder="0 €" /></label>
             <label><span>Objectif épargne / mois</span><input type="number" min="0" step="0.01" value={settings.savingsGoal} onChange={(event) => setSettings({ ...settings, savingsGoal: event.target.value })} placeholder="0 €" /></label>
+            <label><span>Réserve imprévus (0 = auto)</span><input type="number" min="0" step="0.01" value={settings.safetyBuffer} onChange={(event) => setSettings({ ...settings, safetyBuffer: event.target.value })} placeholder="Auto" /></label>
             <label><span>Épargne actuelle</span><input type="number" min="0" step="0.01" value={settings.currentSavings} onChange={(event) => setSettings({ ...settings, currentSavings: event.target.value })} placeholder="0 €" /></label>
             <label><span>Fonds sécurité</span><select value={settings.emergencyMonths} onChange={(event) => setSettings({ ...settings, emergencyMonths: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6, 9, 12].map((value) => <option key={value} value={value}>{value} mois</option>)}</select></label>
           </div>

@@ -12,10 +12,13 @@ export const FINANCE_CATEGORIES = [
 ];
 
 const CATEGORY_IDS = new Set(FINANCE_CATEGORIES.map(({ id }) => id));
+const ESSENTIAL_CATEGORY_IDS = new Set(["housing", "food", "transport", "subscriptions", "health"]);
+const PACED_CATEGORY_IDS = new Set(["food", "transport", "shopping", "health", "leisure", "other"]);
 const DEFAULT_SETTINGS = {
   monthlyIncome: 0,
   savingsGoal: 0,
   currentSavings: 0,
+  safetyBuffer: 0,
   emergencyMonths: 3,
   budgets: Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, 0])),
 };
@@ -43,10 +46,40 @@ function round(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+function shiftMonth(month, offset) {
+  const [year, value] = month.split("-").map(Number);
+  return new Date(Date.UTC(year, value - 1 + offset, 1)).toISOString().slice(0, 7);
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return round(sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+function aggregate(items) {
+  const spentByCategory = Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, 0]));
+  let expenses = 0;
+  let recordedIncome = 0;
+  for (const transaction of items) {
+    if (transaction.amount < 0) {
+      const amount = Math.abs(transaction.amount);
+      expenses += amount;
+      if (spentByCategory[transaction.category] !== undefined) spentByCategory[transaction.category] += amount;
+    } else {
+      recordedIncome += transaction.amount;
+    }
+  }
+  for (const id of CATEGORY_IDS) spentByCategory[id] = round(spentByCategory[id]);
+  return { expenses: round(expenses), recordedIncome: round(recordedIncome), spentByCategory };
+}
+
 export class FinanceService {
-  constructor({ store, aggregatorConfigured = false } = {}) {
+  constructor({ store, aggregatorConfigured = false, now = () => new Date() } = {}) {
     this.store = store;
     this.aggregatorConfigured = aggregatorConfigured;
+    this.now = now;
   }
 
   settings() {
@@ -71,6 +104,7 @@ export class FinanceService {
       monthlyIncome: input.monthlyIncome === undefined ? current.monthlyIncome : money(input.monthlyIncome, "Revenu mensuel"),
       savingsGoal: input.savingsGoal === undefined ? current.savingsGoal : money(input.savingsGoal, "Objectif épargne"),
       currentSavings: input.currentSavings === undefined ? current.currentSavings : money(input.currentSavings, "Épargne actuelle"),
+      safetyBuffer: input.safetyBuffer === undefined ? current.safetyBuffer : money(input.safetyBuffer, "Réserve imprévus"),
       emergencyMonths: input.emergencyMonths === undefined ? current.emergencyMonths : Number(input.emergencyMonths),
       budgets: { ...current.budgets },
     };
@@ -118,44 +152,114 @@ export class FinanceService {
   summary(month) {
     const selectedMonth = validMonth(month);
     const settings = this.settings();
-    const transactions = this.transactions().filter((transaction) => transaction.date.startsWith(selectedMonth));
-    const spentByCategory = Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, 0]));
-    let expenses = 0;
-    let recordedIncome = 0;
-    for (const transaction of transactions) {
-      if (transaction.amount < 0) {
-        const amount = Math.abs(transaction.amount);
-        expenses += amount;
-        if (spentByCategory[transaction.category] !== undefined) spentByCategory[transaction.category] += amount;
-      } else {
-        recordedIncome += transaction.amount;
-      }
-    }
-    expenses = round(expenses);
-    recordedIncome = round(recordedIncome);
+    const allTransactions = this.transactions();
+    const transactions = allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth));
+    const { expenses, recordedIncome, spentByCategory } = aggregate(transactions);
     const income = recordedIncome || settings.monthlyIncome;
     const savingsCapacity = round(income - expenses);
     const savingsRate = income > 0 ? Math.round((savingsCapacity / income) * 100) : 0;
     const budgetTotal = round(Object.values(settings.budgets).reduce((total, value) => total + value, 0));
-    const essentialBase = round(["housing", "food", "transport", "health"].reduce((total, id) => total + Math.max(settings.budgets[id], spentByCategory[id]), 0));
+    const history = [-1, -2, -3]
+      .map((offset) => {
+        const historyMonth = shiftMonth(selectedMonth, offset);
+        const historyTransactions = allTransactions.filter((transaction) => transaction.date.startsWith(historyMonth));
+        return { month: historyMonth, expenseCount: historyTransactions.filter(({ amount }) => amount < 0).length, ...aggregate(historyTransactions) };
+      })
+      .filter(({ expenseCount }) => expenseCount > 0);
+    const now = this.now();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const [year, monthNumber] = selectedMonth.split("-").map(Number);
+    const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+    const elapsedDays = selectedMonth < currentMonth ? daysInMonth : selectedMonth === currentMonth ? Math.min(daysInMonth, now.getDate()) : 0;
+    const daysRemaining = selectedMonth < currentMonth ? 0 : selectedMonth === currentMonth ? daysInMonth - elapsedDays + 1 : daysInMonth;
+    const progress = Math.max(0.15, elapsedDays / daysInMonth);
+    const categoryPlans = {};
+    let futureEssentialExpenses = 0;
+    let projectedExpenses = 0;
+    let flexibleBudgetRemaining = 0;
+    let flexibleBudgetCount = 0;
+    for (const category of FINANCE_CATEGORIES) {
+      const spent = spentByCategory[category.id];
+      const budget = settings.budgets[category.id];
+      const historicalAverage = median(history.map((item) => item.spentByCategory[category.id]));
+      const paceProjection = selectedMonth === currentMonth ? round(spent / progress) : spent;
+      const baseline = budget || historicalAverage;
+      let projected = spent;
+      if (selectedMonth >= currentMonth) {
+        if (ESSENTIAL_CATEGORY_IDS.has(category.id)) projected = Math.max(spent, budget, historicalAverage, PACED_CATEGORY_IDS.has(category.id) ? paceProjection : 0);
+        else if (historicalAverage) projected = Math.max(spent, round(historicalAverage * 0.7 + paceProjection * 0.3));
+        else if (budget) projected = Math.max(spent, budget);
+      }
+      projected = round(projected);
+      const remaining = round(Math.max(0, projected - spent));
+      const suggestedBudget = round(Math.max(spent, historicalAverage || baseline));
+      const ambitious = budget > 0 && historicalAverage > budget * 1.2;
+      categoryPlans[category.id] = {
+        spent,
+        budget,
+        historicalAverage,
+        projected,
+        remaining,
+        suggestedBudget,
+        essential: ESSENTIAL_CATEGORY_IDS.has(category.id),
+        ambitious,
+      };
+      projectedExpenses += projected;
+      if (ESSENTIAL_CATEGORY_IDS.has(category.id)) futureEssentialExpenses += remaining;
+      else if (budget > 0) {
+        flexibleBudgetRemaining += Math.max(0, budget - spent);
+        flexibleBudgetCount += 1;
+      }
+    }
+    projectedExpenses = round(projectedExpenses);
+    futureEssentialExpenses = round(futureEssentialExpenses);
+    flexibleBudgetRemaining = round(flexibleBudgetRemaining);
+    const historyExpenseMedian = median(history.map((item) => item.expenses));
+    const expenseVariation = history.length > 1
+      ? round(history.reduce((total, item) => total + Math.abs(item.expenses - historyExpenseMedian), 0) / history.length)
+      : 0;
+    const automaticBuffer = income > 0 ? round(Math.max(income * 0.05, Math.min(income * 0.15, expenseVariation))) : 0;
+    const safetyBuffer = settings.safetyBuffer || automaticBuffer;
+    const forecastSurplusAfterBuffer = round(income - projectedExpenses - safetyBuffer);
+    const historicalSurpluses = history
+      .map((item) => round((item.recordedIncome || settings.monthlyIncome) - item.expenses - safetyBuffer))
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    const conservativeHistoricalSurplus = history.length >= 2 ? historicalSurpluses[Math.floor((historicalSurpluses.length - 1) * 0.25)] : null;
+    const sustainableSavings = round(Math.max(0, conservativeHistoricalSurplus === null
+      ? forecastSurplusAfterBuffer
+      : Math.min(forecastSurplusAfterBuffer, conservativeHistoricalSurplus)));
+    const protectedSavings = round(settings.savingsGoal > 0
+      ? Math.min(settings.savingsGoal, sustainableSavings)
+      : history.length >= 2
+        ? sustainableSavings
+        : Math.min(sustainableSavings, income * 0.1));
+    const freeCash = round(income - expenses - futureEssentialExpenses - safetyBuffer - protectedSavings);
+    const safeToSpend = round(Math.max(0, flexibleBudgetCount ? Math.min(freeCash, flexibleBudgetRemaining) : freeCash));
+    const dailyAllowance = daysRemaining > 0 ? round(safeToSpend / daysRemaining) : 0;
+    const projectedSavings = round(income - projectedExpenses);
+    const dataConfidence = history.length >= 3 ? "high" : history.length >= 2 ? "medium" : "low";
+    const essentialBase = round([...ESSENTIAL_CATEGORY_IDS].reduce((total, id) => total + Math.max(settings.budgets[id], categoryPlans[id].historicalAverage, spentByCategory[id]), 0));
     const emergencyTarget = round(essentialBase * settings.emergencyMonths);
     const warnings = [];
     if (!income) warnings.push({ id: "income", tone: "info", title: "Revenu manquant", detail: "Renseigne revenu mensuel pour calculer capacité épargne." });
+    if (history.length < 2) warnings.push({ id: "history", tone: "info", title: "Projection provisoire", detail: "Importe 2 à 3 mois pour fiabiliser reste dépensable et épargne." });
     if (income > 0 && expenses > income) warnings.push({ id: "deficit", tone: "danger", title: "Mois déficitaire", detail: `${round(expenses - income).toFixed(2)} € au-dessus revenus.` });
-    if (settings.savingsGoal > 0 && savingsCapacity < settings.savingsGoal) warnings.push({ id: "savings", tone: "warning", title: "Objectif épargne menacé", detail: `${Math.max(0, round(settings.savingsGoal - savingsCapacity)).toFixed(2)} € à récupérer.` });
+    if (settings.savingsGoal > protectedSavings) warnings.push({ id: "savings", tone: "warning", title: "Objectif épargne trop haut", detail: `${protectedSavings.toFixed(2)} € soutenables selon dépenses et réserve actuelles.` });
+    if (income > 0 && safeToSpend === 0) warnings.push({ id: "safe-spend", tone: "danger", title: "Pause dépenses libres", detail: "Revenus restants réservés aux charges, imprévus et épargne soutenable." });
     for (const category of FINANCE_CATEGORIES) {
       const budget = settings.budgets[category.id];
       const spent = round(spentByCategory[category.id]);
-      spentByCategory[category.id] = spent;
+      if (categoryPlans[category.id].ambitious) warnings.push({ id: `realism-${category.id}`, tone: "info", title: `${category.label}: budget serré`, detail: `Historique médian ${categoryPlans[category.id].historicalAverage.toFixed(2)} € contre budget ${budget.toFixed(2)} €.` });
       if (!budget || spent < budget * 0.8) continue;
       const ratio = Math.round((spent / budget) * 100);
       warnings.push({ id: `budget-${category.id}`, tone: ratio >= 100 ? "danger" : "warning", title: `${category.label}: ${ratio}%`, detail: ratio >= 100 ? `Budget dépassé de ${round(spent - budget).toFixed(2)} €.` : `${round(budget - spent).toFixed(2)} € restants.` });
     }
     const recommendations = [];
-    if (income > 0 && settings.savingsGoal === 0) recommendations.push(`Tester objectif automatique de ${round(income * 0.1).toFixed(2)} € (10% revenus).`);
-    if (settings.savingsGoal > 0 && savingsCapacity >= settings.savingsGoal) recommendations.push(`Programmer virement de ${settings.savingsGoal.toFixed(2)} € juste après revenu.`);
+    if (protectedSavings > 0) recommendations.push(`Épargne soutenable ce mois: ${protectedSavings.toFixed(2)} €, après charges et réserve.`);
+    if (!settings.safetyBuffer && automaticBuffer > 0) recommendations.push(`Réserve imprévus automatique: ${automaticBuffer.toFixed(2)} €. Ajustable dans plan mensuel.`);
     if (emergencyTarget > 0 && settings.currentSavings < emergencyTarget) recommendations.push(`Fonds sécurité: encore ${round(emergencyTarget - settings.currentSavings).toFixed(2)} € pour ${settings.emergencyMonths} mois essentiels.`);
-    const largest = FINANCE_CATEGORIES.map((category) => ({ ...category, spent: spentByCategory[category.id] })).sort((a, b) => b.spent - a.spent)[0];
+    const largest = FINANCE_CATEGORIES.filter(({ id }) => !ESSENTIAL_CATEGORY_IDS.has(id)).map((category) => ({ ...category, spent: spentByCategory[category.id] })).sort((a, b) => b.spent - a.spent)[0];
     if (largest?.spent > 0) recommendations.push(`Premier levier à vérifier: ${largest.label.toLowerCase()} (${largest.spent.toFixed(2)} €).`);
     return {
       month: selectedMonth,
@@ -165,6 +269,23 @@ export class FinanceService {
       savingsCapacity,
       savingsRate,
       afterGoal: round(savingsCapacity - settings.savingsGoal),
+      safeToSpend,
+      dailyAllowance,
+      daysRemaining,
+      futureEssentialExpenses,
+      safetyBuffer,
+      safetyBufferAutomatic: settings.safetyBuffer === 0,
+      protectedSavings,
+      sustainableSavings,
+      cashAfterReserves: freeCash,
+      flexibleBudgetRemaining,
+      flexibleBudgetApplied: flexibleBudgetCount > 0,
+      projectedExpenses,
+      projectedSavings,
+      forecastSurplusAfterBuffer,
+      dataConfidence,
+      historyMonths: history.length,
+      categoryPlans,
       budgetTotal,
       spentByCategory,
       emergencyTarget,
