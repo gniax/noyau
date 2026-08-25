@@ -870,7 +870,9 @@ app.delete("/api/sessions/:id", async (request, response, next) => {
 
 app.use((error, _request, response, _next) => {
   console.error(error);
-  response.status(400).json({ error: error.message || "Erreur serveur." });
+  const status = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
+  if (error.retryAfter) response.setHeader("Retry-After", String(error.retryAfter));
+  response.status(status).json({ error: error.message || "Erreur serveur.", ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}) });
 });
 
 if (process.env.NODE_ENV === "production") {

@@ -28,9 +28,20 @@ async function api(path, options = {}) {
   if (!response.ok) {
     const error = new Error(body.error || `Erreur ${response.status}`);
     error.status = response.status;
+    error.retryAfter = Number(body.retryAfter || response.headers.get("retry-after")) || 0;
     throw error;
   }
   return body;
+}
+
+function useCountdown() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (seconds <= 0) return undefined;
+    const timer = setTimeout(() => setSeconds((value) => Math.max(0, value - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [seconds]);
+  return [seconds, setSeconds];
 }
 
 const VERSION_KEY = "noyau:version";
@@ -439,6 +450,7 @@ function BankingPanel({ banks, month, onSynced }) {
   const [selected, setSelected] = useState({});
   const [config, setConfig] = useState({ appId: "", redirectUrl: callbackUrl, privateKey: "" });
   const [busy, setBusy] = useState("");
+  const [cooldown, setCooldown] = useCountdown();
   const [error, setError] = useState(() => new URLSearchParams(location.search).get("bankError") || "");
 
   const load = useCallback(async () => {
@@ -452,6 +464,7 @@ function BankingPanel({ banks, month, onSynced }) {
         setSelected((current) => Object.fromEntries(Object.entries(response.institutions).map(([id, options]) => [id, current[id] || options[0]?.name || ""])));
       }
     } catch (reason) {
+      if (reason.status === 429) setCooldown(reason.retryAfter || 60);
       setError(reason.message);
     }
   }, [callbackUrl]);
@@ -512,6 +525,7 @@ function BankingPanel({ banks, month, onSynced }) {
       await load();
       await onSynced();
     } catch (reason) {
+      if (reason.status === 429) setCooldown(reason.retryAfter || 60);
       setError(reason.message);
     } finally {
       setBusy("");
@@ -546,11 +560,11 @@ function BankingPanel({ banks, month, onSynced }) {
           <button className="primary" disabled={busy === "config"}>{busy === "config" ? "Vérification…" : "Enregistrer et vérifier"}</button>
         </form>
       </details>
-      {status?.configured && <div className="bank-toolbar"><small>{status.connections.length} banque{status.connections.length > 1 ? "s" : ""} liée{status.connections.length > 1 ? "s" : ""}</small>{status.connections.length > 0 && <button className="ghost" onClick={() => sync()} disabled={Boolean(busy)}>{busy === "sync" ? "Synchronisation…" : "Tout synchroniser"}</button>}</div>}
+      {status?.configured && <div className="bank-toolbar"><small>{status.connections.length} banque{status.connections.length > 1 ? "s" : ""} liée{status.connections.length > 1 ? "s" : ""}{cooldown > 0 ? ` · attente ${cooldown}s` : ""}</small>{status.connections.length > 0 && <button className="ghost" onClick={() => sync()} disabled={Boolean(busy) || cooldown > 0}>{busy === "sync" ? "Synchronisation…" : cooldown > 0 ? `Réessayer dans ${cooldown}s` : "Tout synchroniser"}</button>}</div>}
       <div className="bank-list">{banks.map((bank) => {
         const connection = status?.connections.find(({ bankId }) => bankId === bank.id);
         const options = institutions[bank.id] || [];
-        return <article key={bank.id}><i>{bank.name[0]}</i><span><strong>{bank.name}</strong><small>{connection ? `${connection.accountCount} compte · synchro ${connection.lastSyncAt ? new Date(connection.lastSyncAt).toLocaleDateString("fr-FR") : "jamais"}` : bank.access}</small></span>{options.length > 1 && !connection && <select value={selected[bank.id] || ""} onChange={(event) => setSelected({ ...selected, [bank.id]: event.target.value })}>{options.map((option) => <option key={option.name}>{option.name}</option>)}</select>}{connection ? <div className="bank-actions"><button onClick={() => sync(bank.id)} disabled={Boolean(busy)}>Synchroniser</button><button onClick={() => disconnect(bank.id)} disabled={Boolean(busy)}>Délier</button></div> : <button onClick={() => connect(bank.id)} disabled={Boolean(busy) || !options.length}>{busy === bank.id ? "Ouverture…" : options.length ? "Lier cette banque" : "Indisponible"}</button>}</article>;
+        return <article key={bank.id}><i>{bank.name[0]}</i><span><strong>{bank.name}</strong><small>{connection ? `${connection.accountCount} compte · synchro ${connection.lastSyncAt ? new Date(connection.lastSyncAt).toLocaleDateString("fr-FR") : "jamais"}` : bank.access}</small></span>{options.length > 1 && !connection && <select value={selected[bank.id] || ""} onChange={(event) => setSelected({ ...selected, [bank.id]: event.target.value })}>{options.map((option) => <option key={option.name}>{option.name}</option>)}</select>}{connection ? <div className="bank-actions"><button onClick={() => sync(bank.id)} disabled={Boolean(busy) || cooldown > 0}>Synchroniser</button><button onClick={() => disconnect(bank.id)} disabled={Boolean(busy)}>Délier</button></div> : <button onClick={() => connect(bank.id)} disabled={Boolean(busy) || !options.length}>{busy === bank.id ? "Ouverture…" : options.length ? "Lier cette banque" : "Indisponible"}</button>}</article>;
       })}</div>
     </section>
   );
@@ -563,6 +577,7 @@ function BudgetMenu({ onView }) {
       <nav>
         <button onClick={() => onView("finance-transactions")}><span>±</span><b>Opérations</b><small>Saisie et historique</small></button>
         <button onClick={() => onView("finance-modules")}><span>◇</span><b>Modules financiers</b><small>Actifs, charges, enveloppes</small></button>
+        <button onClick={() => onView("finance-banking")}><span>⌁</span><b>Connexions bancaires</b><small>Comptes, Enable Banking, synchronisation</small></button>
       </nav>
     </details>
   );
@@ -606,6 +621,7 @@ function FinanceView({ onView }) {
   const [saving, setSaving] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [syncCooldown, setSyncCooldown] = useCountdown();
   const [showPlanned, setShowPlanned] = useState(false);
   const [error, setError] = useState("");
 
@@ -621,6 +637,7 @@ function FinanceView({ onView }) {
         budgets: Object.fromEntries(Object.entries(payload.settings.budgets).map(([id, value]) => [id, String(value || "")])),
       });
     } catch (reason) {
+      if (reason.status === 429) setSyncCooldown(reason.retryAfter || 60);
       setError(reason.message);
     }
   }, [month]);
@@ -644,6 +661,7 @@ function FinanceView({ onView }) {
       setData(payload.finance);
       setUpdatedAt(new Date());
     } catch (reason) {
+      if (reason.status === 429) setSyncCooldown(reason.retryAfter || 60);
       setError(reason.message);
     } finally {
       setUpdating(false);
@@ -692,7 +710,7 @@ function FinanceView({ onView }) {
     <div className="page finance-page has-finance-dock">
       <section className="hero-row finance-hero">
         <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Budget.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p></div>
-        <div className="finance-hero-actions"><BudgetMenu onView={onView} /><button className="finance-refresh" onClick={updateBudget} disabled={updating}>{updating ? "Synchronisation…" : updatedAt ? "Budget à jour" : "Mettre à jour"}</button><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
+        <div className="finance-hero-actions"><BudgetMenu onView={onView} /><button className={`finance-refresh ${updating ? "updating" : ""}`} onClick={updateBudget} disabled={updating || syncCooldown > 0} aria-label={syncCooldown > 0 ? `Synchronisation disponible dans ${syncCooldown} secondes` : "Mettre à jour depuis banques"} title={syncCooldown > 0 ? `Réessayer dans ${syncCooldown}s` : updatedAt ? `À jour à ${updatedAt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}` : "Mettre à jour depuis banques"}><span aria-hidden="true">↻</span>{syncCooldown > 0 && <small>{syncCooldown}</small>}</button><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
       </section>
 
       {error && <p className="finance-error">{error}</p>}
@@ -805,8 +823,29 @@ function FinanceView({ onView }) {
           <div className="budget-inputs">{data.categories.map((category) => <label key={category.id}><span>{category.label}</span><input type="number" min="0" step="0.01" value={settings.budgets[category.id]} onChange={(event) => setSettings({ ...settings, budgets: { ...settings.budgets, [category.id]: event.target.value } })} placeholder="Budget €" /></label>)}</div>
         </form>
       </section>
-      <BankingPanel banks={data.banking.banks} month={month} onSynced={load} />
       <FinanceAgentDock month={month} onExpand={() => onView("finance-agent")} onChanged={load} />
+    </div>
+  );
+}
+
+function FinanceBankingView({ onView }) {
+  const month = localIsoDate().slice(0, 7);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      setError("");
+      setData(await api(`/api/finance?month=${encodeURIComponent(month)}`));
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }, [month]);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <div className="page finance-page">
+      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · RÉGLAGES</p><h1>Banques.</h1><p className="muted">Connexions, configuration et synchronisation.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /></div></section>
+      {error && <p className="finance-error">{error}</p>}
+      {data ? <BankingPanel banks={data.banking.banks} month={month} onSynced={load} /> : !error && <section className="panel"><p className="finance-empty">Chargement connexions…</p></section>}
     </div>
   );
 }
@@ -1999,6 +2038,7 @@ function App() {
             {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
             {view === "finance-agent" && <><Header title="Budget · Agent" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}
             {view === "finance-modules" && <><Header title="Budget · Modules" subtitle="Actifs et règles" onMenu={() => setMenu(true)} /><FinanceModulesView onView={setView} /></>}
+            {view === "finance-banking" && <><Header title="Budget · Banques" subtitle="Connexions et synchronisation" onMenu={() => setMenu(true)} /><FinanceBankingView onView={setView} /></>}
             {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} /></>}
           </>
         ) : (

@@ -101,3 +101,18 @@ test("Enable Banking retries rate limits", async () => {
   assert.deepEqual(await service.request("/test"), { ok: true });
   assert.equal(calls, 2);
 });
+
+test("Enable Banking exposes cooldown after exhausted rate limit", async () => {
+  const pair = keys();
+  let calls = 0;
+  const service = new EnableBankingService({
+    store: new MemoryStore(),
+    fetchImpl: async () => {
+      calls += 1;
+      return jsonResponse({ message: "Too many requests" }, 429, { "retry-after": "0.001" });
+    },
+  });
+  await service.saveConfig({ appId: "app-12345678", privateKey: pair.privateKey, redirectUrl: "https://noyau.lan:4243/api/finance/banking/callback" });
+  await assert.rejects(service.request("/test"), (error) => error.statusCode === 429 && error.retryAfter === 15);
+  assert.equal(calls, 3);
+});

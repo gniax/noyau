@@ -153,6 +153,13 @@ export class EnableBankingService {
       await new Promise((resolve) => setTimeout(resolve, delay));
       return this.request(pathname, { method, body }, attempt + 1);
     }
+    if (response.status === 429) {
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const error = new Error("Limite Enable Banking atteinte. Synchronisation temporairement bloquée.");
+      error.statusCode = 429;
+      error.retryAfter = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.max(15, Math.ceil(retryAfter)) : 60;
+      throw error;
+    }
     if (!response.ok) throw new Error(`Enable Banking (${response.status}): ${text(payload?.message || payload?.error || "requête refusée")}`);
     return payload;
   }
