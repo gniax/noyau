@@ -577,6 +577,7 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
     const content = message.trim();
     if (!content || sending) return;
     setSending(true);
+    setReply("Codex analyse budget et historique…");
     try {
       const response = await api("/api/finance/agent/message", { method: "POST", body: JSON.stringify({ message: content, month }) });
       setReply(response.reply);
@@ -590,7 +591,7 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
   }
   return (
     <aside className="finance-agent-dock">
-      <header><span><i />Agent finances</span><button onClick={onExpand} aria-label="Agrandir Agent finances" title="Agrandir">↗</button></header>
+      <header><span><i />Agent finances · Codex</span><button onClick={onExpand} aria-label="Agrandir Agent finances" title="Agrandir">↗</button></header>
       {reply && <p>{reply}</p>}
       <form onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Parler budget, charges, prévisions…" maxLength="1000" enterKeyHint="send" /><button disabled={sending || !message.trim()}>{sending ? "…" : "↑"}</button></form>
     </aside>
@@ -603,6 +604,7 @@ function FinanceView({ onView }) {
   const [data, setData] = useState(null);
   const [settings, setSettings] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [showPlanned, setShowPlanned] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -666,6 +668,7 @@ function FinanceView({ onView }) {
   if (!data || !settings) return <div className="page finance-page"><section className="hero-row"><div><p className="eyebrow">ARGENT</p><h1>Finances.</h1><p className="muted">{error || "Chargement données locales…"}</p></div></section></div>;
   const { summary } = data;
   const confidenceLabel = { low: "provisoire", medium: "correcte", high: "solide" }[summary.dataConfidence] || "provisoire";
+  const plannedCategories = data.categories.map((category) => ({ ...category, ...summary.categoryPlans[category.id] })).filter(({ remaining }) => remaining > 0).sort((a, b) => b.remaining - a.remaining);
   return (
     <div className="page finance-page has-finance-dock">
       <section className="hero-row finance-hero">
@@ -682,10 +685,16 @@ function FinanceView({ onView }) {
 
       <section className="finance-metrics">
         <article className={summary.currentCash >= 0 ? "positive cash-metric" : "negative cash-metric"}><small>SOLDE COMPTES COURANTS</small><strong>{euro(summary.currentCash)}</strong><span>{summary.currentAccounts.length} compte{summary.currentAccounts.length > 1 ? "s" : ""} bancaire{summary.currentAccounts.length > 1 ? "s" : ""}</span></article>
-        <article><small>ENCORE PRÉVU</small><strong>{euro(summary.remainingPlannedExpenses)}</strong><span>Dépenses estimées avant fin de mois</span></article>
+        <button className="planned-metric" onClick={() => setShowPlanned((value) => !value)} aria-expanded={showPlanned}><small>ENCORE PRÉVU</small><strong>{euro(summary.remainingPlannedExpenses)}</strong><span>Détail par catégorie {showPlanned ? "↑" : "↓"}</span></button>
         <article className={summary.forecastBalance >= 0 ? "positive" : "negative"}><small>SOLDE FIN DE MOIS</small><strong>{euro(summary.forecastBalance)}</strong><span>Avec {euro(summary.expectedIncomeRemaining)} d’entrées attendues</span></article>
         <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>ENCORE DÉPENSABLE</small><strong>{euro(summary.safeToSpend)}</strong><span>{euro(summary.dailyAllowance)} / jour sans toucher réserves</span></article>
       </section>
+
+      {showPlanned && <section className="panel planned-breakdown">
+        <div className="panel-head"><div><h3>Dépenses encore prévues</h3><p>Projection restante, jamais déjà dépensée</p></div><b>{euro(summary.remainingPlannedExpenses)}</b></div>
+        <div>{plannedCategories.map((category) => <article key={category.id}><span><strong>{category.label}</strong><small>{euro(category.spent)} déjà dépensés · {category.budget ? `budget ${euro(category.budget)}` : category.recurringExpected > category.spent ? `charge connue ${euro(category.recurringExpected)}` : category.essential ? `historique ${euro(category.historicalAverage)} + rythme réel` : "rythme réel du mois"}</small></span><b>+ {euro(category.remaining)}</b></article>)}{!plannedCategories.length && <p className="finance-empty">Aucune dépense supplémentaire projetée.</p>}</div>
+        <footer>Total mois probable: {euro(summary.projectedExpenses)} = réel {euro(summary.expenses)} + encore prévu {euro(summary.remainingPlannedExpenses)}.</footer>
+      </section>}
 
       <section className="panel current-accounts">
         <div className="panel-head"><div><h3>Comptes courants</h3><p>Soldes bancaires réels · placements exclus</p></div><b>{euro(summary.currentCash)}</b></div>
@@ -1006,17 +1015,17 @@ function FinanceAgentView({ onView }) {
   }
   return (
     <div className="page finance-agent-page">
-      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · PRÉVISIONS</p><h1>Agent finances.</h1><p className="muted">Transforme phrases en charges datées; calcul reste dépensable automatiquement.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>− Réduire</button><BudgetMenu onView={onView} /></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · CODEX</p><h1>Agent finances.</h1><p className="muted">Connaît comptes, transactions, catégories, modules et calculs Noyau.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>− Réduire</button><BudgetMenu onView={onView} /></div></section>
       {error && <p className="finance-error">{error}</p>}
       <section className="finance-agent-layout">
         <section className="panel finance-chat">
-          <div className="panel-head"><div><h3>Discussion</h3><p>Actions locales, sans envoyer données bancaires à IA externe</p></div><span className="ready">DISPONIBLE</span></div>
+          <div className="panel-head"><div><h3>Discussion Codex</h3><p>Snapshot financier envoyé au compte Codex configuré sur ce PC</p></div><span className="ready">CODEX</span></div>
           <div className="finance-chat-messages">
-            {!messages.length && <article className="assistant"><strong>Agent finances</strong><p>Dis-moi une charge mensuelle, changement futur, ou demande reste dépensable.</p></article>}
-            {messages.map((item) => <article className={item.role} key={item.id}><strong>{item.role === "user" ? "Toi" : "Agent finances"}</strong><p>{item.content}</p></article>)}
+            {!messages.length && <article className="assistant"><strong>Agent finances · Codex</strong><p>Demande explication, analyse, prévision ou modification de charge mensuelle.</p></article>}
+            {messages.map((item) => <article className={item.role} key={item.id}><strong>{item.role === "user" ? "Toi" : "Agent finances · Codex"}</strong><p>{item.content}</p></article>)}
           </div>
           <div className="finance-prompts"><button onClick={(event) => send(event, "Chaque mois je paye 950 euros de loyer")}>Ajouter loyer</button><button onClick={(event) => send(event, "Combien je peux encore dépenser ce mois ?")}>Reste dépensable</button><button onClick={(event) => send(event, "Liste mes charges mensuelles")}>Lister charges</button></div>
-          <form className="finance-chat-input" onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Chaque mois je paye…" maxLength="1000" enterKeyHint="send" /><button className="primary" disabled={sending || !message.trim()}>{sending ? "…" : "Envoyer"}</button></form>
+          <form className="finance-chat-input" onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Pourquoi prévision élevée ? Où réduire ?…" maxLength="1000" enterKeyHint="send" /><button className="primary" disabled={sending || !message.trim()}>{sending ? "Analyse…" : "Envoyer"}</button></form>
         </section>
         <section className="panel recurring-panel">
           <div className="panel-head"><div><h3>Charges prévues</h3><p>{recurring.filter(({ endDate }) => !endDate).length} active{recurring.filter(({ endDate }) => !endDate).length > 1 ? "s" : ""}</p></div></div>

@@ -21,6 +21,7 @@ import { PromptWatcher } from "./prompt-watcher.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { ModuleService } from "./module-service.js";
 import { FinanceService } from "./finance-service.js";
+import { FinanceAdvisor } from "./finance-advisor.js";
 import { EnableBankingService } from "./enable-banking.js";
 import { agentStatus } from "./agent-status.js";
 
@@ -122,12 +123,16 @@ const environmentBankingConfig = process.env.NOYAU_ENABLE_BANKING_APP_ID && proc
   : null;
 const enableBanking = new EnableBankingService({ store: bankingStore, finance: financeService, environmentConfig: environmentBankingConfig });
 financeService.setAggregatorConfigured(enableBanking.configured());
+const codexBinary = process.env.CODEX_BIN || (await commandPath("codex"));
+const claudeBinary = process.env.CLAUDE_BIN || (await commandPath("claude"));
 const tmux = new TmuxController({
   store,
   workspaceRoot,
-  codexBinary: process.env.CODEX_BIN || (await commandPath("codex")),
-  claudeBinary: process.env.CLAUDE_BIN || (await commandPath("claude")),
+  codexBinary,
+  claudeBinary,
 });
+const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, cwd: root });
+financeService.setAdvisor(({ message, month, action }) => financeAdvisor.answer({ message, month, action, payload: financePayload(month), history: financeService.agentHistory() }));
 const promptWatcher = new PromptWatcher({ tmux, push });
 const fileUpload = multer({
   storage: multer.memoryStorage(),
@@ -453,7 +458,9 @@ app.delete("/api/finance/banking/connections/:bankId", async (request, response,
 app.post("/api/finance/agent/message", async (request, response, next) => {
   try {
     const month = request.body?.month || currentMonthParis();
-    response.json(await financeService.financeAgent(request.body?.message, month));
+    const result = await financeService.financeAgent(request.body?.message, month);
+    response.json(result);
+    void push.send({ title: "Agent finances · Réponse prête", body: result.reply.slice(0, 180), tag: "finance-agent", url: "/?view=finance-agent" }).catch((error) => console.error(`Notification finances: ${error.message}`));
   } catch (error) {
     next(error);
   }

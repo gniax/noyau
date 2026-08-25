@@ -195,3 +195,32 @@ test("corporate card is excluded from personal spending", async () => {
   assert.equal(payload.summary.expenses, 0);
   assert.equal(payload.transactions[0].exclusionReason, "professionnel");
 });
+
+test("finance agent delegates free questions with budget context", async () => {
+  let request;
+  const service = new FinanceService({
+    store: new MemoryStore(),
+    now: () => new Date("2026-08-25T12:00:00Z"),
+    advisor: async (value) => {
+      request = value;
+      return "Prévision expliquée par catégories.";
+    },
+  });
+  const result = await service.financeAgent("Pourquoi ma dépense probable est élevée ?", "2026-08");
+  assert.equal(result.reply, "Prévision expliquée par catégories.");
+  assert.equal(request.month, "2026-08");
+  assert.equal(request.message, "Pourquoi ma dépense probable est élevée ?");
+  assert.equal(result.history.at(-1).role, "assistant");
+});
+
+test("current forecast does not replay old uncategorized spending", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  for (const month of ["05", "06", "07"]) {
+    await service.addTransaction({ kind: "expense", amount: 1000, description: "Dépense historique inconnue", category: "other", date: `2026-${month}-10` });
+  }
+  await service.addTransaction({ kind: "expense", amount: 100, description: "Dépense actuelle inconnue", category: "other", date: "2026-08-10" });
+  const plan = service.summary("2026-08").categoryPlans.other;
+  assert.equal(plan.historicalAverage, 1000);
+  assert.equal(plan.projected, 124);
+  assert.equal(plan.remaining, 24);
+});

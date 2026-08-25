@@ -259,14 +259,19 @@ function previousDate(date) {
 }
 
 export class FinanceService {
-  constructor({ store, aggregatorConfigured = false, now = () => new Date() } = {}) {
+  constructor({ store, aggregatorConfigured = false, now = () => new Date(), advisor = null } = {}) {
     this.store = store;
     this.aggregatorConfigured = aggregatorConfigured;
     this.now = now;
+    this.advisor = advisor;
   }
 
   setAggregatorConfigured(value) {
     this.aggregatorConfigured = Boolean(value);
+  }
+
+  setAdvisor(advisor) {
+    this.advisor = advisor;
   }
 
   settings() {
@@ -454,7 +459,7 @@ export class FinanceService {
 
   async recordAgentMessage(role, content) {
     const id = `finance-agent-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
-    await this.store.set(id, { type: "finance-agent-message", role, content: String(content).slice(0, 1000), createdAt: new Date().toISOString() });
+    await this.store.set(id, { type: "finance-agent-message", role, content: String(content).slice(0, role === "assistant" ? 5000 : 1000), createdAt: new Date().toISOString() });
   }
 
   async financeAgent(message, month) {
@@ -470,12 +475,14 @@ export class FinanceService {
     const amount = Number((changeAmount?.[1] || paymentAmount?.[1] || euroAmount?.[1] || "").replace(",", ".")) || null;
     let reply;
     let action = "answer";
+    let actionDetail = null;
     const effectiveDate = frenchDate(content, this.now());
     const change = value.match(/(?:a partir du\s+\d{1,2}(?:er)?\s+[a-z]+(?:\s+\d{4})?\s+)(?:le |la |mon |ma )?(.+?)\s+(?:passe|passera|sera)\s+a\s+\d/);
     if (change && amount && effectiveDate) {
       const result = await this.changeRecurring({ match: change[1], amount, effectiveDate });
       reply = `${result.current.description}: ${result.current.amount.toFixed(2)} € par mois dès le ${effectiveDate}. Ancienne période conservée dans prévisions.`;
       action = "recurring-changed";
+      actionDetail = reply;
     } else if (/chaque mois|tous les mois|mensuel/.test(value) && amount) {
       const amountToken = normalized(paymentAmount?.[1] || euroAmount?.[1]);
       const amountIndex = value.indexOf(amountToken);
@@ -486,6 +493,7 @@ export class FinanceService {
       const rule = await this.addRecurring({ description, amount, startDate, dayOfMonth: statedDay ? Number(statedDay) : 1 });
       reply = `${rule.description}: ${rule.amount.toFixed(2)} € ajoutés chaque mois, catégorie ${FINANCE_CATEGORIES.find(({ id }) => id === rule.category)?.label}.`;
       action = "recurring-added";
+      actionDetail = reply;
     } else if (/liste|charges|prelevements|recurrent/.test(value)) {
       const active = this.recurring().filter(({ endDate }) => !endDate);
       reply = active.length ? active.map((rule) => `${rule.description}: ${rule.amount.toFixed(2)} € le ${rule.dayOfMonth}`).join("\n") : "Aucune charge mensuelle enregistrée.";
@@ -493,7 +501,14 @@ export class FinanceService {
       const summary = this.summary(selectedMonth);
       reply = `Reste dépensable prudent: ${summary.safeToSpend.toFixed(2)} €. Épargne soutenable: ${summary.protectedSavings.toFixed(2)} €. Réserve imprévus: ${summary.safetyBuffer.toFixed(2)} €.`;
     } else {
-      reply = "Commande non comprise. Exemple: « Chaque mois je paye 950 euros de loyer » ou « À partir du 1er janvier le loyer passe à 1200 euros ».";
+      reply = "Agent Codex indisponible. Réessaie dans quelques secondes.";
+    }
+    if (this.advisor) {
+      try {
+        reply = await this.advisor({ message: content, month: selectedMonth, action: actionDetail });
+      } catch (error) {
+        reply = `${reply}\n\nErreur agent: ${error.message}`;
+      }
     }
     await this.recordAgentMessage("assistant", reply);
     return { reply, action, recurring: this.recurring(), history: this.agentHistory(), summary: this.summary(selectedMonth) };
@@ -660,8 +675,8 @@ export class FinanceService {
       let projected = spent;
       if (selectedMonth >= currentMonth) {
         if (ESSENTIAL_CATEGORY_IDS.has(category.id)) projected = Math.max(spent, budget, historicalAverage, recurringExpected, PACED_CATEGORY_IDS.has(category.id) ? paceProjection : 0);
-        else if (historicalAverage) projected = Math.max(spent, round(historicalAverage * 0.7 + paceProjection * 0.3));
-        else if (budget) projected = Math.max(spent, budget);
+        else if (selectedMonth === currentMonth) projected = budget ? Math.max(spent, budget, paceProjection) : Math.max(spent, paceProjection);
+        else projected = Math.max(spent, budget, historicalAverage);
       }
       projected = round(projected);
       const remaining = round(Math.max(0, projected - spent));
