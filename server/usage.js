@@ -1,0 +1,151 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+async function readTail(file, bytes = 512 * 1024) {
+  if (!file) return "";
+  const handle = await fs.open(file, "r");
+  try {
+    const stat = await handle.stat();
+    const length = Math.min(bytes, stat.size);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, stat.size - length);
+    return buffer.toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+function jsonLines(text) {
+  return text.split("\n").reverse().flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export function parseCodexUsage(text) {
+  const event = jsonLines(text).find((item) => item.type === "event_msg" && item.payload?.type === "token_count" && item.payload.info);
+  if (!event) return null;
+  const info = event.payload.info;
+  const latest = info.last_token_usage || info.total_token_usage || {};
+  const usedTokens = Number(latest.input_tokens || 0) + Number(latest.output_tokens || 0);
+  const contextWindow = Number(info.model_context_window || 0);
+  const remainingTokens = contextWindow ? Math.max(0, contextWindow - usedTokens) : null;
+  const primary = event.payload.rate_limits?.primary;
+  return {
+    usedTokens,
+    remainingTokens,
+    contextWindow: contextWindow || null,
+    contextPercent: contextWindow ? Math.max(0, Math.round((remainingTokens / contextWindow) * 100)) : null,
+    rateRemainingPercent: primary ? Math.max(0, Math.round(100 - Number(primary.used_percent || 0))) : null,
+    rateResetsAt: primary?.resets_at ? new Date(primary.resets_at * 1000).toISOString() : null,
+    rateWindowMinutes: Number(primary?.window_minutes) || null,
+    estimated: false,
+  };
+}
+
+export function parseClaudeRateLimits(rateLimits) {
+  const parse = (item) => {
+    const used = item?.used_percentage ?? (Number.isFinite(Number(item?.utilization)) ? Number(item.utilization) * 100 : null);
+    if (used === null || used === undefined || !Number.isFinite(Number(used))) return null;
+    const rawReset = item.resets_at;
+    const resetsAt = Number(rawReset) ? new Date(Number(rawReset) * 1000).toISOString() : (rawReset && !Number.isNaN(new Date(rawReset).getTime()) ? new Date(rawReset).toISOString() : null);
+    return { remainingPercent: Math.max(0, Math.round(100 - Number(used))), resetsAt };
+  };
+  const fiveHour = parse(rateLimits?.five_hour);
+  const sevenDay = parse(rateLimits?.seven_day);
+  if (!fiveHour && !sevenDay) return null;
+  return { fiveHour, sevenDay, updatedAt: new Date().toISOString() };
+}
+
+export function parseClaudeUsage(text, contextWindow = 200_000) {
+  const item = jsonLines(text).find((entry) => entry.type === "assistant" && entry.message?.model && entry.message.model !== "<synthetic>" && entry.message.usage);
+  if (!item) return null;
+  const usage = item.message.usage;
+  const usedTokens = Number(usage.input_tokens || 0) + Number(usage.cache_creation_input_tokens || 0) + Number(usage.cache_read_input_tokens || 0) + Number(usage.output_tokens || 0);
+  const remainingTokens = Math.max(0, contextWindow - usedTokens);
+  return {
+    usedTokens,
+    remainingTokens,
+    contextWindow,
+    contextPercent: Math.max(0, Math.round((remainingTokens / contextWindow) * 100)),
+    rateRemainingPercent: null,
+    rateResetsAt: null,
+    estimated: true,
+  };
+}
+
+export function parsePaneUsage(text) {
+  const match = String(text).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").match(/(\d{1,3})%\s+context left/i);
+  return match ? { contextPercent: Number(match[1]), remainingTokens: null, usedTokens: null, contextWindow: null, rateRemainingPercent: null, rateResetsAt: null, estimated: true } : null;
+}
+
+export async function lastClaudeMessage(file) {
+  try {
+    const item = jsonLines(await readTail(file)).find((entry) => entry.type === "assistant" && Array.isArray(entry.message?.content));
+    return item?.message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n").trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+export class UsageService {
+  constructor({ codexRoot = path.join(os.homedir(), ".codex", "sessions") } = {}) {
+    this.codexRoot = codexRoot;
+    this.codexFiles = new Map();
+  }
+
+  async processTree(pid, seen = new Set()) {
+    if (!pid || seen.has(pid)) return [];
+    seen.add(pid);
+    let children = [];
+    try {
+      children = (await fs.readFile(`/proc/${pid}/task/${pid}/children`, "utf8")).trim().split(/\s+/).filter(Boolean).map(Number);
+    } catch { /* process exited */ }
+    const descendants = await Promise.all(children.map((child) => this.processTree(child, seen)));
+    return [pid, ...descendants.flat()];
+  }
+
+  async discoverCodexThread(panePid) {
+    for (const pid of await this.processTree(panePid)) {
+      try {
+        const environment = (await fs.readFile(`/proc/${pid}/environ`)).toString("utf8").split("\0");
+        const value = environment.find((entry) => entry.startsWith("CODEX_THREAD_ID="))?.slice("CODEX_THREAD_ID=".length);
+        if (value) return value;
+      } catch { /* process exited */ }
+      try {
+        for (const descriptor of await fs.readdir(`/proc/${pid}/fd`)) {
+          const target = await fs.readlink(`/proc/${pid}/fd/${descriptor}`).catch(() => "");
+          const match = target.match(/rollout-[^/]*-([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i);
+          if (match) return match[1];
+        }
+      } catch { /* process exited */ }
+    }
+    return null;
+  }
+
+  async codexFile(threadId) {
+    if (!threadId) return null;
+    if (this.codexFiles.has(threadId)) return this.codexFiles.get(threadId);
+    try {
+      const files = await fs.readdir(this.codexRoot, { recursive: true });
+      const match = files.find((file) => file.endsWith(`${threadId}.jsonl`));
+      const resolved = match ? path.join(this.codexRoot, match) : null;
+      this.codexFiles.set(threadId, resolved);
+      return resolved;
+    } catch {
+      return null;
+    }
+  }
+
+  async get(session, pane = "") {
+    try {
+      if (session.assistant === "codex" && session.threadId) return parseCodexUsage(await readTail(await this.codexFile(session.threadId))) || parsePaneUsage(pane);
+      if (session.assistant === "claude" && session.transcriptPath) return parseClaudeUsage(await readTail(session.transcriptPath)) || parsePaneUsage(pane);
+    } catch { /* unavailable while agent writes */ }
+    return parsePaneUsage(pane);
+  }
+}

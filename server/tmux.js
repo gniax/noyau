@@ -1,0 +1,176 @@
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+const SESSION_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
+const FORMATS = ["#{session_name}", "#{session_activity}", "#{session_windows}", "#{pane_current_command}", "#{pane_current_path}", "#{pane_pid}"].join("\t");
+
+export function validSessionId(id) {
+  return SESSION_PATTERN.test(id);
+}
+
+export function createSessionId(assistant) {
+  const suffix = crypto.randomBytes(2).toString("hex");
+  return `noyau-${assistant}-${Date.now().toString(36)}-${suffix}`;
+}
+
+export function classifyAssistant(command, storedAssistant) {
+  if (storedAssistant) return storedAssistant;
+  if (command.includes("claude")) return "claude";
+  if (command.includes("codex")) return "codex";
+  return "shell";
+}
+
+export class TmuxController {
+  constructor({ binary = "tmux", store, workspaceRoot, codexBinary = "codex", claudeBinary = "claude" }) {
+    this.binary = binary;
+    this.store = store;
+    this.workspaceRoot = workspaceRoot;
+    this.commands = { codex: codexBinary, claude: claudeBinary };
+  }
+
+  async run(args) {
+    return execFileAsync(this.binary, args, { maxBuffer: 1024 * 1024 });
+  }
+
+  async list() {
+    let stdout = "";
+    try {
+      ({ stdout } = await this.run(["list-sessions", "-F", FORMATS]));
+    } catch (error) {
+      if (/no server running|failed to connect/i.test(error.stderr || error.message)) return [];
+      throw error;
+    }
+
+    return stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [id, activity, windows, command = "", cwd = "", panePid = ""] = line.split("\t");
+        const stored = this.store.get(id);
+        return {
+          id,
+          name: stored?.name || id,
+          assistant: classifyAssistant(command, stored?.assistant),
+          command,
+          cwd,
+          windows: Number(windows),
+          panePid: Number(panePid) || null,
+          activityAt: new Date(Number(activity) * 1000).toISOString(),
+          createdAt: stored?.createdAt || null,
+          migrationState: stored?.migrationState || null,
+          migrationTarget: stored?.migrationTarget || null,
+          migratedTo: stored?.migratedTo || null,
+          migratedFrom: stored?.migratedFrom || null,
+          yolo: Boolean(stored?.yolo),
+          runningYolo: Boolean(stored?.runningYolo),
+          permissionRestartPending: Boolean(stored?.permissionRestartPending),
+          projectLogo: Boolean(stored?.projectLogo),
+          projectId: stored?.projectId || null,
+          favorite: Boolean(stored?.favorite),
+          managed: id.startsWith("noyau-"),
+        };
+      })
+      .sort((a, b) => b.activityAt.localeCompare(a.activityAt));
+  }
+
+  async exists(id) {
+    if (!validSessionId(id)) return false;
+    try {
+      await this.run(["has-session", "-t", `=${id}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, favorite = false }) {
+    if (!["codex", "claude", "shell"].includes(assistant)) throw new Error("Assistant invalide.");
+    const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
+    const stat = await fs.stat(resolvedCwd);
+    if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
+
+    const id = createSessionId(assistant);
+    const unrestricted = assistant !== "shell" && Boolean(yolo);
+    const args = ["new-session", "-d", "-s", id, "-c", resolvedCwd, "-e", `NOYAU_SESSION_ID=${id}`];
+    if (assistant !== "shell") {
+      args.push(this.commands[assistant]);
+      if (assistant === "codex") {
+        args.push("--no-alt-screen");
+        if (unrestricted) args.push("--yolo");
+        args.push("-c", "check_for_update_on_startup=false");
+      }
+      if (assistant === "claude" && unrestricted) args.push("--dangerously-skip-permissions");
+      if (prompt) args.push(String(prompt).slice(0, 50_000));
+    }
+    await this.run(args);
+
+    const entry = {
+      name: String(name || assistant).trim().slice(0, 60) || assistant,
+      assistant,
+      cwd: resolvedCwd,
+      createdAt: new Date().toISOString(),
+      migratedFrom: migratedFrom || null,
+      yolo: unrestricted,
+      runningYolo: unrestricted,
+      permissionRestartPending: false,
+      projectLogo: Boolean(projectLogo),
+      projectId: projectId || null,
+      favorite: Boolean(favorite),
+    };
+    await this.store.set(id, entry);
+    return { id, ...entry, managed: true };
+  }
+
+  async capture(id, lines = 120) {
+    if (!validSessionId(id)) return "";
+    try {
+      return (await this.run(["capture-pane", "-p", "-t", id, "-S", `-${Math.max(20, Math.min(500, lines))}`])).stdout;
+    } catch {
+      return "";
+    }
+  }
+
+  async captureVisible(id) {
+    if (!validSessionId(id)) return "";
+    try {
+      return (await this.run(["capture-pane", "-p", "-t", `=${id}:0.0`])).stdout;
+    } catch {
+      return "";
+    }
+  }
+
+  async submit(id, text) {
+    if (!await this.exists(id)) throw new Error("Session introuvable.");
+    const data = String(text || "").trim().slice(0, 50_000);
+    if (!data) throw new Error("Message vide.");
+    await this.run(["send-keys", "-t", id, "-l", data]);
+    await this.run(["send-keys", "-t", id, "C-m"]);
+  }
+
+  async restartAgent({ id, assistant, cwd, threadId, yolo = false }) {
+    if (!validSessionId(id) || !["codex", "claude"].includes(assistant)) throw new Error("Agent invalide pour redémarrage.");
+    const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", path.resolve(cwd || this.workspaceRoot), this.commands[assistant]];
+    if (assistant === "codex") {
+      args.push("--no-alt-screen");
+      if (yolo) args.push("--yolo");
+      args.push("-c", "check_for_update_on_startup=false", "resume");
+      args.push(threadId ? String(threadId) : "--last");
+    } else {
+      if (yolo) args.push("--dangerously-skip-permissions");
+      args.push(threadId ? "--resume" : "--continue");
+      if (threadId) args.push(String(threadId));
+    }
+    await this.run(args);
+  }
+
+  async kill(id) {
+    if (!validSessionId(id) || !id.startsWith("noyau-")) throw new Error("Seules sessions Noyau peuvent être arrêtées.");
+    await this.run(["kill-session", "-t", `=${id}`]);
+    await this.store.remove(id);
+  }
+}

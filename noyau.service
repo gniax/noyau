@@ -1,0 +1,25 @@
+[Unit]
+Description=Noyau local control center
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/projects/noyau
+ExecStart=/home/user/.nvm/versions/node/v20.20.2/bin/node server/index.js
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+Environment=PORT=4242
+Environment=NOYAU_HTTPS_HOST=noyau.lan
+Environment=NOYAU_HTTPS_PORT=4243
+Environment=NOYAU_TLS_CERT=/home/user/projects/noyau/.data/tls/server-cert.pem
+Environment=NOYAU_TLS_KEY=/home/user/projects/noyau/.data/tls/server-key.pem
+Environment=NOYAU_CA_CERT=/home/user/projects/noyau/.data/tls/ca-cert.cer
+Environment=NOYAU_WORKSPACE_ROOT=/home/user/projects
+Environment=PATH=/home/user/.nvm/versions/node/v20.20.2/bin:/home/user/.npm-global/bin:/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=3
+KillMode=process
+UMask=0077
+
+[Install]
+WantedBy=default.target
