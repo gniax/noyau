@@ -286,3 +286,58 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .live-dot.waiting, .agent-state-dot.waiting, .agent-info em i.agent-state-dot.waiting, .terminal-toolbar small i.agent-state-dot.waiting { background: var(--orange); box-shadow: 0 0 8px #f7a65a77; }
 .project-agents small .agent-state-dot { margin-right: 2px; }
 @keyframes agent-working { 50% { opacity: .4; transform: scale(.78); } }
+
+.finance-hero-actions { display: flex; align-items: center; gap: 8px; }
+.finance-forms { display: grid; grid-template-columns: 1fr; margin-top: 10px; }
+.bank-error { margin: 0; padding: 11px 17px; border-top: 1px solid #5f3439; background: #251719; color: #e79098; font-size: 9px; }
+.bank-config { border-top: 1px solid var(--line); }
+.bank-config > summary { min-height: 43px; display: flex; align-items: center; justify-content: space-between; padding: 0 17px; list-style: none; color: #9da8a1; font-size: 9px; cursor: pointer; }
+.bank-config > summary::-webkit-details-marker { display: none; }
+.bank-config > summary b { color: var(--green); font-size: 17px; transition: transform .15s; }
+.bank-config[open] > summary b { transform: rotate(90deg); }
+.bank-config form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; padding: 16px 17px; border-top: 1px solid #202622; background: #0c100e; }
+.bank-config form > p, .bank-config form .wide { grid-column: 1 / -1; }
+.bank-config form > p { margin: 0 0 3px; color: #738078; font-size: 8px; line-height: 1.5; }
+.bank-config label span, .bank-config label small { display: block; }
+.bank-config label span { margin-bottom: 6px; color: #747f78; font-size: 8px; }
+.bank-config label small { margin-top: 5px; color: #68736c; font-size: 7px; }
+.bank-config input, .bank-list select { width: 100%; min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #303833; border-radius: 6px; background: #090d0b; color: #dbe3dd; color-scheme: dark; font-size: 12px; }
+.bank-key-file input { padding: 7px 9px; font-size: 9px; }
+.bank-account-link { display: grid; place-items: center; min-height: 34px; text-decoration: none; }
+.bank-toolbar { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 17px; border-top: 1px solid var(--line); }
+.bank-toolbar small { color: #718078; font-size: 8px; }
+.bank-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2,1fr); gap: 6px; }
+.bank-list article > select { grid-column: 1 / -1; height: 30px; font-size: 9px; }
+.operations-layout { display: grid; grid-template-columns: minmax(280px,.65fr) minmax(0,1.35fr); gap: 10px; align-items: start; }
+.operations-layout .finance-transactions { margin-top: 0; }
+.finance-agent-layout { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(280px,.75fr); gap: 10px; align-items: start; }
+.finance-chat .panel-head > span { padding: 6px 8px; border: 1px solid #405534; border-radius: 5px; color: var(--green); font: 700 7px/1 ui-monospace,monospace; }
+.finance-chat-messages { height: min(48vh,430px); min-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 15px; border-top: 1px solid var(--line); background: #0a0e0c; }
+.finance-chat-messages article { max-width: 82%; padding: 10px 12px; border: 1px solid #29312c; border-radius: 8px; background: #111613; }
+.finance-chat-messages article.user { align-self: flex-end; border-color: #405534; background: #172018; }
+.finance-chat-messages strong { display: block; color: #7b887f; font-size: 7px; text-transform: uppercase; }
+.finance-chat-messages p { margin: 6px 0 0; color: #cbd4ce; font-size: 10px; line-height: 1.45; white-space: pre-line; }
+.finance-prompts { display: flex; gap: 6px; overflow-x: auto; padding: 9px 12px 0; border-top: 1px solid var(--line); }
+.finance-prompts button { flex: none; min-height: 28px; padding: 0 9px; border: 1px solid #303832; border-radius: 5px; background: #141916; color: #89958d; font-size: 7px; }
+.finance-chat-input { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px; padding: 9px 12px 12px; }
+.finance-chat-input input { min-width: 0; height: 39px; padding: 0 11px; border: 1px solid #303833; border-radius: 6px; background: #090d0b; color: #dbe3dd; font-size: 16px; }
+.recurring-list article { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto 24px; gap: 8px; align-items: center; padding: 13px 15px; border-top: 1px solid #202622; }
+.recurring-list article.ended { opacity: .45; }
+.recurring-list strong, .recurring-list small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.recurring-list strong { font-size: 9px; }
+.recurring-list small { margin-top: 5px; color: #69736c; font-size: 7px; }
+.recurring-list b { color: var(--green); font: 600 9px/1 ui-monospace,monospace; }
+.recurring-list button { width: 24px; height: 24px; border: 0; background: transparent; color: #727c75; font-size: 16px; }
+.paste-key { color: var(--green) !important; border-color: #405534 !important; }
+
+@media (max-width: 900px) {
+  .operations-layout, .finance-agent-layout { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .finance-hero-actions { width: 100%; display: grid; grid-template-columns: 1fr; }
+  .finance-hero-actions > .ghost { width: 100%; }
+  .bank-config form { grid-template-columns: 1fr; }
+  .bank-config form > * { grid-column: 1 !important; }
+  .finance-chat-messages { height: 43vh; }
+}

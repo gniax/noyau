@@ -7,6 +7,7 @@ class MemoryStore {
   get(id) { return this.data[id] || null; }
   all() { return this.data; }
   async set(id, value) { this.data[id] = value; }
+  async setMany(entries) { for (const [id, value] of entries) this.data[id] = value; }
   async remove(id) { delete this.data[id]; }
 }
 
@@ -55,4 +56,31 @@ test("finance service rejects unsafe transaction input", async () => {
   await assert.rejects(() => service.addTransaction({ kind: "expense", amount: -10, description: "Test", category: "food", date: "2026-08-10" }), /Montant invalide/);
   await assert.rejects(() => service.addTransaction({ kind: "expense", amount: 10, description: "Test", category: "unknown", date: "2026-08-10" }), /Catégorie invalide/);
   await assert.rejects(() => service.addTransaction({ kind: "expense", amount: 10, description: "", category: "food", date: "2026-08-10" }), /Description requise/);
+});
+
+test("finance agent records recurring charge and future amount change", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  await service.updateSettings({ monthlyIncome: 2500, safetyBuffer: 150 });
+  const added = await service.financeAgent("Chaque mois je paye 950 euros de loyer", "2026-08");
+  assert.equal(added.action, "recurring-added");
+  assert.equal(added.recurring[0].description, "loyer");
+  assert.equal(added.recurring[0].dayOfMonth, 1);
+  assert.equal(added.summary.recurringByCategory.housing, 950);
+  assert.equal(added.summary.categoryPlans.housing.projected, 950);
+
+  const changed = await service.financeAgent("À partir du 1er janvier le loyer passe à 1200", "2026-08");
+  assert.equal(changed.action, "recurring-changed");
+  assert.equal(changed.recurring.filter(({ endDate }) => !endDate)[0].amount, 1200);
+  assert.equal(service.summary("2026-12").recurringByCategory.housing, 950);
+  assert.equal(service.summary("2027-01").recurringByCategory.housing, 1200);
+  assert.equal(service.agentHistory().length, 4);
+});
+
+test("bank transaction import is stable and updates duplicate", async () => {
+  const service = new FinanceService({ store: new MemoryStore() });
+  const transaction = { kind: "expense", amount: 42, description: "Courses", category: "food", date: "2026-08-24", account: "Banque", source: "enable-banking", sourceAccount: "account-1", externalId: "entry-1" };
+  assert.deepEqual(await service.importTransactions([transaction]), { imported: 1, updated: 0 });
+  assert.deepEqual(await service.importTransactions([{ ...transaction, description: "Courses corrigées" }]), { imported: 0, updated: 1 });
+  assert.equal(service.transactions().length, 1);
+  assert.equal(service.transactions()[0].description, "Courses corrigées");
 });

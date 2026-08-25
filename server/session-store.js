@@ -34,6 +34,11 @@ export class SessionStore {
     await this.persist();
   }
 
+  async setMany(entries) {
+    for (const [id, value] of entries) this.data[id] = value;
+    await this.persist();
+  }
+
   async persist() {
     this.queue = this.queue.then(async () => {
       await fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });

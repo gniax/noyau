@@ -203,6 +203,8 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span>◫</span>Projets</button>
         <button><span>↗</span>Veille <em>Bientôt</em></button>
         <button className={!activeId && view === "finances" ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Dépenses</button>
+        <button className={!activeId && view === "finance-transactions" ? "active" : ""} onClick={() => { onOpen(null); onView("finance-transactions"); onClose(); }}><span>±</span>Opérations</button>
+        <button className={!activeId && view === "finance-agent" ? "active" : ""} onClick={() => { onOpen(null); onView("finance-agent"); onClose(); }}><span>◇</span>Agent finances</button>
         <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
       </nav>
       <div className="sidebar-title"><span>AGENTS</span><button onClick={onNew} aria-label="Nouvelle session">+</button></div>
@@ -419,14 +421,136 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
   );
 }
 
-function FinanceView() {
+function BankingPanel({ banks, month, onSynced }) {
+  const callbackUrl = `${location.origin}/api/finance/banking/callback`;
+  const [status, setStatus] = useState(null);
+  const [institutions, setInstitutions] = useState({});
+  const [selected, setSelected] = useState({});
+  const [config, setConfig] = useState({ appId: "", redirectUrl: callbackUrl, privateKey: "" });
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState(() => new URLSearchParams(location.search).get("bankError") || "");
+
+  const load = useCallback(async () => {
+    try {
+      const next = await api("/api/finance/banking/status");
+      setStatus(next);
+      setConfig((current) => ({ ...current, appId: next.appId || current.appId, redirectUrl: next.redirectUrl || callbackUrl }));
+      if (next.configured) {
+        const response = await api("/api/finance/banking/institutions");
+        setInstitutions(response.institutions);
+        setSelected((current) => Object.fromEntries(Object.entries(response.institutions).map(([id, options]) => [id, current[id] || options[0]?.name || ""])));
+      }
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }, [callbackUrl]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function saveConfig(event) {
+    event.preventDefault();
+    setBusy("config");
+    setError("");
+    try {
+      const body = { appId: config.appId.trim(), redirectUrl: config.redirectUrl.trim() };
+      if (config.privateKey) body.privateKey = config.privateKey;
+      await api("/api/finance/banking/config", { method: "PATCH", body: JSON.stringify(body) });
+      setConfig((current) => ({ ...current, privateKey: "" }));
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function readKey(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 16_384) {
+      setError("Clé PEM trop grande.");
+      event.target.value = "";
+      return;
+    }
+    setConfig((current) => ({ ...current, privateKey: "" }));
+    try {
+      const value = await file.text();
+      setConfig((current) => ({ ...current, privateKey: value }));
+    } catch {
+      setError("Lecture clé PEM impossible.");
+    }
+  }
+
+  async function connect(bankId) {
+    setBusy(bankId);
+    setError("");
+    try {
+      const authorization = await api("/api/finance/banking/connect", { method: "POST", body: JSON.stringify({ bankId, institutionName: selected[bankId] }) });
+      location.assign(authorization.url);
+    } catch (reason) {
+      setError(reason.message);
+      setBusy("");
+    }
+  }
+
+  async function sync(bankId = null) {
+    setBusy(bankId || "sync");
+    setError("");
+    try {
+      await api("/api/finance/banking/sync", { method: "POST", body: JSON.stringify({ bankId, month }) });
+      await load();
+      await onSynced();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function disconnect(bankId) {
+    if (!window.confirm("Délier cette banque ? Opérations déjà importées restent locales.")) return;
+    setBusy(bankId);
+    try {
+      await api(`/api/finance/banking/connections/${encodeURIComponent(bankId)}`, { method: "DELETE" });
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <section className="panel bank-connectors">
+      <div className="panel-head"><div><h3>Connexions bancaires</h3><p>Enable Banking · clé privée protégée localement par fichier 0600</p></div><span className={status?.configured ? "ready" : "pending"}>{status?.configured ? "PRÊT" : "À CONFIGURER"}</span></div>
+      {error && <p className="bank-error">{error}</p>}
+      <details className="bank-config" open={!status?.configured}>
+        <summary>Configuration Enable Banking <b>›</b></summary>
+        <form onSubmit={saveConfig}>
+          <p>Crée application gratuite, ajoute URL retour exacte, puis charge clé privée RSA PEM. Clé reste serveur; jamais renvoyée navigateur.</p>
+          <label><span>Application ID</span><input value={config.appId} onChange={(event) => setConfig({ ...config, appId: event.target.value })} required autoComplete="off" placeholder="ID application" /></label>
+          <label className="wide"><span>URL retour à enregistrer</span><input value={config.redirectUrl} onChange={(event) => setConfig({ ...config, redirectUrl: event.target.value })} required inputMode="url" /></label>
+          <label className="wide bank-key-file"><span>Clé privée RSA (.pem)</span><input type="file" accept=".pem,.key,text/plain" onChange={readKey} required={!status?.keyStored} /><small>{config.privateKey ? "Clé chargée, prête à enregistrer" : status?.keyStored ? "Clé déjà stockée; laisse vide pour conserver" : "Clé requise"}</small></label>
+          <a className="ghost bank-account-link" href="https://enablebanking.com/sign-in/" target="_blank" rel="noreferrer">Ouvrir Enable Banking</a>
+          <button className="primary" disabled={busy === "config"}>{busy === "config" ? "Vérification…" : "Enregistrer et vérifier"}</button>
+        </form>
+      </details>
+      {status?.configured && <div className="bank-toolbar"><small>{status.connections.length} banque{status.connections.length > 1 ? "s" : ""} liée{status.connections.length > 1 ? "s" : ""}</small>{status.connections.length > 0 && <button className="ghost" onClick={() => sync()} disabled={Boolean(busy)}>{busy === "sync" ? "Synchronisation…" : "Tout synchroniser"}</button>}</div>}
+      <div className="bank-list">{banks.map((bank) => {
+        const connection = status?.connections.find(({ bankId }) => bankId === bank.id);
+        const options = institutions[bank.id] || [];
+        return <article key={bank.id}><i>{bank.name[0]}</i><span><strong>{bank.name}</strong><small>{connection ? `${connection.accountCount} compte · synchro ${connection.lastSyncAt ? new Date(connection.lastSyncAt).toLocaleDateString("fr-FR") : "jamais"}` : bank.access}</small></span>{options.length > 1 && !connection && <select value={selected[bank.id] || ""} onChange={(event) => setSelected({ ...selected, [bank.id]: event.target.value })}>{options.map((option) => <option key={option.name}>{option.name}</option>)}</select>}{connection ? <div className="bank-actions"><button onClick={() => sync(bank.id)} disabled={Boolean(busy)}>Synchroniser</button><button onClick={() => disconnect(bank.id)} disabled={Boolean(busy)}>Délier</button></div> : <button onClick={() => connect(bank.id)} disabled={Boolean(busy) || !options.length}>{busy === bank.id ? "Ouverture…" : options.length ? "Lier cette banque" : "Indisponible"}</button>}</article>;
+      })}</div>
+    </section>
+  );
+}
+
+function FinanceView({ onTransactions }) {
   const today = new Date().toISOString().slice(0, 10);
   const [month, setMonth] = useState(today.slice(0, 7));
   const [data, setData] = useState(null);
   const [settings, setSettings] = useState(null);
-  const [transaction, setTransaction] = useState({ kind: "expense", amount: "", description: "", category: "food", date: today, account: "" });
   const [saving, setSaving] = useState(false);
-  const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -490,31 +614,6 @@ function FinanceView() {
     }));
   }
 
-  async function addTransaction(event) {
-    event.preventDefault();
-    setAdding(true);
-    setError("");
-    try {
-      await api("/api/finance/transactions", { method: "POST", body: JSON.stringify({ ...transaction, amount: Number(transaction.amount) }) });
-      setTransaction((current) => ({ ...current, amount: "", description: "" }));
-      await load();
-    } catch (reason) {
-      setError(reason.message);
-    } finally {
-      setAdding(false);
-    }
-  }
-
-  async function removeTransaction(id) {
-    if (!window.confirm("Supprimer cette opération ?")) return;
-    try {
-      await api(`/api/finance/transactions/${encodeURIComponent(id)}`, { method: "DELETE" });
-      await load();
-    } catch (reason) {
-      setError(reason.message);
-    }
-  }
-
   const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
   if (!data || !settings) return <div className="page finance-page"><section className="hero-row"><div><p className="eyebrow">ARGENT</p><h1>Finances.</h1><p className="muted">{error || "Chargement données locales…"}</p></div></section></div>;
   const { summary } = data;
@@ -523,7 +622,7 @@ function FinanceView() {
     <div className="page finance-page">
       <section className="hero-row finance-hero">
         <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Dépenses.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p></div>
-        <div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div>
+        <div className="finance-hero-actions"><button className="ghost" onClick={onTransactions}>Opérations</button><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
       </section>
 
       {error && <p className="finance-error">{error}</p>}
@@ -579,7 +678,7 @@ function FinanceView() {
         </section>
       </section>
 
-      <section className="finance-layout finance-forms">
+      <section className="finance-forms">
         <form className="panel finance-settings" onSubmit={saveSettings}>
           <div className="panel-head"><div><h3>Plan mensuel</h3><p>Base calcul épargne</p></div><button className="primary" disabled={saving}>{saving ? "…" : "Enregistrer"}</button></div>
           <div className="finance-form-grid">
@@ -591,32 +690,146 @@ function FinanceView() {
           </div>
           <div className="budget-inputs">{data.categories.map((category) => <label key={category.id}><span>{category.label}</span><input type="number" min="0" step="0.01" value={settings.budgets[category.id]} onChange={(event) => setSettings({ ...settings, budgets: { ...settings.budgets, [category.id]: event.target.value } })} placeholder="Budget €" /></label>)}</div>
         </form>
+      </section>
+      <BankingPanel banks={data.banking.banks} month={month} onSynced={load} />
+    </div>
+  );
+}
 
+function FinanceTransactionsView() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [month, setMonth] = useState(today.slice(0, 7));
+  const [data, setData] = useState(null);
+  const [transaction, setTransaction] = useState({ kind: "expense", amount: "", description: "", category: "food", date: today, account: "" });
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      setError("");
+      setData(await api(`/api/finance?month=${encodeURIComponent(month)}`));
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }, [month]);
+  useEffect(() => { load(); }, [load]);
+  function shiftMonth(offset) {
+    const [year, value] = month.split("-").map(Number);
+    setMonth(new Date(Date.UTC(year, value - 1 + offset, 1)).toISOString().slice(0, 7));
+  }
+  async function addTransaction(event) {
+    event.preventDefault();
+    setAdding(true);
+    try {
+      await api("/api/finance/transactions", { method: "POST", body: JSON.stringify({ ...transaction, amount: Number(transaction.amount) }) });
+      setTransaction((current) => ({ ...current, amount: "", description: "" }));
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setAdding(false);
+    }
+  }
+  async function removeTransaction(id) {
+    if (!window.confirm("Supprimer cette opération ?")) return;
+    try {
+      await api(`/api/finance/transactions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }
+  const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
+  return (
+    <div className="page finance-page finance-operations-page">
+      <section className="hero-row finance-hero"><div><p className="eyebrow">HISTORIQUE LOCAL</p><h1>Opérations.</h1><p className="muted">Saisie manuelle et imports bancaires.</p></div><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></section>
+      {error && <p className="finance-error">{error}</p>}
+      <section className="operations-layout">
         <form className="panel transaction-form" onSubmit={addTransaction}>
-          <div className="panel-head"><div><h3>Ajouter opération</h3><p>Manuel avant synchronisation bancaire</p></div></div>
+          <div className="panel-head"><div><h3>Ajouter opération</h3><p>Dépense ou revenu manuel</p></div></div>
           <div className="transaction-fields">
             <label><span>Type</span><select value={transaction.kind} onChange={(event) => setTransaction({ ...transaction, kind: event.target.value })}><option value="expense">Dépense</option><option value="income">Revenu</option></select></label>
             <label><span>Montant</span><input type="number" min="0.01" step="0.01" value={transaction.amount} onChange={(event) => setTransaction({ ...transaction, amount: event.target.value })} required placeholder="0,00 €" /></label>
             <label className="wide"><span>Description</span><input value={transaction.description} onChange={(event) => setTransaction({ ...transaction, description: event.target.value })} required maxLength="120" placeholder="Courses, loyer, salaire…" /></label>
-            {transaction.kind === "expense" && <label><span>Catégorie</span><select value={transaction.category} onChange={(event) => setTransaction({ ...transaction, category: event.target.value })}>{data.categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>}
+            {transaction.kind === "expense" && <label><span>Catégorie</span><select value={transaction.category} onChange={(event) => setTransaction({ ...transaction, category: event.target.value })}>{(data?.categories || []).map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>}
             <label><span>Date</span><input type="date" value={transaction.date} onChange={(event) => setTransaction({ ...transaction, date: event.target.value })} required /></label>
             <label className="wide"><span>Compte</span><input value={transaction.account} onChange={(event) => setTransaction({ ...transaction, account: event.target.value })} maxLength="60" placeholder="Optionnel" /></label>
             <button className="primary wide" disabled={adding}>{adding ? "Ajout…" : "Ajouter"}</button>
           </div>
         </form>
+        <section className="panel finance-transactions">
+          <div className="panel-head"><div><h3>Historique</h3><p>{data?.transactions.length || 0} opération{data?.transactions.length > 1 ? "s" : ""}</p></div></div>
+          <div className="transaction-list">
+            {(data?.transactions || []).map((item) => <article key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{item.date.split("-").reverse().join("/")} · {item.account} · {data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
+            {data && !data.transactions.length && <p className="finance-empty">Aucune opération ce mois.</p>}
+          </div>
+        </section>
       </section>
+    </div>
+  );
+}
 
-      <section className="panel bank-connectors">
-        <div className="panel-head"><div><h3>Connexions bancaires</h3><p>{data.banking.aggregator.name} · {data.banking.aggregator.configured ? "clés détectées" : "clés API requises"}</p></div><span className={data.banking.aggregator.configured ? "ready" : "pending"}>{data.banking.aggregator.configured ? "PRÊT" : "À CONFIGURER"}</span></div>
-        <div className="bank-list">{data.banking.banks.map((bank) => <article key={bank.id}><i>{bank.name[0]}</i><span><strong>{bank.name}</strong><small>{bank.access}</small></span><button disabled>Connexion étape 2</button></article>)}</div>
-      </section>
-
-      <section className="panel finance-transactions">
-        <div className="panel-head"><div><h3>Opérations</h3><p>{monthName}</p></div></div>
-        <div className="transaction-list">
-          {data.transactions.map((item) => <article key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{item.date.split("-").reverse().join("/")} · {item.account} · {data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
-          {!data.transactions.length && <p className="finance-empty">Aucune opération ce mois.</p>}
-        </div>
+function FinanceAgentView() {
+  const month = new Date().toISOString().slice(0, 7);
+  const [messages, setMessages] = useState([]);
+  const [recurring, setRecurring] = useState([]);
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      const data = await api(`/api/finance?month=${month}`);
+      setMessages(data.agent.history);
+      setRecurring(data.recurring);
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }, [month]);
+  useEffect(() => { load(); }, [load]);
+  async function send(event, suggested = "") {
+    event?.preventDefault();
+    const content = (suggested || message).trim();
+    if (!content || sending) return;
+    setSending(true);
+    setError("");
+    setMessages((current) => [...current, { id: `local-${Date.now()}`, role: "user", content }]);
+    setMessage("");
+    try {
+      const response = await api("/api/finance/agent/message", { method: "POST", body: JSON.stringify({ message: content, month }) });
+      setMessages(response.history);
+      setRecurring(response.recurring);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setSending(false);
+    }
+  }
+  async function removeRule(id) {
+    if (!window.confirm("Supprimer cette charge des prévisions ?")) return;
+    try {
+      await api(`/api/finance/recurring/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }
+  return (
+    <div className="page finance-agent-page">
+      <section className="hero-row"><div><p className="eyebrow">PRÉVISIONS</p><h1>Agent finances.</h1><p className="muted">Transforme phrases en charges datées; calcul reste dépensable automatiquement.</p></div></section>
+      {error && <p className="finance-error">{error}</p>}
+      <section className="finance-agent-layout">
+        <section className="panel finance-chat">
+          <div className="panel-head"><div><h3>Discussion</h3><p>Actions locales, sans envoyer données bancaires à IA externe</p></div><span className="ready">DISPONIBLE</span></div>
+          <div className="finance-chat-messages">
+            {!messages.length && <article className="assistant"><strong>Agent finances</strong><p>Dis-moi une charge mensuelle, changement futur, ou demande reste dépensable.</p></article>}
+            {messages.map((item) => <article className={item.role} key={item.id}><strong>{item.role === "user" ? "Toi" : "Agent finances"}</strong><p>{item.content}</p></article>)}
+          </div>
+          <div className="finance-prompts"><button onClick={(event) => send(event, "Chaque mois je paye 950 euros de loyer")}>Ajouter loyer</button><button onClick={(event) => send(event, "Combien je peux encore dépenser ce mois ?")}>Reste dépensable</button><button onClick={(event) => send(event, "Liste mes charges mensuelles")}>Lister charges</button></div>
+          <form className="finance-chat-input" onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Chaque mois je paye…" maxLength="1000" enterKeyHint="send" /><button className="primary" disabled={sending || !message.trim()}>{sending ? "…" : "Envoyer"}</button></form>
+        </section>
+        <section className="panel recurring-panel">
+          <div className="panel-head"><div><h3>Charges prévues</h3><p>{recurring.filter(({ endDate }) => !endDate).length} active{recurring.filter(({ endDate }) => !endDate).length > 1 ? "s" : ""}</p></div></div>
+          <div className="recurring-list">{recurring.map((rule) => <article className={rule.endDate ? "ended" : ""} key={rule.id}><span><strong>{rule.description}</strong><small>Le {rule.dayOfMonth} · depuis {rule.startDate.split("-").reverse().join("/")}{rule.endDate ? ` · fin ${rule.endDate.split("-").reverse().join("/")}` : ""}</small></span><b>{euro(rule.amount)}</b>{!rule.endDate && <button onClick={() => removeRule(rule.id)} aria-label={`Supprimer ${rule.description}`}>×</button>}</article>)}{!recurring.length && <p className="finance-empty">Aucune charge. Écris première règle dans discussion.</p>}</div>
+        </section>
       </section>
     </div>
   );
@@ -953,6 +1166,44 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     event.currentTarget.value = "";
   }
 
+  function nativePaste(event) {
+    const data = event.clipboardData?.getData("text");
+    if (!data) return;
+    event.preventDefault();
+    sendKeyboardData(data);
+    event.currentTarget.value = "";
+  }
+
+  async function pasteClipboard() {
+    try {
+      const data = await navigator.clipboard.readText();
+      if (!data) throw new Error("Presse-papiers vide.");
+      sendKeyboardData(data);
+    } catch (error) {
+      focusKeyboard();
+      window.alert(error.message === "Presse-papiers vide." ? error.message : "Accès presse-papiers refusé. Touche zone terminal puis utilise Coller du clavier iOS.");
+    }
+  }
+
+  async function copyTerminal() {
+    try {
+      const terminal = terminalRef.current;
+      if (!terminal) throw new Error("Terminal indisponible.");
+      let content = terminal.getSelection();
+      if (!content) {
+        const buffer = terminal.buffer.active;
+        const start = Math.max(0, buffer.viewportY);
+        const lines = [];
+        for (let row = start; row < Math.min(buffer.length, start + terminal.rows); row += 1) lines.push(buffer.getLine(row)?.translateToString(true) || "");
+        content = lines.join("\n").trimEnd();
+      }
+      if (!content) throw new Error("Terminal vide.");
+      await navigator.clipboard.writeText(content);
+    } catch (error) {
+      window.alert(error.message || "Copie presse-papiers refusée.");
+    }
+  }
+
   function nativeKeyDown(event) {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -1001,6 +1252,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
           className="terminal-keyboard-capture"
           type="text"
           onInput={nativeInput}
+          onPaste={nativePaste}
           onKeyDown={nativeKeyDown}
           onFocus={() => setKeyboardActive(true)}
           onBlur={() => setKeyboardActive(false)}
@@ -1017,6 +1269,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
             <input type="file" onChange={attachFile} disabled={uploading} />
             <span>{uploading ? "…" : "＋"}</span>
           </label>
+          <button className="copy-key" onClick={copyTerminal}>Copier</button>
+          <button className="paste-key" onClick={pasteClipboard}>Coller</button>
           <button className={ctrl ? "selected" : ""} onClick={() => toggleModifier("ctrl")}>Ctrl</button>
           <button className={alt ? "selected" : ""} onClick={() => toggleModifier("alt")}>Alt</button>
           <button onClick={() => pressSpecial("Escape")}>Esc</button>
@@ -1168,7 +1422,7 @@ function App() {
   const [moduleProposals, setModuleProposals] = useState([]);
   const [quotas, setQuotas] = useState({ codex: null, claude: null });
   const [activeId, setActiveId] = useState(() => new URLSearchParams(location.search).get("session"));
-  const [view, setView] = useState(() => ["projects", "finances", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
+  const [view, setView] = useState(() => ["projects", "finances", "finance-transactions", "finance-agent", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
   const [modal, setModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [projectModalId, setProjectModalId] = useState(null);
@@ -1439,7 +1693,9 @@ function App() {
           <>
             {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
             {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} /></>}
-            {view === "finances" && <><Header title="Dépenses" subtitle="Budgets et épargne" onMenu={() => setMenu(true)} /><FinanceView /></>}
+            {view === "finances" && <><Header title="Dépenses" subtitle="Budgets et épargne" onMenu={() => setMenu(true)} /><FinanceView onTransactions={() => setView("finance-transactions")} /></>}
+            {view === "finance-transactions" && <><Header title="Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView /></>}
+            {view === "finance-agent" && <><Header title="Agent finances" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView /></>}
             {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} /></>}
           </>
         ) : (

@@ -21,6 +21,7 @@ import { PromptWatcher } from "./prompt-watcher.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { ModuleService } from "./module-service.js";
 import { FinanceService } from "./finance-service.js";
+import { EnableBankingService } from "./enable-banking.js";
 import { agentStatus } from "./agent-status.js";
 
 const execFileAsync = promisify(execFile);
@@ -85,6 +86,8 @@ const moduleStore = new SessionStore(path.join(dataDir, "modules.json"));
 await moduleStore.load();
 const financeStore = new SessionStore(path.join(dataDir, "finance.json"));
 await financeStore.load();
+const bankingStore = new SessionStore(path.join(dataDir, "enable-banking.json"));
+await bankingStore.load();
 const providerState = new SessionStore(path.join(dataDir, "provider-state.json"));
 await providerState.load();
 const claudeQuota = new ClaudeQuotaService({ store: providerState });
@@ -108,8 +111,16 @@ const moduleService = new ModuleService({
 });
 const financeService = new FinanceService({
   store: financeStore,
-  aggregatorConfigured: Boolean(process.env.NOYAU_ENABLE_BANKING_APP_ID && process.env.NOYAU_ENABLE_BANKING_PRIVATE_KEY),
 });
+const environmentBankingConfig = process.env.NOYAU_ENABLE_BANKING_APP_ID && process.env.NOYAU_ENABLE_BANKING_PRIVATE_KEY && process.env.NOYAU_ENABLE_BANKING_REDIRECT_URL
+  ? {
+      appId: process.env.NOYAU_ENABLE_BANKING_APP_ID,
+      privateKey: process.env.NOYAU_ENABLE_BANKING_PRIVATE_KEY,
+      redirectUrl: process.env.NOYAU_ENABLE_BANKING_REDIRECT_URL,
+    }
+  : null;
+const enableBanking = new EnableBankingService({ store: bankingStore, finance: financeService, environmentConfig: environmentBankingConfig });
+financeService.setAggregatorConfigured(enableBanking.configured());
 const tmux = new TmuxController({
   store,
   workspaceRoot,
@@ -246,6 +257,20 @@ app.get("/version.json", async (_request, response, next) => {
   }
 });
 
+app.get("/api/finance/banking/callback", async (request, response) => {
+  try {
+    await enableBanking.complete({
+      code: request.query.code,
+      state: request.query.state,
+      error: request.query.error,
+      errorDescription: request.query.error_description,
+    });
+    response.redirect(303, "/?view=finances&bank=connected");
+  } catch (error) {
+    response.redirect(303, `/?view=finances&bankError=${encodeURIComponent(error.message)}`);
+  }
+});
+
 app.use("/api", (request, response, next) => {
   if (!authenticated(request)) return response.status(401).json({ error: "Non autorisé." });
   next();
@@ -318,6 +343,74 @@ app.post("/api/finance/transactions", async (request, response, next) => {
 app.delete("/api/finance/transactions/:id", async (request, response, next) => {
   try {
     await financeService.removeTransaction(request.params.id);
+    response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/finance/banking/status", (_request, response) => {
+  response.json(enableBanking.status());
+});
+
+app.patch("/api/finance/banking/config", async (request, response, next) => {
+  try {
+    const status = await enableBanking.saveConfig(request.body);
+    financeService.setAggregatorConfigured(true);
+    const application = await enableBanking.verify();
+    response.json({ status, application });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/finance/banking/institutions", async (_request, response, next) => {
+  try {
+    response.json({ institutions: await enableBanking.institutions() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/finance/banking/connect", async (request, response, next) => {
+  try {
+    response.json(await enableBanking.begin(request.body));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/finance/banking/sync", async (request, response, next) => {
+  try {
+    const result = await enableBanking.sync(request.body?.bankId || null);
+    const month = request.body?.month || new Date().toISOString().slice(0, 7);
+    response.json({ result, finance: financeService.payload(month), banking: enableBanking.status() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/finance/banking/connections/:bankId", async (request, response, next) => {
+  try {
+    await enableBanking.disconnect(request.params.bankId);
+    response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/finance/agent/message", async (request, response, next) => {
+  try {
+    const month = request.body?.month || new Date().toISOString().slice(0, 7);
+    response.json(await financeService.financeAgent(request.body?.message, month));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/finance/recurring/:id", async (request, response, next) => {
+  try {
+    await financeService.removeRecurring(request.params.id);
     response.status(204).end();
   } catch (error) {
     next(error);
