@@ -15,7 +15,14 @@ mkdir -p "$profile_root"
 install -m 600 "$app_root/desktop/firefox-user.js" "$profile_root/user.js"
 systemctl --user start noyau.service
 
-profile_pids=$(pgrep -u "$(id -u)" -f "firefox.*--profile ${profile_root}" || true)
+profile_pids=""
+for candidate in $(pgrep -u "$(id -u)" -x firefox 2>/dev/null || true); do
+  executable=$(readlink "/proc/$candidate/exe" 2>/dev/null || true)
+  arguments=$(tr '\0' ' ' < "/proc/$candidate/cmdline" 2>/dev/null || true)
+  case "$executable:$arguments" in
+    */firefox:*" --profile $profile_root "*) profile_pids="$profile_pids $candidate" ;;
+  esac
+done
 if [ -n "$profile_pids" ]; then
   profile_running() {
     for pid in $profile_pids; do
