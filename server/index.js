@@ -24,6 +24,8 @@ import { ModuleService } from "./module-service.js";
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
+const packageMetadata = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
+const appVersion = String(packageMetadata.version || "0.0.0");
 const dataDir = path.resolve(process.env.NOYAU_DATA_DIR || path.join(root, ".data"));
 const workspaceRoot = path.resolve(process.env.NOYAU_WORKSPACE_ROOT || path.join(os.homedir(), "projects"));
 const port = Number(process.env.PORT || 4242);
@@ -223,7 +225,8 @@ app.get("/noyau-ca.cer", async (_request, response, next) => {
 app.get("/version.json", async (_request, response, next) => {
   try {
     response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    response.json({ version: await clientVersion() });
+    const build = await clientVersion();
+    response.json({ version: appVersion, build, release: `${appVersion}+${build}` });
   } catch (error) {
     next(error);
   }

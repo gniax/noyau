@@ -5,7 +5,10 @@ const NAVIGATION = "/__noyau-shell";
 async function currentVersion() {
   try {
     const response = await fetch("/version.json", { cache: "no-store" });
-    if (response.ok) return (await response.json()).version || "dev";
+    if (response.ok) {
+      const data = await response.json();
+      return data.release || data.build || data.version || "dev";
+    }
   } catch { /* hors ligne: on garde le cache existant */ }
   return null;
 }

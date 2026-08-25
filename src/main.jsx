@@ -303,7 +303,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
 
       <section className="metrics">
         <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div><small>AGENTS ACTIFS</small><div className="active-agents-data"><strong className="active-total">{sessions.length}</strong><div className="agent-breakdown"><span><b>{codexCount}</b><em>Codex</em></span><span><b>{claudeCount}</b><em>Claude</em></span><span><b>{shellCount}</b><em>Terminal</em></span></div></div><p>{linkedProjects} projet{linkedProjects > 1 ? "s" : ""} lié{linkedProjects > 1 ? "s" : ""} · {favoriteCount} favori{favoriteCount > 1 ? "s" : ""}</p></div></article>
-        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small>QUOTAS IA</small><div className="quota-providers"><div className="quota-codex"><span>CODEX {codexPeriod}</span><div className="quota-current"><strong>{Number.isFinite(quotas.codex?.remainingPercent) ? `${quotas.codex.remainingPercent}%` : "—"}</strong><em>{formatReset(quotas.codex?.resetsAt)}</em></div>{Number.isFinite(quotas.codex?.remainingPercent) && <progress max="100" value={quotas.codex.remainingPercent} aria-label={`Quota Codex restant ${quotas.codex.remainingPercent}%`} />}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-windows">{claudeWindows.map((item) => <div className="quota-window" key={item.label}><span>{item.label}</span><strong>{item.remainingPercent}%</strong><em title={formatReset(item.resetsAt)}>{formatReset(item.resetsAt).replace("Reset ", "")}</em><progress max="100" value={item.remainingPercent} aria-label={`Quota Claude ${item.label} restant ${item.remainingPercent}%`} /></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
+        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small>QUOTAS IA</small><div className="quota-providers"><div className="quota-codex"><span>CODEX {codexPeriod}</span><div className="quota-current"><strong>{Number.isFinite(quotas.codex?.remainingPercent) ? `${quotas.codex.remainingPercent}%` : "—"}</strong><em>{formatReset(quotas.codex?.resetsAt)}</em></div>{Number.isFinite(quotas.codex?.remainingPercent) && <progress max="100" value={quotas.codex.remainingPercent} aria-label={`Quota Codex restant ${quotas.codex.remainingPercent}%`} />}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{formatReset(item.resetsAt).replace("Reset ", "")}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
       </section>
 
       <section className="panel agents-panel">
@@ -417,7 +417,11 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
 
 function SettingsView({ permission, onNotifications, onRefresh }) {
   const [refreshing, setRefreshing] = useState(false);
+  const [versionInfo, setVersionInfo] = useState(null);
   const notificationLabel = { active: "Tester notification", insecure: "HTTPS requis", denied: "Alertes bloquées" }[permission] || "Activer alertes";
+  useEffect(() => {
+    fetch("/version.json", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then(setVersionInfo).catch(() => {});
+  }, []);
   async function refreshApp() {
     setRefreshing(true);
     await onRefresh();
@@ -428,7 +432,7 @@ function SettingsView({ permission, onNotifications, onRefresh }) {
       <section className="hero-row"><div><p className="eyebrow">APPLICATION</p><h1>Réglages.</h1><p className="muted">Alertes et accès appareil.</p></div></section>
       <section className="panel settings-list">
         <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>Fin réponse, attente validation, migration terminée.</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
-        <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>Purge cache PWA et recharge dernière version.</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
+        <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexion privée</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : "Ouvre version HTTPS via VPN"}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
       </section>
     </div>
@@ -1038,13 +1042,14 @@ function App() {
       try {
         const response = await fetch("/version.json", { cache: "no-store" });
         if (!response.ok) return;
-        const { version } = await response.json();
+        const info = await response.json();
+        const version = info.release || info.build || info.version;
         if (!version || disposed) return;
         const known = localStorage.getItem(VERSION_KEY);
         if (known && known !== version) {
           localStorage.setItem(VERSION_KEY, version);
           await purgeClient();
-          location.replace(`/?v=${version}`);
+          location.replace(`/?v=${encodeURIComponent(version)}`);
           return;
         }
         if (!known) localStorage.setItem(VERSION_KEY, version);
@@ -1147,7 +1152,10 @@ function App() {
     let version = Date.now().toString(36);
     try {
       const response = await fetch("/version.json", { cache: "no-store" });
-      if (response.ok) version = (await response.json()).version || version;
+      if (response.ok) {
+        const info = await response.json();
+        version = info.release || info.build || info.version || version;
+      }
     } catch { /* recharge reseau reste possible */ }
     await purgeClient();
     try { localStorage.setItem(VERSION_KEY, version); } catch { /* stockage optionnel */ }
