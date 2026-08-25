@@ -3,7 +3,8 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 app_root=$(dirname -- "$script_dir")
-profile_root="${XDG_DATA_HOME:-${HOME}/.local/share}/noyau-touch/firefox"
+profile_root="${HOME}/snap/firefox/common/noyau-touch-profile"
+legacy_profile="${XDG_DATA_HOME:-${HOME}/.local/share}/noyau-touch/firefox"
 app_url="${NOYAU_TOUCH_URL:-http://127.0.0.1:4242/?touch=1}"
 runtime_root="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 launch_lock="$runtime_root/noyau-touch-launch.lock"
@@ -33,7 +34,7 @@ for candidate in $(pgrep -u "$(id -u)" -x firefox 2>/dev/null || true); do
   executable=$(readlink "/proc/$candidate/exe" 2>/dev/null || true)
   arguments=$(tr '\0' ' ' < "/proc/$candidate/cmdline" 2>/dev/null || true)
   case "$executable:$arguments" in
-    */firefox:*" --profile $profile_root "*) profile_pids="$profile_pids $candidate" ;;
+    */firefox:*" --profile $profile_root "*|*/firefox:*" --profile $legacy_profile "*) profile_pids="$profile_pids $candidate" ;;
   esac
 done
 if [ -n "$profile_pids" ]; then
@@ -64,7 +65,7 @@ if [ -n "$profile_pids" ]; then
 fi
 
 case "$profile_root" in
-  */noyau-touch/firefox) rm -f "$profile_root/.parentlock" "$profile_root/lock" "$profile_root/parent.lock" ;;
+  */snap/firefox/common/noyau-touch-profile) rm -f "$profile_root/.parentlock" "$profile_root/lock" "$profile_root/parent.lock" ;;
   *) notify-send "Noyau Desk" "Profil Firefox invalide; relance annulée"; exit 1 ;;
 esac
 

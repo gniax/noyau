@@ -222,7 +222,13 @@ export class TmuxController {
 
   async kill(id) {
     if (!validSessionId(id) || !id.startsWith("noyau-")) throw new Error("Seules sessions Noyau peuvent être arrêtées.");
-    await this.run(["kill-session", "-t", `=${id}`]);
+    const current = this.store.get(id);
+    if (current) await this.store.set(id, { ...current, autoRestore: false, stopRequestedAt: new Date().toISOString() });
+    try {
+      await this.run(["kill-session", "-t", `=${id}`]);
+    } catch (error) {
+      if (!/can't find session|no server running|failed to connect|error connecting/i.test(error.stderr || error.message)) throw error;
+    }
     await this.store.remove(id);
   }
 }

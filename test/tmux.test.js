@@ -54,6 +54,24 @@ test("agent restart targets first pane and preserves exact context", async () =>
   assert.deepEqual(command, ["respawn-pane", "-k", "-t", "=noyau-codex-safe:0.0", "-c", os.tmpdir(), "codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false", "resume", "thread-id"]);
 });
 
+test("agent stop removes metadata when tmux session already ended", async () => {
+  const events = [];
+  const entry = { assistant: "codex", autoRestore: true };
+  const store = {
+    get: () => entry,
+    set: async (_id, value) => events.push(["set", value.autoRestore]),
+    remove: async (id) => events.push(["remove", id]),
+  };
+  const controller = new TmuxController({ store, workspaceRoot: os.tmpdir() });
+  controller.run = async () => {
+    const error = new Error("Command failed");
+    error.stderr = "can't find session: noyau-codex-gone";
+    throw error;
+  };
+  await controller.kill("noyau-codex-gone");
+  assert.deepEqual(events, [["set", false], ["remove", "noyau-codex-gone"]]);
+});
+
 test("legacy restore plan keeps only live sessions", async () => {
   const data = {
     "noyau-codex-live": { assistant: "codex" },
