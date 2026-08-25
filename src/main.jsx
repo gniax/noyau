@@ -1424,27 +1424,26 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     };
     const touchStart = (event) => {
       if (!touchTerminal || !event.touches[0]) return;
-      stopPointerEvent(event);
       beginTouchScroll(event.touches[0].clientX, event.touches[0].clientY);
     };
     const touchMove = (event) => {
       if (!touchRef.current || !event.touches[0]) return;
-      stopPointerEvent(event);
       continueTouchScroll(event.touches[0].clientX, event.touches[0].clientY);
+      if (touchRef.current?.scrolling) stopPointerEvent(event);
     };
     const touchEnd = (event) => {
       if (!touchRef.current) return;
-      stopPointerEvent(event);
+      if (touchRef.current.scrolling || !touchRef.current.moved) stopPointerEvent(event);
       finishTouchScroll(event.changedTouches[0]?.clientY);
     };
-    const pointerGestures = "PointerEvent" in window;
+    const pointerGestures = TOUCH_MODE && "PointerEvent" in window;
     if (pointerGestures) {
       terminalNode.current.addEventListener("pointerdown", pointerStart, true);
       terminalNode.current.addEventListener("pointermove", pointerMove, true);
       terminalNode.current.addEventListener("pointerup", pointerEnd, true);
       terminalNode.current.addEventListener("pointercancel", pointerCancel, true);
     } else {
-      terminalNode.current.addEventListener("touchstart", touchStart, { capture: true, passive: false });
+      terminalNode.current.addEventListener("touchstart", touchStart, { capture: true, passive: true });
       terminalNode.current.addEventListener("touchmove", touchMove, { capture: true, passive: false });
       terminalNode.current.addEventListener("touchend", touchEnd, { capture: true, passive: false });
       terminalNode.current.addEventListener("touchcancel", cancelTouchScroll, { capture: true, passive: true });
