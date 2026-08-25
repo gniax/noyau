@@ -879,7 +879,8 @@ sockets.on("connection", (websocket, request) => {
     PageUp: "PageUp",
     PageDown: "PageDown",
   };
-  let keyQueue = Promise.resolve();
+  let mobileCopyMode = false;
+  let keyQueue = tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]).catch(() => {});
   const terminal = pty.spawn(tmux.binary, ["attach-session", "-t", `=${request.sessionId}`], {
     name: "xterm-256color",
     cols: initialCols,
@@ -887,8 +888,6 @@ sockets.on("connection", (websocket, request) => {
     cwd: workspaceRoot,
     env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },
   });
-
-  let mobileCopyMode = false;
   terminal.onData((data) => {
     if (websocket.readyState === websocket.OPEN) websocket.send(JSON.stringify({ type: "output", data }));
   });
@@ -939,6 +938,13 @@ sockets.on("connection", (websocket, request) => {
               mobileCopyMode = true;
             }
             await tmux.run(["send-keys", "-X", "-N", String(count), "-t", request.sessionId, `scroll-${message.direction}`]);
+            if (message.direction === "down") {
+              const position = Number((await tmux.run(["display-message", "-p", "-t", request.sessionId, "#{scroll_position}"])).stdout.trim());
+              if (position === 0) {
+                await tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]);
+                mobileCopyMode = false;
+              }
+            }
           })
           .catch(() => {});
       }
@@ -947,7 +953,11 @@ sockets.on("connection", (websocket, request) => {
       websocket.send(JSON.stringify({ type: "error", message: "Message invalide." }));
     }
   });
-  websocket.on("close", () => terminal.kill());
+  websocket.on("close", () => {
+    if (mobileCopyMode) tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]).catch(() => {});
+    mobileCopyMode = false;
+    terminal.kill();
+  });
 });
 
 server.listen(port, host, () => {

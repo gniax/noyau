@@ -194,6 +194,10 @@ function euro(value) {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(Number(value) || 0);
 }
 
+function exclusionLabel(reason) {
+  return reason === "placement" ? "Placement exclu" : reason === "doublon-carte" ? "Doublon carte exclu" : "Transfert interne exclu";
+}
+
 function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose }) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
@@ -662,6 +666,11 @@ function FinanceView({ onView }) {
 
       {error && <p className="finance-error">{error}</p>}
 
+      <nav className="finance-shortcuts" aria-label="Navigation Budget">
+        <button onClick={() => onView("finance-modules")}><span>◇</span><b>Modules financiers</b><small>{data.modules.length} actifs/configurables · LEP, PEA, loyer, transferts</small><i>›</i></button>
+        <button onClick={() => onView("finance-transactions")}><span>±</span><b>Opérations</b><small>{data.transactions.length} ce mois · détail et saisie</small><i>›</i></button>
+      </nav>
+
       <section className="finance-metrics">
         <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>ENCORE DÉPENSABLE</small><strong>{euro(summary.safeToSpend)}</strong><span>Sans toucher charges, réserve, épargne</span></article>
         <article><small>RYTHME MAX</small><strong>{euro(summary.dailyAllowance)}</strong><span>Par jour · {summary.daysRemaining} jour{summary.daysRemaining > 1 ? "s" : ""}</span></article>
@@ -689,6 +698,11 @@ function FinanceView({ onView }) {
         </div>
       </section>
 
+      <section className="panel finance-assets">
+        <div className="panel-head"><div><h3>Actifs suivis</h3><p>Valeurs manuelles configurables</p></div><button className="ghost" onClick={() => onView("finance-modules")}>Gérer modules</button></div>
+        <div>{summary.assets.entries.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{asset.institution || (asset.bucket === "liquid" ? "Actif liquide" : "Actif investi")}</small></span><b>{euro(asset.amount)}</b></article>)}{!summary.assets.entries.length && <p className="finance-empty">Aucun actif configuré.</p>}</div>
+      </section>
+
       <section className="finance-layout">
         <section className="panel finance-budgets">
           <div className="panel-head"><div><h3>Budgets du mois</h3><p>Réel, prévision, limite</p></div><div className="budget-head-actions"><span>{euro(summary.budgetTotal)}</span><button className="ghost" onClick={useRealisticBudgets}>Préremplir réaliste</button></div></div>
@@ -699,7 +713,8 @@ function FinanceView({ onView }) {
               const plan = summary.categoryPlans[category.id];
               const limit = budget || plan.suggestedBudget;
               const ratio = limit ? Math.round((spent / limit) * 100) : 0;
-              return <div className="budget-row" key={category.id}><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} réel · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "à définir"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{limit ? `${ratio}%` : "—"}</b></div>;
+              const categoryTransactions = data.transactions.filter((transaction) => !transaction.excluded && transaction.amount < 0 && transaction.category === category.id);
+              return <details className="budget-category" key={category.id}><summary className="budget-row"><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} réel · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "à définir"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{categoryTransactions.length} ›</b></summary><div className="category-transactions">{categoryTransactions.map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{transaction.date.split("-").reverse().join("/")} · {transaction.account}</small></span><b>− {euro(Math.abs(transaction.amount))}</b></article>)}{!categoryTransactions.length && <p className="finance-empty">Aucune opération dans cette catégorie.</p>}</div></details>;
             })}
           </div>
         </section>
@@ -713,6 +728,11 @@ function FinanceView({ onView }) {
           </div>
         </section>
       </section>
+
+      <details className="panel finance-excluded">
+        <summary><span><strong>Virements et mouvements exclus</strong><small>{summary.excludedTransactionCount} ce mois · non comptés comme revenu ou dépense</small></span><b>›</b></summary>
+        <div>{data.transactions.filter(({ excluded }) => excluded).map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{transaction.date.split("-").reverse().join("/")} · {transaction.account} · {exclusionLabel(transaction.exclusionReason)}</small></span><b className={transaction.amount >= 0 ? "income" : "expense"}>{transaction.amount >= 0 ? "+" : "−"}{euro(Math.abs(transaction.amount))}</b></article>)}{!summary.excludedTransactionCount && <p className="finance-empty">Aucun mouvement exclu.</p>}</div>
+      </details>
 
       <section className="finance-forms">
         <form className="panel finance-settings" onSubmit={saveSettings}>
@@ -804,7 +824,8 @@ function FinanceModuleEditor({ module, categories, onSaved, onRemoved }) {
     }
   }
   const typeLabel = { asset: "ACTIF", recurring: "CHARGE", envelope: "ENVELOPPE", transfer: "TRANSFERT" }[module.moduleType];
-  return <form className="panel finance-module-card" onSubmit={save}><div className="panel-head"><div><h3>{module.name}</h3><p>{typeLabel} · {module.enabled === false ? "désactivé" : "actif"}</p></div><div className="module-actions"><button type="button" className="danger-link" onClick={remove} disabled={busy} aria-label={`Supprimer ${module.name}`}>×</button><button className="primary" disabled={busy}>{busy ? "…" : "Enregistrer"}</button></div></div>{error && <p className="finance-error">{error}</p>}<FinanceModuleFields draft={draft} onChange={setDraft} categories={categories} lockType /></form>;
+  const detail = module.moduleType === "asset" ? `${euro(module.amount)} · ${module.institution || (module.bucket === "liquid" ? "liquide" : "investi")}` : module.moduleType === "recurring" ? `${euro(module.amount)} / mois · jour ${module.dayOfMonth}` : module.moduleType === "envelope" ? module.accountMatch : "Mouvements exclus du budget";
+  return <details className="panel finance-module-card"><summary><span><strong>{module.name}</strong><small>{typeLabel} · {module.enabled === false ? "désactivé" : detail}</small></span><b>›</b></summary><form onSubmit={save}>{error && <p className="finance-error">{error}</p>}<FinanceModuleFields draft={draft} onChange={setDraft} categories={categories} lockType /><footer className="finance-module-actions"><button type="button" className="danger-link" onClick={remove} disabled={busy} aria-label={`Supprimer ${module.name}`}>×</button><button className="primary" disabled={busy}>{busy ? "…" : "Enregistrer"}</button></footer></form></details>;
 }
 
 function FinanceModulesView({ onView }) {
@@ -840,8 +861,8 @@ function FinanceModulesView({ onView }) {
     <div className="page finance-page finance-modules-page">
       <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · COMPOSANTS</p><h1>Modules financiers.</h1><p className="muted">Données et règles configurables. Aucun compte personnel codé dans moteur.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /></div></section>
       {error && <p className="finance-error">{error}</p>}
-      <form className="panel finance-module-card new-module" onSubmit={add}><div className="panel-head"><div><h3>Nouveau module</h3><p>Actif, charge, enveloppe ou exclusion transfert</p></div><button className="primary" disabled={busy}>{busy ? "Ajout…" : "Ajouter"}</button></div><FinanceModuleFields draft={draft} onChange={setDraft} categories={data?.categories || []} /></form>
       <section className="finance-module-list">{modules.map((module) => <FinanceModuleEditor key={module.id} module={module} categories={data.categories} onSaved={load} onRemoved={load} />)}{data && !modules.length && <section className="panel"><p className="finance-empty">Aucun module.</p></section>}</section>
+      <details className="panel new-module"><summary><span><strong>Ajouter module</strong><small>Actif, charge, enveloppe ou règle transfert</small></span><b>＋</b></summary><form onSubmit={add}><FinanceModuleFields draft={draft} onChange={setDraft} categories={data?.categories || []} /><footer><button className="primary" disabled={busy}>{busy ? "Ajout…" : "Ajouter module"}</button></footer></form></details>
     </div>
   );
 }
@@ -909,7 +930,7 @@ function FinanceTransactionsView({ onView }) {
         <section className="panel finance-transactions">
           <div className="panel-head"><div><h3>Historique</h3><p>{data?.transactions.length || 0} opération{data?.transactions.length > 1 ? "s" : ""}</p></div></div>
           <div className="transaction-list">
-            {(data?.transactions || []).map((item) => <article className={item.excluded ? "excluded" : ""} key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.excluded ? "↔" : item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{item.date.split("-").reverse().join("/")} · {item.account} · {item.excluded ? item.exclusionReason === "placement" ? "Placement ignoré du budget" : item.exclusionReason === "doublon-carte" ? "Doublon carte ignoré" : "Transfert interne ignoré" : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
+            {(data?.transactions || []).map((item) => <article className={item.excluded ? "excluded" : ""} key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.excluded ? "↔" : item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{item.date.split("-").reverse().join("/")} · {item.account} · {item.excluded ? exclusionLabel(item.exclusionReason) : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
             {data && !data.transactions.length && <p className="finance-empty">Aucune opération ce mois.</p>}
           </div>
         </section>
