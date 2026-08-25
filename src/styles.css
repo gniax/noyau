@@ -410,7 +410,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .operations-layout .finance-transactions { margin-top: 0; }
 .finance-agent-layout { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(280px,.75fr); gap: 10px; align-items: start; }
 .has-finance-dock { padding-bottom: 150px; }
-.finance-agent-dock { position: fixed; z-index: 18; right: 24px; bottom: 20px; width: min(430px,calc(100vw - 48px)); overflow: hidden; padding: 8px; border: 1px solid #405534; border-radius: 11px; background: #101512f2; box-shadow: 0 20px 60px #000c; backdrop-filter: blur(12px); }
+.finance-agent-dock { position: fixed; z-index: 18; right: 24px; bottom: 20px; width: min(430px,calc(100vw - 48px)); overflow: hidden; padding: 8px; border: 1px solid #405534; border-radius: 11px; background: #101512fa; box-shadow: 0 20px 60px #000c; transform: translateZ(0); will-change: transform; }
 .finance-agent-dock header { min-height: 27px; display: flex; align-items: center; justify-content: space-between; padding: 0 2px 6px 5px; }
 .finance-agent-dock header span { display: flex; align-items: center; gap: 7px; color: #bdc8c0; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; }
 .finance-agent-dock header i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px #b8ff5e88; }

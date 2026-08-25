@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -604,12 +605,13 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
       setSending(false);
     }
   }
-  return (
+  return createPortal(
     <aside className="finance-agent-dock">
       <header><span><i />Agent finances · Codex</span><button onClick={onExpand} aria-label="Agrandir Agent finances" title="Agrandir">↗</button></header>
       {reply && <p>{reply}</p>}
       <form onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Parler budget, charges, prévisions…" maxLength="1000" enterKeyHint="send" /><button disabled={sending || !message.trim()}>{sending ? "…" : "↑"}</button></form>
-    </aside>
+    </aside>,
+    document.body,
   );
 }
 
