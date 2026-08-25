@@ -229,6 +229,12 @@ function authenticated(request) {
   return tokenMatches(bearer || cookie || "");
 }
 
+function loopbackRequest(request) {
+  const address = String(request.socket.remoteAddress || "").replace(/^::ffff:/, "");
+  const hostname = String(request.hostname || "").replace(/^\[|\]$/g, "");
+  return ["127.0.0.1", "::1"].includes(address) && ["127.0.0.1", "::1", "localhost"].includes(hostname);
+}
+
 const app = express();
 app.disable("x-powered-by");
 app.use((request, response, next) => {
@@ -310,6 +316,16 @@ app.use("/api", (request, response, next) => {
 });
 
 app.get("/api/config", (_request, response) => response.json({ workspaceRoot }));
+
+app.post("/api/system/display/sleep", async (request, response, next) => {
+  if (!loopbackRequest(request)) return response.status(403).json({ error: "Commande écran disponible uniquement depuis ce PC." });
+  try {
+    await execFileAsync("/usr/bin/xset", ["-display", process.env.DISPLAY || ":0", "dpms", "force", "off"], { timeout: 5000 });
+    response.json({ ok: true });
+  } catch (error) {
+    next(new Error(`Mise en veille écran impossible: ${error.message}`));
+  }
+});
 
 app.get("/api/weather", async (request, response, next) => {
   try {

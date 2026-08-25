@@ -268,6 +268,7 @@ function Header({ title, subtitle, onMenu, actionLabel = "Nouvel agent", onActio
 function TouchSystemBar({ sessions, onHome, onNew }) {
   const [now, setNow] = useState(new Date());
   const [online, setOnline] = useState(navigator.onLine);
+  const [sleeping, setSleeping] = useState(false);
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     const updateNetwork = () => setOnline(navigator.onLine);
@@ -283,6 +284,16 @@ function TouchSystemBar({ sessions, onHome, onNew }) {
   const waiting = sessions.filter(({ agentStatus }) => agentStatus?.state === "waiting").length;
   const time = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(now);
   const date = new Intl.DateTimeFormat("fr-FR", { weekday: "short", day: "2-digit", month: "short" }).format(now);
+  async function sleepDisplay() {
+    setSleeping(true);
+    try {
+      await api("/api/system/display/sleep", { method: "POST" });
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      setSleeping(false);
+    }
+  }
   return (
     <header className="touch-system-bar">
       <button className="touch-system-home" onClick={onHome}><Mark /><span><strong>NOYAU</strong><small>DESK OS</small></span></button>
@@ -293,6 +304,7 @@ function TouchSystemBar({ sessions, onHome, onNew }) {
         <span><i className={online ? "available" : "offline"} />{online ? "PC local" : "Hors ligne"}</span>
       </div>
       <button className="touch-system-new" onClick={onNew}>＋ Agent</button>
+      <button className="touch-system-sleep" onClick={sleepDisplay} disabled={sleeping} title="Éteindre écran jusqu’au prochain toucher">◐ Écran</button>
       <time dateTime={now.toISOString()}><strong>{time}</strong><small>{date}</small></time>
     </header>
   );

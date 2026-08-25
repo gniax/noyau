@@ -5,6 +5,11 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 app_root=$(dirname -- "$script_dir")
 profile_root="${XDG_DATA_HOME:-${HOME}/.local/share}/noyau-touch/firefox"
 app_url="${NOYAU_TOUCH_URL:-http://127.0.0.1:4242/?touch=1}"
+runtime_root="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+launch_lock="$runtime_root/noyau-touch-launch.lock"
+
+exec 9>"$launch_lock"
+flock -n 9 || exit 0
 
 mkdir -p "$profile_root"
 install -m 600 "$app_root/desktop/firefox-user.js" "$profile_root/user.js"
@@ -27,7 +32,13 @@ if [ -n "$profile_pids" ]; then
     sleep 0.1
   done
   if profile_running; then
-    notify-send "Noyau Desk" "Instance bloquée; ferme-la depuis moniteur système"
+    for pid in $profile_pids; do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+    sleep 0.3
+  fi
+  if profile_running; then
+    notify-send "Noyau Desk" "Instance Noyau impossible à arrêter"
     exit 1
   fi
 fi
@@ -46,4 +57,8 @@ while [ "$attempt" -lt 40 ]; do
   sleep 0.25
 done
 
-exec /usr/bin/firefox --new-instance --profile "$profile_root" --kiosk "$app_url"
+/usr/bin/firefox --new-instance --profile "$profile_root" --kiosk "$app_url" &
+firefox_launcher=$!
+sleep 2
+flock -u 9
+wait "$firefox_launcher"

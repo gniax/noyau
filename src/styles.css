@@ -374,8 +374,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .finance-refresh.updating span { display: block; animation: finance-refresh-spin .8s linear infinite; }
 @keyframes finance-refresh-spin { to { transform: rotate(360deg); } }
 
-.touch-system-bar { position: fixed; z-index: 45; inset: 0 0 auto; height: 48px; display: grid; grid-template-columns: 190px minmax(0,1fr) auto 112px; align-items: center; gap: 14px; padding: 0 17px; border-bottom: 1px solid #29322c; background: #090d0bef; box-shadow: 0 12px 40px #0008; }
-.touch-system-home, .touch-system-new { border: 0; background: transparent; cursor: pointer; }
+.touch-system-bar { position: fixed; z-index: 45; inset: 0 0 auto; height: 48px; display: grid; grid-template-columns: 190px minmax(0,1fr) auto auto 112px; align-items: center; gap: 10px; padding: 0 17px; border-bottom: 1px solid #29322c; background: #090d0bef; box-shadow: 0 12px 40px #0008; }
+.touch-system-home, .touch-system-new, .touch-system-sleep { border: 0; background: transparent; cursor: pointer; }
 .touch-system-home { height: 100%; display: flex; align-items: center; gap: 9px; padding: 0; color: var(--text); text-align: left; }
 .touch-system-home .mark { width: 24px; height: 24px; }
 .touch-system-home .mark i { inset: 7px; }
@@ -392,6 +392,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .touch-system-stats i.waiting { background: var(--orange); box-shadow: 0 0 7px #f7a65a88; }
 .touch-system-stats i.offline { background: #e37f87; }
 .touch-system-new { min-width: 94px; height: 33px; border: 1px solid #526b3e; border-radius: 7px; background: #182218; color: var(--green); font: 700 9px/1 ui-monospace,monospace; }
+.touch-system-sleep { min-width: 88px; height: 33px; border: 1px solid #3b4650; border-radius: 7px; background: #151b20; color: #9cb3c7; font: 700 9px/1 ui-monospace,monospace; }
+.touch-system-sleep:disabled { opacity: .5; }
 .touch-system-bar time { padding-left: 14px; border-left: 1px solid #27302a; text-align: right; }
 .touch-system-bar time strong { color: #e8eee9; font: 650 15px/1 ui-monospace,monospace; }
 .touch-system-bar time small { margin-top: 4px; color: #6e7972; font: 7px/1 ui-monospace,monospace; text-transform: capitalize; }
@@ -406,7 +408,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .touch-shell .agent-card-open, .touch-shell .project-preview-grid > button { min-height: 112px; }
 
 @media (max-width: 900px) {
-  .touch-system-bar { grid-template-columns: 142px minmax(0,1fr) 95px; }
+  .touch-system-bar { grid-template-columns: 142px minmax(0,1fr) 90px 88px; }
   .touch-system-bar time { display: none; }
   .touch-system-stats > span:nth-child(2), .touch-system-stats > span:nth-child(3) { display: none; }
 }
