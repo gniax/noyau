@@ -250,8 +250,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 }
 
 .agent-state-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #718078; box-shadow: none; }
-.live-dot.working, .agent-state-dot.working, .agent-info em i.agent-state-dot.working, .terminal-toolbar small i.agent-state-dot.working { background: var(--green); box-shadow: 0 0 7px #b8ff5e88; animation: agent-working 1.4s ease-in-out infinite; }
-.live-dot.available, .agent-state-dot.available, .agent-info em i.agent-state-dot.available, .terminal-toolbar small i.agent-state-dot.available { background: var(--blue); box-shadow: 0 0 6px #60a5fa55; }
+.live-dot.working, .agent-state-dot.working, .agent-info em i.agent-state-dot.working, .terminal-toolbar small i.agent-state-dot.working { background: var(--blue); box-shadow: 0 0 7px #60a5fa88; animation: agent-working 1.4s ease-in-out infinite; }
+.live-dot.available, .agent-state-dot.available, .agent-info em i.agent-state-dot.available, .terminal-toolbar small i.agent-state-dot.available { background: var(--green); box-shadow: 0 0 6px #b8ff5e66; }
 .live-dot.waiting, .agent-state-dot.waiting, .agent-info em i.agent-state-dot.waiting, .terminal-toolbar small i.agent-state-dot.waiting { background: var(--orange); box-shadow: 0 0 8px #f7a65a77; }
 .project-agents small .agent-state-dot { margin-right: 2px; }
 @keyframes agent-working { 50% { opacity: .4; transform: scale(.78); } }
