@@ -10,6 +10,33 @@ mkdir -p "$profile_root"
 install -m 600 "$app_root/desktop/firefox-user.js" "$profile_root/user.js"
 systemctl --user start noyau.service
 
+profile_pids=$(pgrep -u "$(id -u)" -f "firefox.*--profile ${profile_root}" || true)
+if [ -n "$profile_pids" ]; then
+  profile_running() {
+    for pid in $profile_pids; do
+      if kill -0 "$pid" 2>/dev/null; then return 0; fi
+    done
+    return 1
+  }
+  for pid in $profile_pids; do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+  attempt=0
+  while [ "$attempt" -lt 30 ] && profile_running; do
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+  if profile_running; then
+    notify-send "Noyau Desk" "Instance bloquée; ferme-la depuis moniteur système"
+    exit 1
+  fi
+fi
+
+case "$profile_root" in
+  */noyau-touch/firefox) rm -f "$profile_root/.parentlock" "$profile_root/lock" "$profile_root/parent.lock" ;;
+  *) notify-send "Noyau Desk" "Profil Firefox invalide; relance annulée"; exit 1 ;;
+esac
+
 attempt=0
 while [ "$attempt" -lt 40 ]; do
   if curl --fail --silent --output /dev/null http://127.0.0.1:4242/version.json; then
