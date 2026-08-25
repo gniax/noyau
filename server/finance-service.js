@@ -299,9 +299,10 @@ export class FinanceService {
     const selectedMonth = validMonth(month);
     await this.recordAgentMessage("user", content);
     const value = normalized(content);
-    const changeAmount = value.match(/(?:passe|passera|sera)\s+a\s+(\d+(?:[.,]\d{1,2})?)/);
-    const paymentAmount = value.match(/(?:paye|paie|verse)\s+(\d+(?:[.,]\d{1,2})?)/);
-    const euroAmount = value.match(/(\d+(?:[.,]\d{1,2})?)\s*(?:euros?|eur)\b/);
+    const amountContent = content.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    const changeAmount = amountContent.match(/(?:passe|passera|sera)\s+a\s+(\d+(?:[.,]\d{1,2})?)/);
+    const paymentAmount = amountContent.match(/(?:paye|paie|verse)\s+(\d+(?:[.,]\d{1,2})?)/);
+    const euroAmount = amountContent.match(/(\d+(?:[.,]\d{1,2})?)\s*(?:euros?|eur)\b/);
     const amount = Number((changeAmount?.[1] || paymentAmount?.[1] || euroAmount?.[1] || "").replace(",", ".")) || null;
     let reply;
     let action = "answer";
@@ -312,7 +313,7 @@ export class FinanceService {
       reply = `${result.current.description}: ${result.current.amount.toFixed(2)} € par mois dès le ${effectiveDate}. Ancienne période conservée dans prévisions.`;
       action = "recurring-changed";
     } else if (/chaque mois|tous les mois|mensuel/.test(value) && amount) {
-      const amountToken = paymentAmount?.[1] || euroAmount?.[1];
+      const amountToken = normalized(paymentAmount?.[1] || euroAmount?.[1]);
       const amountIndex = value.indexOf(amountToken);
       let description = value.slice(amountIndex + amountToken.length).replace(/^\s*(?:euros?|eur)?\s*(?:de|pour le|pour la|pour)?\s*/, "").replace(/\s+a partir du\s+.*$/, "").trim();
       if (!description) description = value.match(/(?:paye|paie|verse)\s+(.+?)\s+\d/)?.[1] || "charge mensuelle";

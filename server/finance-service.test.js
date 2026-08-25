@@ -66,17 +66,17 @@ test("finance agent records recurring charge and future amount change", async ()
   const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
   await service.updateSettings({ safetyBuffer: 150 });
   await service.addTransaction({ kind: "income", amount: 2500, description: "Salaire", date: "2026-07-28" });
-  const added = await service.financeAgent("Chaque mois je paye 950 euros de loyer", "2026-08");
+  const added = await service.financeAgent("Chaque mois je paye 950,25 euros de loyer", "2026-08");
   assert.equal(added.action, "recurring-added");
   assert.equal(added.recurring[0].description, "loyer");
   assert.equal(added.recurring[0].dayOfMonth, 1);
-  assert.equal(added.summary.recurringByCategory.housing, 950);
-  assert.equal(added.summary.categoryPlans.housing.projected, 950);
+  assert.equal(added.summary.recurringByCategory.housing, 950.25);
+  assert.equal(added.summary.categoryPlans.housing.projected, 950.25);
 
   const changed = await service.financeAgent("À partir du 1er janvier le loyer passe à 1200", "2026-08");
   assert.equal(changed.action, "recurring-changed");
   assert.equal(changed.recurring.filter(({ endDate }) => !endDate)[0].amount, 1200);
-  assert.equal(service.summary("2026-12").recurringByCategory.housing, 950);
+  assert.equal(service.summary("2026-12").recurringByCategory.housing, 950.25);
   assert.equal(service.summary("2027-01").recurringByCategory.housing, 1200);
   assert.equal(service.agentHistory().length, 4);
 });
