@@ -5,16 +5,21 @@ export const FINANCE_CATEGORIES = [
   { id: "food", label: "Alimentation" },
   { id: "transport", label: "Transport" },
   { id: "subscriptions", label: "Abonnements" },
+  { id: "insurance", label: "Assurances" },
+  { id: "taxes", label: "Impôts & taxes" },
+  { id: "bank_fees", label: "Frais bancaires" },
   { id: "shopping", label: "Achats" },
   { id: "health", label: "Santé" },
   { id: "leisure", label: "Loisirs" },
+  { id: "personal", label: "Soins personnels" },
+  { id: "external_transfers", label: "Virements externes" },
   { id: "other", label: "Autres" },
 ];
 
 const CATEGORY_IDS = new Set(FINANCE_CATEGORIES.map(({ id }) => id));
 const MODULE_TYPES = new Set(["asset", "recurring", "envelope", "transfer"]);
-const ESSENTIAL_CATEGORY_IDS = new Set(["housing", "food", "transport", "subscriptions", "health"]);
-const PACED_CATEGORY_IDS = new Set(["food", "transport", "shopping", "health", "leisure", "other"]);
+const ESSENTIAL_CATEGORY_IDS = new Set(["housing", "food", "transport", "subscriptions", "insurance", "taxes", "bank_fees", "health"]);
+const PACED_CATEGORY_IDS = new Set(["food", "transport", "shopping", "health", "leisure", "personal", "external_transfers", "other"]);
 const SALARY_PATTERN = /salaire|salary|payroll|remuneration|traitement|fiche de paie|virement employeur/;
 const INVESTMENT_TRANSFER_PATTERN = /\bepargne\b|\blivret\b|assurance vie|compte titres/;
 const DEFAULT_SETTINGS = {
@@ -99,7 +104,29 @@ function transferSignature(description) {
 }
 
 function cardPurchaseSignature(description) {
-  return normalized(description).replace(/\s+cb\s+\d+.*$/, "");
+  return normalized(description)
+    .replace(/^(?:carte|avoir)\s+\d{2}\s+\d{2}\s+\d{2}\s+/, "")
+    .replace(/\s+cb\s+\d+.*$/, "")
+    .replace(/\s+\d+(?:\s+\d+)?\s+(?:eur|us)$/, "")
+    .replace(/\s+fact\s+\d{6}.*$/, "");
+}
+
+function embeddedCardDate(transaction) {
+  const description = String(transaction.description || "");
+  const slash = description.match(/^(?:CARTE|AVOIR)\s+(\d{2})\/(\d{2})\/(\d{2})\b/i);
+  const compact = description.match(/\bFACT\s+(\d{2})(\d{2})(\d{2})\b/i);
+  const match = slash || compact;
+  if (!match) return null;
+  const candidate = `20${match[3]}-${match[2]}-${match[1]}`;
+  const parsed = new Date(`${candidate}T00:00:00Z`);
+  const booked = new Date(`${transaction.date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== candidate) return null;
+  const delayDays = (booked.getTime() - parsed.getTime()) / 86_400_000;
+  return delayDays >= 0 && delayDays <= 45 ? candidate : null;
+}
+
+function effectiveTransactionDate(transaction) {
+  return transaction.source === "enable-banking" ? embeddedCardDate(transaction) || transaction.date : transaction.date;
 }
 
 function classifyTransactions(items, modules = []) {
@@ -119,6 +146,10 @@ function classifyTransactions(items, modules = []) {
   const internalNames = [...directions.entries()].filter(([, values]) => values.size > 1).map(([signature]) => signature);
   for (const transaction of items) {
     if (transaction.source !== "enable-banking") continue;
+    if (/\bcorporate card\b/.test(normalized(transaction.description))) {
+      result.set(transaction.id, "professionnel");
+      continue;
+    }
     const description = normalized(transaction.description);
     const configuredTransfer = configuredTransferMatchers.find(({ match }) => description.includes(match));
     if (INVESTMENT_TRANSFER_PATTERN.test(description) || configuredTransfer) {
@@ -138,15 +169,22 @@ function classifyTransactions(items, modules = []) {
   for (const transaction of items) {
     if (transaction.source !== "enable-banking" || result.has(transaction.id)) continue;
     const bank = normalized(String(transaction.account || "").split(" · ")[0]);
-    const key = `${bank}|${transaction.date}|${transaction.amount}|${cardPurchaseSignature(transaction.description)}`;
+    const key = `${bank}|${transaction.date}|${transaction.amount}`;
     const matches = cardDuplicates.get(key) || [];
     matches.push(transaction);
     cardDuplicates.set(key, matches);
   }
   for (const matches of cardDuplicates.values()) {
-    if (matches.length !== 2 || matches[0].account === matches[1].account || !matches.some(({ account }) => normalized(account).includes("carte"))) continue;
-    const duplicate = matches.find(({ account }) => normalized(account).includes("carte"));
-    result.set(duplicate.id, "doublon-carte");
+    const cardEntries = matches.filter(({ account }) => normalized(account).includes("carte"));
+    const accountEntries = matches.filter(({ account }) => !normalized(account).includes("carte"));
+    for (const duplicate of cardEntries) {
+      const signature = cardPurchaseSignature(duplicate.description);
+      const original = accountEntries.find((transaction) => {
+        const other = cardPurchaseSignature(transaction.description);
+        return signature === other || signature.startsWith(`${other} `) || other.startsWith(`${signature} `);
+      });
+      if (original) result.set(duplicate.id, "doublon-carte");
+    }
   }
   return result;
 }
@@ -171,12 +209,18 @@ function learnedSalaryDescriptions(items, classifications) {
 
 function categoryForDescription(description) {
   const value = normalized(description);
-  if (/loyer|credit immobilier|electricite|edf|engie|gaz|eau|assurance habitation/.test(value)) return "housing";
-  if (/courses|alimentation|restaurant|repas/.test(value)) return "food";
-  if (/transport|train|sncf|metro|essence|parking/.test(value)) return "transport";
-  if (/abonnement|netflix|spotify|canva|adobe|telephone|internet/.test(value)) return "subscriptions";
-  if (/sante|mutuelle|medecin|pharmacie/.test(value)) return "health";
-  if (/loisir|cinema|sport|jeu/.test(value)) return "leisure";
+  if (/loyer|vilogia|credit immobilier|electricite|\bedf\b|engie|\bgaz\b|\beau\b|assurance habitation/.test(value)) return "housing";
+  if (/carrefour|auchan|monoprix|intermarch|\blidl\b|\baldi\b|franprix|leclerc|costco|tang freres|picard|souss market|pottier distribut|tgtg|too good to go|restaurant|rest |repas|boulanger|deliveroo|uber eats|mcdonald|five guys|\bkfc\b|aim thai|hao hao|palmito|pistacho|delice|coffee|brunch|bistro|relay daily|nous anti gaspi|studenac|tommy\d|slasticarnica|ajme ajme|selecta|courses|alimentation|u etab paiement/.test(value)) return "food";
+  if (/transport|\btrain\b|sncf|ratp|metro|navigo|essence|parking|peage|autoroute|cofiroute|atlandes|bidegi|certas esso|plenergy|easyjet|lmnext|lastminute|\buber\b|ubr pending|\bbolt\b|levaparc|dac uep|zracna luka|pbp versailles/.test(value)) return "transport";
+  if (/abonnement|netflix|spotify|canva|adobe|telephone|internet|\borange\b|apple com bill|google storage/.test(value)) return "subscriptions";
+  if (/assurance|assura|\bmaif\b|\bgmf\b|l olivier/.test(value)) return "insurance";
+  if (/direction generale des fina|dgfip|finances publiques|tresor public|\bimpot/.test(value)) return "taxes";
+  if (/offre confort|frais bancaire|comm(?:ission)? intervention|cotisation carte|\bagios\b/.test(value)) return "bank_fees";
+  if (/amazon|aliexpress|ebay|zara|uniqlo|abercrombie|\bcos\b|courir|wconcept|normal le chesn|lovegobuy/.test(value)) return "shopping";
+  if (/sante|mutuelle|medecin|docteur|doctolib|pharm|\bphie\b|dentiste|hopital|cso cc parly|\bdr\s/.test(value)) return "health";
+  if (/keepcool|delfin nautica|loisir|cinema|concert|sport|\bjeu\b|steam|playstation/.test(value)) return "leisure";
+  if (/planity|coiffeur|beaute|barbier|esthetique/.test(value)) return "personal";
+  if (/^(?:vir|virement)(?: sepa| inst| instantane)?\b/.test(value)) return "external_transfers";
   return "other";
 }
 
@@ -184,11 +228,11 @@ function applyCategoryModules(items, modules) {
   const matchers = modules
     .filter(({ moduleType, enabled, transactionMatch }) => moduleType === "recurring" && enabled !== false && transactionMatch)
     .flatMap(({ transactionMatch, category }) => matchTerms(transactionMatch).map((match) => ({ match, category })));
-  if (!matchers.length) return items;
   return items.map((transaction) => {
     if (transaction.amount >= 0) return transaction;
     const category = matchers.find(({ match }) => normalized(transaction.description).includes(match))?.category;
-    return category ? { ...transaction, category } : transaction;
+    const inferred = transaction.source === "enable-banking" && transaction.category === "other" ? categoryForDescription(transaction.description) : transaction.category;
+    return category || inferred !== transaction.category ? { ...transaction, category: category || inferred } : transaction;
   });
 }
 
@@ -278,7 +322,10 @@ export class FinanceService {
   transactions() {
     return Object.entries(this.store.all())
       .filter(([id, value]) => id.startsWith("transaction-") && value?.type === "transaction")
-      .map(([id, value]) => ({ id, ...value }))
+      .map(([id, value]) => {
+        const date = effectiveTransactionDate(value);
+        return { id, ...value, date, ...(date === value.date ? {} : { bookingDate: value.date }) };
+      })
       .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
   }
 
@@ -526,6 +573,7 @@ export class FinanceService {
         description: String(item.description || "Opération bancaire").trim().slice(0, 120) || "Opération bancaire",
         category,
         date,
+        ...(item.bookingDate ? { bookingDate: validDate(item.bookingDate) } : {}),
         account: String(item.account || "Compte bancaire").trim().slice(0, 60) || "Compte bancaire",
         source: String(item.source || "bank").slice(0, 40),
         externalId: String(item.externalId).slice(0, 500),
@@ -572,6 +620,7 @@ export class FinanceService {
     const now = this.now();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     const salaryDescriptions = learnedSalaryDescriptions(allTransactions, classifications);
+    const recordedSalary = round(transactions.filter((transaction) => transaction.amount > 0 && (SALARY_PATTERN.test(normalized(transaction.description)) || salaryDescriptions.has(normalized(transaction.description)))).reduce((total, transaction) => total + transaction.amount, 0));
     const incomeHistory = [-1, -2, -3, -4, -5, -6]
       .map((offset) => {
         const historyMonth = shiftMonth(selectedMonth, offset);
@@ -712,6 +761,7 @@ export class FinanceService {
       month: selectedMonth,
       income: round(income),
       recordedIncome,
+      recordedSalary,
       inferredIncome,
       incomeSource,
       incomeHistoryMonths,
@@ -731,6 +781,7 @@ export class FinanceService {
       flexibleBudgetRemaining,
       flexibleBudgetApplied: flexibleBudgetCount > 0,
       projectedExpenses,
+      remainingPlannedExpenses: round(Math.max(0, projectedExpenses - expenses)),
       projectedSavings,
       forecastSurplusAfterBuffer,
       dataConfidence,

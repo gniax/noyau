@@ -166,3 +166,32 @@ test("recurring module recategorizes matching bank history immediately", async (
   assert.equal(service.summary("2026-08").spentByCategory.housing, 900);
   assert.equal(service.summary("2026-08").spentByCategory.other, 0);
 });
+
+test("bank history uses purchase date and recategorizes existing other entries", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  const rows = [
+    ["expense", 46.78, "CB DAC UEP VL FACT 310726", "transport", "2026-08-03", "travel"],
+    ["expense", 124.59, "CARTE 22/08/26 L'OLIVIER ASSURA CB*4177", "insurance", "2026-08-24", "insurance"],
+    ["expense", 199, "PRLV DIRECTION GENERALE DES FINANCES", "taxes", "2026-08-24", "tax"],
+    ["expense", 31.98, "CB ALDI FRABL119 FACT 210826", "food", "2026-08-23", "food"],
+  ];
+  for (const [kind, amount, description, _category, date, externalId] of rows) {
+    await service.importTransactions([{ kind, amount, description, category: "other", date, account: "Banque", source: "enable-banking", sourceAccount: "account", externalId }]);
+  }
+
+  const july = service.payload("2026-07");
+  assert.equal(july.transactions[0].date, "2026-07-31");
+  assert.equal(july.transactions[0].bookingDate, "2026-08-03");
+  assert.equal(july.transactions[0].category, "transport");
+  const august = service.payload("2026-08");
+  assert.deepEqual(august.transactions.map(({ category }) => category).sort(), ["food", "insurance", "taxes"]);
+  assert.equal(august.summary.spentByCategory.other, 0);
+});
+
+test("corporate card is excluded from personal spending", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  await service.importTransactions([{ kind: "expense", amount: 829.7, description: "PRLV SEPA BNP PARIBAS SA · CORPORATE CARD", category: "other", date: "2026-08-14", account: "Compte", source: "enable-banking", sourceAccount: "account", externalId: "corporate" }]);
+  const payload = service.payload("2026-08");
+  assert.equal(payload.summary.expenses, 0);
+  assert.equal(payload.transactions[0].exclusionReason, "professionnel");
+});

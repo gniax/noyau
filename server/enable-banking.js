@@ -309,7 +309,8 @@ export class EnableBankingService {
           for (const transaction of payload.transactions || []) {
             const amount = Number(transaction.transaction_amount?.amount);
             const currency = transaction.transaction_amount?.currency || account.currency;
-            const date = transaction.booking_date || transaction.transaction_date || transaction.value_date;
+            const date = transaction.transaction_date || transaction.booking_date || transaction.value_date;
+            const bookingDate = transaction.booking_date && transaction.booking_date !== date ? transaction.booking_date : null;
             if (!Number.isFinite(amount) || amount === 0 || currency !== "EUR" || transaction.status !== "BOOK" || !/^\d{4}-\d{2}-\d{2}$/.test(date || "")) {
               skipped += 1;
               continue;
@@ -323,6 +324,7 @@ export class EnableBankingService {
               description,
               category: kind === "income" ? "income" : transactionCategory(transaction, description),
               date,
+              bookingDate,
               account: `${connection.bankName} · ${account.name}`,
               source: "enable-banking",
               sourceAccount: account.identificationHash || account.uid,

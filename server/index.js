@@ -134,6 +134,32 @@ const fileUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024, files: 1 },
 });
 
+function currentMonthParis() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit" }).formatToParts(new Date()).map(({ type, value }) => [type, value]));
+  return `${parts.year}-${parts.month}`;
+}
+
+function financePayload(month = currentMonthParis()) {
+  const payload = financeService.payload(month);
+  const status = enableBanking.status();
+  const currentAccounts = status.connections.flatMap((connection) => connection.accounts
+    .filter((account) => Number.isFinite(account.balance) && account.balanceType !== "OTHR" && !/carte|livret|\blep\b|\bpea\b|epargne|assurance vie|compte titres/i.test(account.name))
+    .map((account) => ({ bank: connection.bankName, name: account.name, balance: account.balance, currency: account.currency, balanceAt: account.balanceAt })));
+  const currentCash = Math.round(currentAccounts.reduce((total, account) => total + account.balance, 0) * 100) / 100;
+  const expectedIncomeRemaining = month === currentMonthParis() ? Math.max(0, Math.round((payload.summary.inferredIncome - payload.summary.recordedSalary) * 100) / 100) : 0;
+  const forecastBalance = Math.round((currentCash + expectedIncomeRemaining - payload.summary.remainingPlannedExpenses) * 100) / 100;
+  const cashSafeToSpend = Math.max(0, Math.round((forecastBalance - payload.summary.safetyBuffer - payload.summary.protectedSavings) * 100) / 100);
+  const safeToSpend = currentAccounts.length && month === currentMonthParis() ? cashSafeToSpend : payload.summary.safeToSpend;
+  const dailyAllowance = payload.summary.daysRemaining ? Math.round((safeToSpend / payload.summary.daysRemaining) * 100) / 100 : 0;
+  const warnings = payload.summary.warnings.filter(({ id }) => id !== "safe-spend");
+  if (payload.summary.income > 0 && safeToSpend === 0) warnings.push({ id: "safe-spend", tone: "danger", title: "Pause dépenses libres", detail: "Solde prévu réservé aux charges, imprévus et épargne soutenable." });
+  return {
+    ...payload,
+    summary: { ...payload.summary, currentCash, currentAccounts, expectedIncomeRemaining, forecastBalance, safeToSpend, dailyAllowance, warnings },
+    banking: { ...payload.banking, status },
+  };
+}
+
 function logoUrl(session) {
   return session.projectLogo ? `/api/sessions/${encodeURIComponent(session.id)}/logo` : null;
 }
@@ -315,8 +341,7 @@ app.get("/api/weather", async (request, response, next) => {
 
 app.get("/api/finance", (request, response, next) => {
   try {
-    const month = request.query.month || new Date().toISOString().slice(0, 7);
-    response.json(financeService.payload(month));
+    response.json(financePayload(request.query.month || currentMonthParis()));
   } catch (error) {
     next(error);
   }
@@ -325,8 +350,7 @@ app.get("/api/finance", (request, response, next) => {
 app.patch("/api/finance/settings", async (request, response, next) => {
   try {
     await financeService.updateSettings(request.body);
-    const month = request.body?.month || new Date().toISOString().slice(0, 7);
-    response.json(financeService.payload(month));
+    response.json(financePayload(request.body?.month || currentMonthParis()));
   } catch (error) {
     next(error);
   }
@@ -410,8 +434,8 @@ app.post("/api/finance/banking/connect", async (request, response, next) => {
 app.post("/api/finance/banking/sync", async (request, response, next) => {
   try {
     const result = await enableBanking.sync(request.body?.bankId || null);
-    const month = request.body?.month || new Date().toISOString().slice(0, 7);
-    response.json({ result, finance: financeService.payload(month), banking: enableBanking.status() });
+    const month = request.body?.month || currentMonthParis();
+    response.json({ result, finance: financePayload(month), banking: enableBanking.status() });
   } catch (error) {
     next(error);
   }
@@ -428,7 +452,7 @@ app.delete("/api/finance/banking/connections/:bankId", async (request, response,
 
 app.post("/api/finance/agent/message", async (request, response, next) => {
   try {
-    const month = request.body?.month || new Date().toISOString().slice(0, 7);
+    const month = request.body?.month || currentMonthParis();
     response.json(await financeService.financeAgent(request.body?.message, month));
   } catch (error) {
     next(error);

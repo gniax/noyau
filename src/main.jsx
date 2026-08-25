@@ -194,8 +194,17 @@ function euro(value) {
   return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(Number(value) || 0);
 }
 
+function localIsoDate(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function operationDate(item) {
+  const actual = item.date.split("-").reverse().join("/");
+  return item.bookingDate ? `${actual} · comptabilisé ${item.bookingDate.split("-").reverse().join("/")}` : actual;
+}
+
 function exclusionLabel(reason) {
-  return reason === "placement" ? "Placement exclu" : reason === "doublon-carte" ? "Doublon carte exclu" : "Transfert interne exclu";
+  return reason === "placement" ? "Placement exclu" : reason === "doublon-carte" ? "Doublon carte exclu" : reason === "professionnel" ? "Dépense professionnelle exclue" : "Transfert interne exclu";
 }
 
 function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose }) {
@@ -589,7 +598,7 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
 }
 
 function FinanceView({ onView }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localIsoDate();
   const [month, setMonth] = useState(today.slice(0, 7));
   const [data, setData] = useState(null);
   const [settings, setSettings] = useState(null);
@@ -672,10 +681,15 @@ function FinanceView({ onView }) {
       </nav>
 
       <section className="finance-metrics">
-        <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>ENCORE DÉPENSABLE</small><strong>{euro(summary.safeToSpend)}</strong><span>Sans toucher charges, réserve, épargne</span></article>
-        <article><small>RYTHME MAX</small><strong>{euro(summary.dailyAllowance)}</strong><span>Par jour · {summary.daysRemaining} jour{summary.daysRemaining > 1 ? "s" : ""}</span></article>
-        <article><small>CHARGES À VENIR</small><strong>{euro(summary.futureEssentialExpenses)}</strong><span>Essentiels estimés restants</span></article>
-        <article className="positive"><small>PATRIMOINE SUIVI</small><strong>{euro(summary.assets.total)}</strong><span>Liquide {euro(summary.assets.liquid)} · investi {euro(summary.assets.invested)}</span></article>
+        <article className={summary.currentCash >= 0 ? "positive cash-metric" : "negative cash-metric"}><small>SOLDE COMPTES COURANTS</small><strong>{euro(summary.currentCash)}</strong><span>{summary.currentAccounts.length} compte{summary.currentAccounts.length > 1 ? "s" : ""} bancaire{summary.currentAccounts.length > 1 ? "s" : ""}</span></article>
+        <article><small>ENCORE PRÉVU</small><strong>{euro(summary.remainingPlannedExpenses)}</strong><span>Dépenses estimées avant fin de mois</span></article>
+        <article className={summary.forecastBalance >= 0 ? "positive" : "negative"}><small>SOLDE FIN DE MOIS</small><strong>{euro(summary.forecastBalance)}</strong><span>Avec {euro(summary.expectedIncomeRemaining)} d’entrées attendues</span></article>
+        <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>ENCORE DÉPENSABLE</small><strong>{euro(summary.safeToSpend)}</strong><span>{euro(summary.dailyAllowance)} / jour sans toucher réserves</span></article>
+      </section>
+
+      <section className="panel current-accounts">
+        <div className="panel-head"><div><h3>Comptes courants</h3><p>Soldes bancaires réels · placements exclus</p></div><b>{euro(summary.currentCash)}</b></div>
+        <div>{summary.currentAccounts.map((account) => <article key={`${account.bank}-${account.name}`}><span><strong>{account.bank}</strong><small>{account.name} · actualisé {account.balanceAt ? new Date(account.balanceAt).toLocaleDateString("fr-FR") : "date inconnue"}</small></span><b className={account.balance >= 0 ? "positive" : "negative"}>{euro(account.balance)}</b></article>)}{!summary.currentAccounts.length && <p className="finance-empty">Aucun solde bancaire disponible.</p>}</div>
       </section>
 
       <section className="panel spending-plan">
@@ -713,8 +727,8 @@ function FinanceView({ onView }) {
               const plan = summary.categoryPlans[category.id];
               const limit = budget || plan.suggestedBudget;
               const ratio = limit ? Math.round((spent / limit) * 100) : 0;
-              const categoryTransactions = data.transactions.filter((transaction) => !transaction.excluded && transaction.amount < 0 && transaction.category === category.id);
-              return <details className="budget-category" key={category.id}><summary className="budget-row"><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} réel · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "à définir"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{categoryTransactions.length} ›</b></summary><div className="category-transactions">{categoryTransactions.map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{transaction.date.split("-").reverse().join("/")} · {transaction.account}</small></span><b>− {euro(Math.abs(transaction.amount))}</b></article>)}{!categoryTransactions.length && <p className="finance-empty">Aucune opération dans cette catégorie.</p>}</div></details>;
+              const categoryTransactions = data.transactions.filter((transaction) => !transaction.excluded && transaction.amount < 0 && transaction.category === category.id).sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || b.date.localeCompare(a.date));
+              return <details className="budget-category" key={category.id}><summary className="budget-row"><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} réel · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "à définir"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{categoryTransactions.length} ›</b></summary><div className="category-transactions">{categoryTransactions.map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account}</small></span><b>− {euro(Math.abs(transaction.amount))}</b></article>)}{!categoryTransactions.length && <p className="finance-empty">Aucune opération dans cette catégorie.</p>}</div></details>;
             })}
           </div>
         </section>
@@ -731,7 +745,7 @@ function FinanceView({ onView }) {
 
       <details className="panel finance-excluded">
         <summary><span><strong>Virements et mouvements exclus</strong><small>{summary.excludedTransactionCount} ce mois · non comptés comme revenu ou dépense</small></span><b>›</b></summary>
-        <div>{data.transactions.filter(({ excluded }) => excluded).map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{transaction.date.split("-").reverse().join("/")} · {transaction.account} · {exclusionLabel(transaction.exclusionReason)}</small></span><b className={transaction.amount >= 0 ? "income" : "expense"}>{transaction.amount >= 0 ? "+" : "−"}{euro(Math.abs(transaction.amount))}</b></article>)}{!summary.excludedTransactionCount && <p className="finance-empty">Aucun mouvement exclu.</p>}</div>
+        <div>{data.transactions.filter(({ excluded }) => excluded).map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account} · {exclusionLabel(transaction.exclusionReason)}</small></span><b className={transaction.amount >= 0 ? "income" : "expense"}>{transaction.amount >= 0 ? "+" : "−"}{euro(Math.abs(transaction.amount))}</b></article>)}{!summary.excludedTransactionCount && <p className="finance-empty">Aucun mouvement exclu.</p>}</div>
       </details>
 
       <section className="finance-forms">
@@ -762,7 +776,7 @@ function financeModuleDraft(module = {}) {
     accountMatch: module.accountMatch || "",
     transactionMatch: module.transactionMatch || "",
     category: module.category || "housing",
-    startDate: module.startDate || new Date().toISOString().slice(0, 10),
+    startDate: module.startDate || localIsoDate(),
     endDate: module.endDate || "",
     dayOfMonth: module.dayOfMonth || 1,
   };
@@ -835,7 +849,7 @@ function FinanceModulesView({ onView }) {
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
-      setData(await api(`/api/finance?month=${new Date().toISOString().slice(0, 7)}`));
+      setData(await api(`/api/finance?month=${localIsoDate().slice(0, 7)}`));
       setError("");
     } catch (reason) {
       setError(reason.message);
@@ -868,11 +882,12 @@ function FinanceModulesView({ onView }) {
 }
 
 function FinanceTransactionsView({ onView }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localIsoDate();
   const [month, setMonth] = useState(today.slice(0, 7));
   const [data, setData] = useState(null);
   const [transaction, setTransaction] = useState({ kind: "expense", amount: "", description: "", category: "food", date: today, account: "" });
   const [adding, setAdding] = useState(false);
+  const [sortOrder, setSortOrder] = useState("date-desc");
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
@@ -910,6 +925,11 @@ function FinanceTransactionsView({ onView }) {
     }
   }
   const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
+  const sortedTransactions = useMemo(() => [...(data?.transactions || [])].sort((a, b) => {
+    if (sortOrder === "amount-desc") return Math.abs(b.amount) - Math.abs(a.amount) || b.date.localeCompare(a.date);
+    if (sortOrder === "amount-asc") return Math.abs(a.amount) - Math.abs(b.amount) || b.date.localeCompare(a.date);
+    return b.date.localeCompare(a.date) || String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+  }), [data?.transactions, sortOrder]);
   return (
     <div className="page finance-page finance-operations-page has-finance-dock">
       <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · HISTORIQUE LOCAL</p><h1>Opérations.</h1><p className="muted">Saisie manuelle et imports bancaires.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></div></section>
@@ -928,9 +948,9 @@ function FinanceTransactionsView({ onView }) {
           </div>
         </form>
         <section className="panel finance-transactions">
-          <div className="panel-head"><div><h3>Historique</h3><p>{data?.transactions.length || 0} opération{data?.transactions.length > 1 ? "s" : ""}</p></div></div>
+          <div className="panel-head"><div><h3>Historique</h3><p>{data?.transactions.length || 0} opération{data?.transactions.length > 1 ? "s" : ""}</p></div><label className="transaction-sort"><span>Trier</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}><option value="date-desc">Date récente</option><option value="amount-desc">Montant décroissant</option><option value="amount-asc">Montant croissant</option></select></label></div>
           <div className="transaction-list">
-            {(data?.transactions || []).map((item) => <article className={item.excluded ? "excluded" : ""} key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.excluded ? "↔" : item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{item.date.split("-").reverse().join("/")} · {item.account} · {item.excluded ? exclusionLabel(item.exclusionReason) : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
+            {sortedTransactions.map((item) => <article className={item.excluded ? "excluded" : ""} key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.excluded ? "↔" : item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{operationDate(item)} · {item.account} · {item.excluded ? exclusionLabel(item.exclusionReason) : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
             {data && !data.transactions.length && <p className="finance-empty">Aucune opération ce mois.</p>}
           </div>
         </section>
@@ -941,7 +961,7 @@ function FinanceTransactionsView({ onView }) {
 }
 
 function FinanceAgentView({ onView }) {
-  const month = new Date().toISOString().slice(0, 7);
+  const month = localIsoDate().slice(0, 7);
   const [messages, setMessages] = useState([]);
   const [recurring, setRecurring] = useState([]);
   const [message, setMessage] = useState("");

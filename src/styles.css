@@ -171,7 +171,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .finance-metrics span { color: #667069; font-size: 8px; }
 .finance-metrics .positive strong { color: var(--green); }
 .finance-metrics .negative strong { color: #e37f87; }
-.finance-metrics .safe-metric { border-color: #3d5931; background: linear-gradient(145deg,#152017,#101411 70%); }
+.finance-metrics .safe-metric, .finance-metrics .cash-metric { border-color: #3d5931; background: linear-gradient(145deg,#152017,#101411 70%); }
 .spending-plan { overflow: hidden; }
 .spending-plan .confidence { padding: 6px 8px; border: 1px solid #38423c; border-radius: 5px; color: #78847c; font: 700 7px/1 ui-monospace,monospace; }
 .spending-plan .confidence.medium { color: var(--orange); border-color: #594a2e; }
@@ -200,6 +200,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .finance-assets > div:last-child { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
 .finance-assets article { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 17px; border-right: 1px solid var(--line); }
 .finance-assets article:last-child { border-right: 0; }.finance-assets article span { min-width: 0; }.finance-assets strong, .finance-assets small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }.finance-assets strong { font-size: 9px; }.finance-assets small { margin-top: 4px; color: #68736c; font-size: 7px; }.finance-assets article > b { flex: none; color: var(--green); font: 600 10px/1 ui-monospace,monospace; }
+.current-accounts { margin-bottom: 10px; overflow: hidden; }
+.current-accounts .panel-head > b { color: var(--green); font: 600 13px/1 ui-monospace,monospace; }
+.current-accounts > div:last-child { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
+.current-accounts article { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 17px; border-right: 1px solid var(--line); }
+.current-accounts article:last-child { border-right: 0; }
+.current-accounts article > span { min-width: 0; }
+.current-accounts strong, .current-accounts small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.current-accounts strong { font-size: 9px; }
+.current-accounts small { margin-top: 4px; color: #68736c; font-size: 7px; }
+.current-accounts article > b { flex: none; font: 600 10px/1 ui-monospace,monospace; }
+.current-accounts article > b.positive { color: var(--green); }
+.current-accounts article > b.negative { color: #e37f87; }
 .finance-layout { display: grid; grid-template-columns: minmax(0,1.65fr) minmax(300px,1fr); gap: 10px; margin-top: 10px; align-items: start; }
 .finance-layout > * { min-width: 0; }
 .budget-head-actions { display: flex; align-items: center; gap: 8px; }
@@ -266,6 +278,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .transaction-list b.expense { color: #d9e0db; }
 .transaction-list button { width: 25px; height: 25px; border: 0; background: transparent; color: #69716c; cursor: pointer; font-size: 17px; }
 .transaction-list article.excluded { opacity: .58; }
+.transaction-sort { display: flex; align-items: center; gap: 7px; }
+.transaction-sort span { color: #68736c; font-size: 7px; text-transform: uppercase; }
+.transaction-sort select { height: 31px; padding: 0 27px 0 9px; border: 1px solid #303833; border-radius: 6px; background: #0c100e; color: #cbd4ce; color-scheme: dark; font-size: 9px; }
 
 @media (max-width: 1050px) {
   .finance-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -283,6 +298,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .month-forecast { border-top: 1px solid var(--line); }
   .finance-form-grid, .budget-inputs { grid-template-columns: repeat(2,minmax(0,1fr)); padding-left: 14px; padding-right: 14px; }
   .bank-list { grid-template-columns: 1fr; }
+  .current-accounts > div:last-child { grid-template-columns: 1fr; }
+  .current-accounts article { border-right: 0; border-bottom: 1px solid var(--line); }
   .transaction-list article { grid-template-columns: 30px minmax(0,1fr) 25px; padding: 10px 12px; }
   .transaction-list article > b { grid-column: 2; grid-row: 2; }
   .transaction-list article > button { grid-column: 3; grid-row: 1 / 3; }
