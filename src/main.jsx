@@ -1183,11 +1183,20 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         x: touch.clientX,
         y: touch.clientY,
         latestY: touch.clientY,
-        scrollTop: xtermViewport?.scrollTop || 0,
-        lastScrollDelta: 0,
+        scrollTimer: null,
         moved: false,
         scrolling: false,
       };
+    };
+    const sendTouchScroll = (gesture) => {
+      const delta = gesture.latestY - gesture.y;
+      if (Math.abs(delta) < 10 || socketRef.current?.readyState !== WebSocket.OPEN) return;
+      socketRef.current.send(JSON.stringify({
+        type: "scroll",
+        direction: delta > 0 ? "up" : "down",
+        count: Math.min(80, Math.max(1, Math.floor(Math.abs(delta) / 8))),
+      }));
+      gesture.y = gesture.latestY;
     };
     const touchMove = (event) => {
       if (!coarsePointer || !touchRef.current || !event.touches[0]) return;
@@ -1202,28 +1211,20 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       if (touchRef.current.scrolling && xtermViewport) {
         event.preventDefault();
         event.stopPropagation();
-        const pendingDelta = deltaY - touchRef.current.lastScrollDelta;
-        if (Math.abs(pendingDelta) >= 24 && socketRef.current?.readyState === WebSocket.OPEN) {
-          socketRef.current.send(JSON.stringify({
-            type: "scroll",
-            direction: pendingDelta > 0 ? "up" : "down",
-            count: Math.min(12, Math.max(1, Math.floor(Math.abs(pendingDelta) / 12))),
-          }));
-          touchRef.current.lastScrollDelta = deltaY;
-        }
+        clearTimeout(touchRef.current.scrollTimer);
+        const gesture = touchRef.current;
+        gesture.scrollTimer = setTimeout(() => {
+          if (touchRef.current === gesture) sendTouchScroll(gesture);
+        }, 80);
       }
     };
     const touchEnd = (event) => {
       if (!coarsePointer) return;
       const gesture = touchRef.current;
       if (gesture?.scrolling) {
-        const finalY = event.changedTouches[0]?.clientY ?? gesture.latestY;
-        const remainingDelta = finalY - gesture.y - gesture.lastScrollDelta;
-        if (Math.abs(remainingDelta) >= 10 && socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({
-          type: "scroll",
-          direction: remainingDelta > 0 ? "up" : "down",
-          count: Math.min(80, Math.max(1, Math.floor(Math.abs(remainingDelta) / 10))),
-        }));
+        clearTimeout(gesture.scrollTimer);
+        gesture.latestY = event.changedTouches[0]?.clientY ?? gesture.latestY;
+        sendTouchScroll(gesture);
       }
       if (gesture && !gesture.moved) {
         event.preventDefault();
@@ -1232,7 +1233,10 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       }
       touchRef.current = null;
     };
-    const touchCancel = () => { touchRef.current = null; };
+    const touchCancel = () => {
+      clearTimeout(touchRef.current?.scrollTimer);
+      touchRef.current = null;
+    };
     terminalNode.current.addEventListener("touchstart", touchStart, { capture: true, passive: true });
     terminalNode.current.addEventListener("touchmove", touchMove, { capture: true, passive: false });
     terminalNode.current.addEventListener("touchend", touchEnd, { capture: true, passive: false });
