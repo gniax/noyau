@@ -253,3 +253,24 @@ test("Codex categories persist and refunds reduce recurring subscription cost", 
   await service.importTransactions([{ kind: saved.kind, amount: Math.abs(saved.amount), description: saved.description, category: "income", date: saved.date, account: saved.account, source: "enable-banking", sourceAccount: "account", externalId: saved.externalId }]);
   assert.equal(service.transactions()[0].category, "subscriptions");
 });
+
+test("Codex categorization saves completed batches before failure", async () => {
+  const store = new MemoryStore();
+  let calls = 0;
+  const service = new FinanceService({
+    store,
+    classifier: async (groups) => {
+      calls += 1;
+      if (calls === 2) throw new Error("Codex finance: délai dépassé.");
+      return groups.map(({ id }) => ({ id, category: "food", recurring: false, reason: "Commerce alimentaire" }));
+    },
+  });
+  for (let index = 0; index < 21; index += 1) {
+    await service.importTransactions([{ kind: "expense", amount: 10, description: `COMMERCE ${index}`, category: "other", date: "2026-08-01", account: "Banque", source: "enable-banking", sourceAccount: "account", externalId: String(index) }]);
+  }
+  await assert.rejects(service.categorizeTransactions({ force: true }), /délai dépassé/);
+  assert.equal(service.transactions().filter(({ categorySource }) => categorySource === "codex").length, 20);
+  calls = 0;
+  await service.categorizeTransactions();
+  assert.equal(service.transactions().filter(({ categorySource }) => categorySource === "codex").length, 21);
+});

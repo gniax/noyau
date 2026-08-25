@@ -99,8 +99,8 @@ export class FinanceAdvisor {
       additionalProperties: false,
     };
     const results = [];
-    for (let index = 0; index < groups.length; index += 60) {
-      const batch = groups.slice(index, index + 60);
+    for (let index = 0; index < groups.length; index += 20) {
+      const batch = groups.slice(index, index + 20);
       const prompt = [
         "Tu classes opérations bancaires françaises. Retour JSON selon schéma, exactement une sortie par id. Aucun outil.",
         `Catégories: ${JSON.stringify(categories)}. income = salaire/vrai revenu/don reçu. Crédit AVOIR/REM/remboursement reprend catégorie achat, jamais income.`,

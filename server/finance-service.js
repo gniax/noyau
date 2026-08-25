@@ -615,33 +615,39 @@ export class FinanceService {
         currentCategories: [...new Set(group.transactions.map(({ category }) => category))],
       };
     });
-    const classifications = await this.classifier(input, FINANCE_CATEGORIES);
-    const entries = [];
-    for (const classification of classifications) {
-      const index = Number(String(classification.id || "").replace(/^g/, ""));
-      const group = candidates[index];
-      if (!group) continue;
-      let category = String(classification.category || "other");
-      if (group.key.startsWith("expense:") && category === "income") category = "other";
-      if (category !== "income" && !CATEGORY_IDS.has(category)) category = "other";
-      for (const transaction of group.transactions) {
-        const stored = this.store.get(transaction.id);
-        if (!stored) continue;
-        entries.push([transaction.id, {
-          ...stored,
-          category,
-          categorySource: "codex",
-          categoryReason: String(classification.reason || "Classé par Codex").trim().slice(0, 180),
-          recurringDetected: Boolean(classification.recurring),
-          categorizedAt: new Date().toISOString(),
-        }]);
+    let categorized = 0;
+    let classifiedGroups = 0;
+    for (let offset = 0; offset < input.length; offset += 20) {
+      const classifications = await this.classifier(input.slice(offset, offset + 20), FINANCE_CATEGORIES);
+      const entries = [];
+      for (const classification of classifications) {
+        const index = Number(String(classification.id || "").replace(/^g/, ""));
+        const group = candidates[index];
+        if (!group) continue;
+        let category = String(classification.category || "other");
+        if (group.key.startsWith("expense:") && category === "income") category = "other";
+        if (category !== "income" && !CATEGORY_IDS.has(category)) category = "other";
+        for (const transaction of group.transactions) {
+          const stored = this.store.get(transaction.id);
+          if (!stored) continue;
+          entries.push([transaction.id, {
+            ...stored,
+            category,
+            categorySource: "codex",
+            categoryReason: String(classification.reason || "Classé par Codex").trim().slice(0, 180),
+            recurringDetected: Boolean(classification.recurring),
+            categorizedAt: new Date().toISOString(),
+          }]);
+        }
       }
+      if (entries.length) {
+        if (this.store.setMany) await this.store.setMany(entries);
+        else for (const [id, value] of entries) await this.store.set(id, value);
+      }
+      categorized += entries.length;
+      classifiedGroups += classifications.length;
     }
-    if (entries.length) {
-      if (this.store.setMany) await this.store.setMany(entries);
-      else for (const [id, value] of entries) await this.store.set(id, value);
-    }
-    return { categorized: entries.length, groups: classifications.length };
+    return { categorized, groups: classifiedGroups };
   }
 
   async importTransactions(items = []) {
