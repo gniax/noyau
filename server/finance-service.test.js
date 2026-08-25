@@ -155,6 +155,23 @@ test("fixed charge breakdown excludes incidental bank fees", async () => {
   assert.deepEqual(summary.monthlyPlan.fixedChargeBreakdown.map(({ category, amount, basis }) => ({ category, amount, basis })), [{ category: "housing", amount: 1000, basis: "history" }]);
 });
 
+test("monthly savings goal does not spend cash cushion twice", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  await service.updateSettings({ savingsGoal: 400, safetyBuffer: 390 });
+  await service.addModule({ moduleType: "envelope", name: "Dépenses courantes", accountMatch: "Revolut" });
+  let entry = 0;
+  for (const month of ["05", "06", "07"]) {
+    await service.addTransaction({ kind: "income", amount: 2598, description: "Salaire", date: `2026-${month}-01` });
+    await service.addTransaction({ kind: "expense", amount: 1730, description: "Loyer", category: "housing", date: `2026-${month}-02` });
+    entry += 1;
+    await service.importTransactions([{ kind: "expense", amount: 493, description: "Dépenses", category: "food", date: `2026-${month}-10`, account: "Revolut", source: "enable-banking", sourceAccount: "revolut", externalId: String(entry) }]);
+  }
+  const plan = service.summary("2026-08").monthlyPlan;
+  assert.equal(plan.flexibleLimit, 440);
+  assert.equal(plan.recommendedSavings, 400);
+  assert.equal(plan.unallocated, 28);
+});
+
 test("known payment processor leaves uncategorized bucket", async () => {
   const service = new FinanceService({ store: new MemoryStore() });
   await service.importTransactions([{ kind: "expense", amount: 42, description: "PRLV PayPal Europe S.a.r.l.", category: "other", date: "2026-08-10", account: "Banque", source: "enable-banking", sourceAccount: "bank", externalId: "paypal" }]);

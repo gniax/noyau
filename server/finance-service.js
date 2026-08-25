@@ -887,7 +887,7 @@ export class FinanceService {
     }).filter(({ amount }) => amount > 0);
     const fixedCosts = round(fixedChargeBreakdown.reduce((total, item) => total + item.amount, 0));
     const flexibleLimit = primaryEnvelope?.recommendedFunding || Math.floor(median(history.map(({ expenses: value }) => value)) * 0.25 / 10) * 10;
-    const savingsRoom = round(Math.max(0, income - fixedCosts - flexibleLimit - safetyBuffer));
+    const savingsRoom = round(Math.max(0, income - fixedCosts - flexibleLimit));
     const recommendedSavings = settings.savingsGoal ? round(Math.min(settings.savingsGoal, savingsRoom)) : Math.floor(Math.min(income * 0.1, savingsRoom) / 10) * 10;
     const monthlyPlan = {
       income: round(income),
@@ -896,7 +896,7 @@ export class FinanceService {
       flexibleAccount: primaryEnvelope?.name || "Dépenses courantes",
       safetyBuffer,
       recommendedSavings,
-      unallocated: round(Math.max(0, income - fixedCosts - flexibleLimit - safetyBuffer - recommendedSavings)),
+      unallocated: round(Math.max(0, income - fixedCosts - flexibleLimit - recommendedSavings)),
       fixedChargeBreakdown,
       categoryLimits: Object.fromEntries(FINANCE_CATEGORIES.map((category) => {
         const plan = categoryPlans[category.id];
@@ -929,7 +929,7 @@ export class FinanceService {
     if (protectedSavings > 0) recommendations.push(`Épargne soutenable ce mois: ${protectedSavings.toFixed(2)} €, après charges et réserve.`);
     if (recommendedSavings > 0) recommendations.push(`Automatise ${recommendedSavings.toFixed(2)} € d’épargne dès réception du salaire; augmente seulement après trois mois sans déficit.`);
     if (primaryEnvelope?.recommendedFunding > 0) recommendations.push(`Vire ${primaryEnvelope.recommendedFunding.toFixed(2)} € vers ${primaryEnvelope.name} une fois par mois et fais-y passer toutes dépenses variables; aucun rechargement.`);
-    if (!settings.safetyBuffer && automaticBuffer > 0) recommendations.push(`Réserve imprévus automatique: ${automaticBuffer.toFixed(2)} €. Ajustable dans plan mensuel.`);
+    if (!settings.safetyBuffer && automaticBuffer > 0) recommendations.push(`Coussin de sécurité conseillé: ${automaticBuffer.toFixed(2)} € à conserver disponible; ce n’est pas une charge mensuelle.`);
     if (emergencyTarget > 0 && assets.liquid < emergencyTarget) recommendations.push(`Fonds sécurité liquide: encore ${round(emergencyTarget - assets.liquid).toFixed(2)} € pour ${settings.emergencyMonths} mois essentiels. Actifs investis exclus de ce calcul.`);
     const largest = FINANCE_CATEGORIES.filter(({ id }) => !ESSENTIAL_CATEGORY_IDS.has(id)).map((category) => ({ ...category, spent: spentByCategory[category.id] })).sort((a, b) => b.spent - a.spent)[0];
     if (largest?.spent > 0) recommendations.push(`Premier levier à vérifier: ${largest.label.toLowerCase()} (${largest.spent.toFixed(2)} €).`);

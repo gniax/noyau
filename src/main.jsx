@@ -604,6 +604,8 @@ function FinanceView({ onView }) {
   const [data, setData] = useState(null);
   const [settings, setSettings] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState(null);
   const [showPlanned, setShowPlanned] = useState(false);
   const [error, setError] = useState("");
 
@@ -629,6 +631,23 @@ function FinanceView({ onView }) {
     const [year, value] = month.split("-").map(Number);
     const next = new Date(Date.UTC(year, value - 1 + offset, 1));
     setMonth(next.toISOString().slice(0, 7));
+  }
+
+  async function updateBudget() {
+    setUpdating(true);
+    setError("");
+    try {
+      const payload = await api("/api/finance/banking/sync", {
+        method: "POST",
+        body: JSON.stringify({ month }),
+      });
+      setData(payload.finance);
+      setUpdatedAt(new Date());
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setUpdating(false);
+    }
   }
 
   async function saveSettings(event) {
@@ -673,7 +692,7 @@ function FinanceView({ onView }) {
     <div className="page finance-page has-finance-dock">
       <section className="hero-row finance-hero">
         <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Budget.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p></div>
-        <div className="finance-hero-actions"><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
+        <div className="finance-hero-actions"><BudgetMenu onView={onView} /><button className="finance-refresh" onClick={updateBudget} disabled={updating}>{updating ? "Synchronisation…" : updatedAt ? "Budget à jour" : "Mettre à jour"}</button><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
       </section>
 
       {error && <p className="finance-error">{error}</p>}
@@ -705,8 +724,8 @@ function FinanceView({ onView }) {
         <div className="panel-head"><div><h3>Plan mensuel conseillé</h3><p>Limites calculées depuis salaire et historique réel</p></div><b>ÉPARGNER {euro(summary.monthlyPlan.recommendedSavings)}</b></div>
         <div className="monthly-target-grid">
           <article><small>VIREMENT {summary.monthlyPlan.flexibleAccount.toUpperCase()}</small><strong>{euro(summary.monthlyPlan.flexibleLimit)}</strong><span>Plafond dépenses courantes</span></article>
-          <article><small>CHARGES FIXES</small><strong>{euro(summary.monthlyPlan.fixedCosts)}</strong><span>Logement, contrats, taxes, banque</span></article>
-          <article><small>RÉSERVE IMPRÉVUS</small><strong>{euro(summary.monthlyPlan.safetyBuffer)}</strong><span>Conservée si mois atypique</span></article>
+          <article><small>CHARGES FIXES</small><strong>{euro(summary.monthlyPlan.fixedCosts)}</strong><span>Logement, contrats, taxes</span></article>
+          <article><small>COUSSIN DE SÉCURITÉ</small><strong>{euro(summary.monthlyPlan.safetyBuffer)}</strong><span>Stock à conserver, pas charge mensuelle</span></article>
           <article className="positive"><small>ÉPARGNE AUTOMATIQUE</small><strong>{euro(summary.monthlyPlan.recommendedSavings)}</strong><span>Objectif soutenable calculé</span></article>
         </div>
         <details><summary>Charges fixes retenues · {euro(summary.monthlyPlan.fixedCosts)} <b>›</b></summary><div className="monthly-limit-list fixed-charge-list">{summary.monthlyPlan.fixedChargeBreakdown.map((item) => {
