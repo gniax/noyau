@@ -677,6 +677,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     terminal.loadAddon(fit);
     terminal.open(terminalNode.current);
     terminalRef.current = terminal;
+    const xtermViewport = terminalNode.current.querySelector(".xterm-viewport");
     if (coarsePointer) {
       const helper = terminalNode.current.querySelector(".xterm-helper-textarea");
       if (helper) {
@@ -721,12 +722,41 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const touchStart = (event) => {
       if (!coarsePointer) return;
       const touch = event.touches[0];
-      if (touch) touchRef.current = { x: touch.clientX, y: touch.clientY, moved: false };
+      if (touch) touchRef.current = {
+        x: touch.clientX,
+        y: touch.clientY,
+        scrollTop: xtermViewport?.scrollTop || 0,
+        lastScrollDelta: 0,
+        moved: false,
+        scrolling: false,
+      };
     };
     const touchMove = (event) => {
       if (!coarsePointer || !touchRef.current || !event.touches[0]) return;
       const touch = event.touches[0];
-      if (Math.hypot(touch.clientX - touchRef.current.x, touch.clientY - touchRef.current.y) > 8) touchRef.current.moved = true;
+      const deltaX = touch.clientX - touchRef.current.x;
+      const deltaY = touch.clientY - touchRef.current.y;
+      if (!touchRef.current.moved && Math.hypot(deltaX, deltaY) > 8) {
+        touchRef.current.moved = true;
+        touchRef.current.scrolling = Math.abs(deltaY) > Math.abs(deltaX);
+      }
+      if (touchRef.current.scrolling && xtermViewport) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (xtermViewport.scrollHeight > xtermViewport.clientHeight + 1) {
+          xtermViewport.scrollTop = touchRef.current.scrollTop - deltaY;
+        } else {
+          const pendingDelta = deltaY - touchRef.current.lastScrollDelta;
+          if (Math.abs(pendingDelta) >= 24 && socketRef.current?.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              type: "scroll",
+              direction: pendingDelta > 0 ? "up" : "down",
+              count: Math.min(12, Math.max(1, Math.floor(Math.abs(pendingDelta) / 12))),
+            }));
+            touchRef.current.lastScrollDelta = deltaY;
+          }
+        }
+      }
     };
     const touchEnd = (event) => {
       if (!coarsePointer) return;
@@ -739,7 +769,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     };
     const touchCancel = () => { touchRef.current = null; };
     terminalNode.current.addEventListener("touchstart", touchStart, { capture: true, passive: true });
-    terminalNode.current.addEventListener("touchmove", touchMove, { capture: true, passive: true });
+    terminalNode.current.addEventListener("touchmove", touchMove, { capture: true, passive: false });
     terminalNode.current.addEventListener("touchend", touchEnd, { capture: true, passive: false });
     terminalNode.current.addEventListener("touchcancel", touchCancel, { capture: true, passive: true });
     const handleMessage = (event) => {

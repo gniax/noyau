@@ -182,7 +182,7 @@ export class FinanceService {
       transactions: this.transactions().filter((transaction) => transaction.date.startsWith(selectedMonth)),
       categories: FINANCE_CATEGORIES,
       banking: {
-        aggregator: { id: "gocardless", name: "GoCardless Bank Account Data", configured: this.aggregatorConfigured },
+        aggregator: { id: "enable-banking", name: "Enable Banking", configured: this.aggregatorConfigured },
         banks: [
           { id: "boursobank", name: "BoursoBank", access: "DSP2 via agrégateur" },
           { id: "banxo", name: "Banxo · Caisse d’Épargne", access: "DSP2 BPCE via agrégateur" },

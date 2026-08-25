@@ -108,7 +108,7 @@ const moduleService = new ModuleService({
 });
 const financeService = new FinanceService({
   store: financeStore,
-  aggregatorConfigured: Boolean(process.env.NOYAU_GOCARDLESS_SECRET_ID && process.env.NOYAU_GOCARDLESS_SECRET_KEY),
+  aggregatorConfigured: Boolean(process.env.NOYAU_ENABLE_BANKING_APP_ID && process.env.NOYAU_ENABLE_BANKING_PRIVATE_KEY),
 });
 const tmux = new TmuxController({
   store,
@@ -765,6 +765,7 @@ sockets.on("connection", (websocket, request) => {
     env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },
   });
 
+  let mobileCopyMode = false;
   terminal.onData((data) => {
     if (websocket.readyState === websocket.OPEN) websocket.send(JSON.stringify({ type: "output", data }));
   });
@@ -775,13 +776,23 @@ sockets.on("connection", (websocket, request) => {
   websocket.on("message", (raw) => {
     try {
       const message = JSON.parse(raw.toString());
+      const leaveMobileCopyMode = async () => {
+        if (!mobileCopyMode) return;
+        mobileCopyMode = false;
+        await tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]);
+      };
       if (message.type === "input" && typeof message.data === "string") {
-        terminal.write(message.data.slice(0, 16384));
-        if (/[\r\n]/.test(message.data)) void setAgentState(request.sessionId, "working");
+        const data = message.data.slice(0, 16384);
+        keyQueue = keyQueue
+          .then(leaveMobileCopyMode)
+          .then(() => terminal.write(data))
+          .then(() => /[\r\n]/.test(data) ? setAgentState(request.sessionId, "working") : null)
+          .catch(() => {});
       }
       if (message.type === "submit" && typeof message.data === "string" && message.data.length) {
         const data = message.data.slice(0, 16384);
         keyQueue = keyQueue
+          .then(leaveMobileCopyMode)
           .then(() => setAgentState(request.sessionId, "working"))
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, "-l", data]))
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, "C-m"]))
@@ -790,9 +801,22 @@ sockets.on("connection", (websocket, request) => {
       }
       if (message.type === "key" && specialKeys[message.key]) {
         keyQueue = keyQueue
+          .then(leaveMobileCopyMode)
           .then(() => message.key === "Enter" ? setAgentState(request.sessionId, "working") : null)
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, specialKeys[message.key]]))
           .then(() => websocket.readyState === websocket.OPEN && websocket.send(JSON.stringify({ type: "key-ack", key: message.key })))
+          .catch(() => {});
+      }
+      if (message.type === "scroll" && ["up", "down"].includes(message.direction)) {
+        const count = Math.max(1, Math.min(12, Math.trunc(Number(message.count)) || 1));
+        keyQueue = keyQueue
+          .then(async () => {
+            if (!mobileCopyMode) {
+              await tmux.run(["copy-mode", "-t", request.sessionId]);
+              mobileCopyMode = true;
+            }
+            await tmux.run(["send-keys", "-X", "-N", String(count), "-t", request.sessionId, `scroll-${message.direction}`]);
+          })
           .catch(() => {});
       }
       if (message.type === "resize") terminal.resize(Math.max(20, Math.min(300, Number(message.cols))), Math.max(5, Math.min(120, Number(message.rows))));
