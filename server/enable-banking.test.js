@@ -61,6 +61,7 @@ test("Enable Banking completes consent and imports booked EUR transactions once"
         return jsonResponse({ url: "https://bank.example/authorize" });
       }
       if (url.endsWith("/sessions")) return jsonResponse({ session_id: "session-1", access: { valid_until: "2026-11-23T08:00:00Z" }, accounts: [{ uid: "account-1", identification_hash: "hash-1", name: "Compte courant", currency: "EUR", account_id: { iban: "FR761234567890" } }] });
+      if (url.endsWith("/accounts/account-1/balances")) return jsonResponse({ balances: [{ balance_type: "CLAV", balance_amount: { amount: "1234.56", currency: "EUR" }, reference_date: "2026-08-25" }] });
       if (url.includes("/accounts/account-1/transactions?")) return jsonResponse({ transactions: [{ entry_reference: "entry-1", status: "BOOK", credit_debit_indicator: "DBIT", booking_date: "2026-08-20", transaction_amount: { amount: "950.00", currency: "EUR" }, creditor: { name: "Loyer résidence" } }] });
       throw new Error(`Unexpected URL ${url}`);
     },
@@ -76,4 +77,5 @@ test("Enable Banking completes consent and imports booked EUR transactions once"
   assert.equal(imported.length, 1);
   assert.equal(imported[0].category, "housing");
   assert.equal(service.status().connections[0].accounts[0].masked, "•••• 7890");
+  assert.equal(service.status().connections[0].accounts[0].balance, 1234.56);
 });

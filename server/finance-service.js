@@ -15,9 +15,11 @@ const CATEGORY_IDS = new Set(FINANCE_CATEGORIES.map(({ id }) => id));
 const ESSENTIAL_CATEGORY_IDS = new Set(["housing", "food", "transport", "subscriptions", "health"]);
 const PACED_CATEGORY_IDS = new Set(["food", "transport", "shopping", "health", "leisure", "other"]);
 const SALARY_PATTERN = /salaire|salary|payroll|remuneration|traitement|fiche de paie|virement employeur/;
+const INVESTMENT_TRANSFER_PATTERN = /\bamundi\b|\bepargne\b|\blivret\b|\blep\b|\bpea\b|assurance vie|compte titres/;
 const DEFAULT_SETTINGS = {
   savingsGoal: 0,
-  currentSavings: 0,
+  liquidSavings: 0,
+  investedAssets: 0,
   safetyBuffer: 0,
   emergencyMonths: 3,
   budgets: Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, 0])),
@@ -62,6 +64,12 @@ function median(values) {
   return round(sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2);
 }
 
+function lowerMedian(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return round(sorted[Math.floor((sorted.length - 1) / 2)]);
+}
+
 function aggregate(items) {
   const spentByCategory = Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, 0]));
   let expenses = 0;
@@ -81,6 +89,77 @@ function aggregate(items) {
 
 function normalized(value) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function transferSignature(description) {
+  return normalized(description).replace(/^(?:vir|virement)(?: sepa| inst| instantane)?\s+/, "");
+}
+
+function cardPurchaseSignature(description) {
+  return normalized(description).replace(/\s+cb\s+\d+.*$/, "");
+}
+
+function classifyTransactions(items) {
+  const directions = new Map();
+  for (const transaction of items) {
+    if (transaction.source !== "enable-banking") continue;
+    const signature = transferSignature(transaction.description);
+    if (!signature) continue;
+    const values = directions.get(signature) || new Set();
+    values.add(transaction.amount < 0 ? "out" : "in");
+    directions.set(signature, values);
+  }
+  const result = new Map();
+  const internalNames = [...directions.entries()].filter(([, values]) => values.size > 1).map(([signature]) => signature);
+  for (const transaction of items) {
+    if (transaction.source !== "enable-banking") continue;
+    const description = normalized(transaction.description);
+    if (INVESTMENT_TRANSFER_PATTERN.test(description)) {
+      result.set(transaction.id, "placement");
+      continue;
+    }
+    const rawDescription = normalized(transaction.description);
+    const signature = transferSignature(transaction.description);
+    const signatureTokens = signature.split(" ").filter((token) => !["m", "mr", "mme", "madame", "monsieur"].includes(token));
+    const ownerAlias = /^(?:vir|virement)\b/.test(rawDescription) && signatureTokens.length >= 2 && internalNames.some((name) => {
+      const nameTokens = new Set(name.split(" "));
+      return signatureTokens.every((token) => nameTokens.has(token));
+    });
+    if (directions.get(signature)?.size > 1 || ownerAlias) result.set(transaction.id, "transfert-interne");
+  }
+  const cardDuplicates = new Map();
+  for (const transaction of items) {
+    if (transaction.source !== "enable-banking" || result.has(transaction.id)) continue;
+    const bank = normalized(String(transaction.account || "").split(" · ")[0]);
+    const key = `${bank}|${transaction.date}|${transaction.amount}|${cardPurchaseSignature(transaction.description)}`;
+    const matches = cardDuplicates.get(key) || [];
+    matches.push(transaction);
+    cardDuplicates.set(key, matches);
+  }
+  for (const matches of cardDuplicates.values()) {
+    if (matches.length !== 2 || matches[0].account === matches[1].account || !matches.some(({ account }) => normalized(account).includes("carte"))) continue;
+    const duplicate = matches.find(({ account }) => normalized(account).includes("carte"));
+    result.set(duplicate.id, "doublon-carte");
+  }
+  return result;
+}
+
+function learnedSalaryDescriptions(items, classifications) {
+  const groups = new Map();
+  for (const transaction of items) {
+    if (transaction.amount < 500 || classifications.has(transaction.id) || transaction.source !== "enable-banking") continue;
+    const description = normalized(transaction.description);
+    if (!description || SALARY_PATTERN.test(description)) continue;
+    const months = groups.get(description) || new Map();
+    const month = transaction.date.slice(0, 7);
+    months.set(month, round((months.get(month) || 0) + transaction.amount));
+    groups.set(description, months);
+  }
+  const recurrent = [...groups.entries()]
+    .filter(([, months]) => months.size >= 2)
+    .map(([description, months]) => ({ description, months: months.size, amount: median([...months.values()]) }))
+    .sort((a, b) => b.months - a.months || b.amount - a.amount);
+  return new Set(recurrent.length ? [recurrent[0].description] : []);
 }
 
 function categoryForDescription(description) {
@@ -129,10 +208,11 @@ export class FinanceService {
 
   settings() {
     const saved = this.store.get("settings") || {};
-    const { monthlyIncome: _ignored, ...stored } = saved;
+    const { monthlyIncome: _ignored, currentSavings, ...stored } = saved;
     return {
       ...DEFAULT_SETTINGS,
       ...stored,
+      liquidSavings: stored.liquidSavings ?? currentSavings ?? 0,
       budgets: { ...DEFAULT_SETTINGS.budgets, ...(saved.budgets || {}) },
     };
   }
@@ -258,7 +338,8 @@ export class FinanceService {
     const current = this.settings();
     const next = {
       savingsGoal: input.savingsGoal === undefined ? current.savingsGoal : money(input.savingsGoal, "Objectif épargne"),
-      currentSavings: input.currentSavings === undefined ? current.currentSavings : money(input.currentSavings, "Épargne actuelle"),
+      liquidSavings: input.liquidSavings === undefined ? current.liquidSavings : money(input.liquidSavings, "Épargne liquide"),
+      investedAssets: input.investedAssets === undefined ? current.investedAssets : money(input.investedAssets, "Placements"),
       safetyBuffer: input.safetyBuffer === undefined ? current.safetyBuffer : money(input.safetyBuffer, "Réserve imprévus"),
       emergencyMonths: input.emergencyMonths === undefined ? current.emergencyMonths : Number(input.emergencyMonths),
       budgets: { ...current.budgets },
@@ -346,13 +427,15 @@ export class FinanceService {
     const selectedMonth = validMonth(month);
     const settings = this.settings();
     const allTransactions = this.transactions();
-    const transactions = allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth));
+    const classifications = classifyTransactions(allTransactions);
+    const budgetTransactions = allTransactions.filter((transaction) => !classifications.has(transaction.id));
+    const transactions = budgetTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth));
     const { expenses, recordedIncome, spentByCategory } = aggregate(transactions);
     const budgetTotal = round(Object.values(settings.budgets).reduce((total, value) => total + value, 0));
     const history = [-1, -2, -3]
       .map((offset) => {
         const historyMonth = shiftMonth(selectedMonth, offset);
-        const historyTransactions = allTransactions.filter((transaction) => transaction.date.startsWith(historyMonth));
+        const historyTransactions = budgetTransactions.filter((transaction) => transaction.date.startsWith(historyMonth));
         return { month: historyMonth, expenseCount: historyTransactions.filter(({ amount }) => amount < 0).length, ...aggregate(historyTransactions) };
       })
       .filter(({ expenseCount }) => expenseCount > 0);
@@ -366,17 +449,21 @@ export class FinanceService {
     }
     const now = this.now();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const salaryDescriptions = learnedSalaryDescriptions(allTransactions, classifications);
     const incomeHistory = [-1, -2, -3, -4, -5, -6]
       .map((offset) => {
         const historyMonth = shiftMonth(selectedMonth, offset);
-        const incoming = allTransactions.filter((transaction) => transaction.date.startsWith(historyMonth) && transaction.amount > 0);
-        const salary = round(incoming.filter((transaction) => SALARY_PATTERN.test(normalized(transaction.description))).reduce((total, transaction) => total + transaction.amount, 0));
+        const incoming = budgetTransactions.filter((transaction) => transaction.date.startsWith(historyMonth) && transaction.amount > 0);
+        const salary = round(incoming.filter((transaction) => {
+          const description = normalized(transaction.description);
+          return SALARY_PATTERN.test(description) || salaryDescriptions.has(description);
+        }).reduce((total, transaction) => total + transaction.amount, 0));
         const total = round(incoming.reduce((sum, transaction) => sum + transaction.amount, 0));
         return { month: historyMonth, salary, total };
       })
       .filter(({ total }) => total > 0);
     const explicitSalaryHistory = incomeHistory.filter(({ salary }) => salary > 0);
-    const inferredIncome = median((explicitSalaryHistory.length ? explicitSalaryHistory : incomeHistory).map(({ salary, total }) => salary || total));
+    const inferredIncome = lowerMedian((explicitSalaryHistory.length ? explicitSalaryHistory : incomeHistory).map(({ salary, total }) => salary || total));
     const income = selectedMonth < currentMonth ? recordedIncome : round(Math.max(recordedIncome, inferredIncome));
     const incomeSource = income <= 0 ? "missing" : selectedMonth < currentMonth || recordedIncome >= inferredIncome ? "recorded" : "history";
     const incomeHistoryMonths = explicitSalaryHistory.length || incomeHistory.length;
@@ -457,13 +544,29 @@ export class FinanceService {
     const dataConfidence = history.length >= 3 ? "high" : history.length >= 2 ? "medium" : "low";
     const essentialBase = round([...ESSENTIAL_CATEGORY_IDS].reduce((total, id) => total + Math.max(settings.budgets[id], categoryPlans[id].historicalAverage, spentByCategory[id]), 0));
     const emergencyTarget = round(essentialBase * settings.emergencyMonths);
+    const assets = {
+      liquid: settings.liquidSavings,
+      invested: settings.investedAssets,
+      total: round(settings.liquidSavings + settings.investedAssets),
+    };
+    const revolutTransactions = allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth) && normalized(transaction.account).includes("revolut"));
+    const revolutFunded = round(revolutTransactions.filter((transaction) => transaction.amount > 0 && classifications.get(transaction.id) === "transfert-interne").reduce((total, transaction) => total + transaction.amount, 0));
+    const revolutSpent = round(Math.max(0, -revolutTransactions.filter((transaction) => !classifications.has(transaction.id)).reduce((total, transaction) => total + transaction.amount, 0)));
+    const spendingEnvelope = revolutFunded || revolutSpent ? {
+      account: "Revolut",
+      funded: revolutFunded,
+      spent: revolutSpent,
+      remaining: round(revolutFunded - revolutSpent),
+      exceeded: round(Math.max(0, revolutSpent - revolutFunded)),
+    } : null;
     const warnings = [];
     if (!income) warnings.push({ id: "income", tone: "info", title: "Salaire historique introuvable", detail: "Importe anciens relevés; salaire sera détecté automatiquement." });
-    if (incomeSource === "history") warnings.push({ id: "income-estimate", tone: "info", title: "Salaire estimé", detail: `Médiane automatique de ${incomeHistoryMonths} mois: ${inferredIncome.toFixed(2)} €.` });
+    if (incomeSource === "history") warnings.push({ id: "income-estimate", tone: "info", title: "Salaire estimé", detail: `Base prudente sur ${incomeHistoryMonths} mois: ${inferredIncome.toFixed(2)} €.` });
     if (history.length < 2) warnings.push({ id: "history", tone: "info", title: "Projection provisoire", detail: "Importe 2 à 3 mois pour fiabiliser reste dépensable et épargne." });
     if (income > 0 && expenses > income) warnings.push({ id: "deficit", tone: "danger", title: "Mois déficitaire", detail: `${round(expenses - income).toFixed(2)} € au-dessus revenus.` });
     if (settings.savingsGoal > protectedSavings) warnings.push({ id: "savings", tone: "warning", title: "Objectif épargne trop haut", detail: `${protectedSavings.toFixed(2)} € soutenables selon dépenses et réserve actuelles.` });
     if (income > 0 && safeToSpend === 0) warnings.push({ id: "safe-spend", tone: "danger", title: "Pause dépenses libres", detail: "Revenus restants réservés aux charges, imprévus et épargne soutenable." });
+    if (spendingEnvelope?.exceeded > 0) warnings.push({ id: "revolut-envelope", tone: "danger", title: "Enveloppe Revolut dépassée", detail: `${spendingEnvelope.exceeded.toFixed(2)} € au-dessus des virements reçus ce mois.` });
     for (const category of FINANCE_CATEGORIES) {
       const budget = settings.budgets[category.id];
       const spent = round(spentByCategory[category.id]);
@@ -475,7 +578,7 @@ export class FinanceService {
     const recommendations = [];
     if (protectedSavings > 0) recommendations.push(`Épargne soutenable ce mois: ${protectedSavings.toFixed(2)} €, après charges et réserve.`);
     if (!settings.safetyBuffer && automaticBuffer > 0) recommendations.push(`Réserve imprévus automatique: ${automaticBuffer.toFixed(2)} €. Ajustable dans plan mensuel.`);
-    if (emergencyTarget > 0 && settings.currentSavings < emergencyTarget) recommendations.push(`Fonds sécurité: encore ${round(emergencyTarget - settings.currentSavings).toFixed(2)} € pour ${settings.emergencyMonths} mois essentiels.`);
+    if (emergencyTarget > 0 && settings.liquidSavings < emergencyTarget) recommendations.push(`Fonds sécurité liquide: encore ${round(emergencyTarget - settings.liquidSavings).toFixed(2)} € pour ${settings.emergencyMonths} mois essentiels. PEA exclu de ce calcul.`);
     const largest = FINANCE_CATEGORIES.filter(({ id }) => !ESSENTIAL_CATEGORY_IDS.has(id)).map((category) => ({ ...category, spent: spentByCategory[category.id] })).sort((a, b) => b.spent - a.spent)[0];
     if (largest?.spent > 0) recommendations.push(`Premier levier à vérifier: ${largest.label.toLowerCase()} (${largest.spent.toFixed(2)} €).`);
     return {
@@ -510,6 +613,9 @@ export class FinanceService {
       spentByCategory,
       recurringByCategory,
       emergencyTarget,
+      assets,
+      spendingEnvelope,
+      excludedTransactionCount: allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth) && classifications.has(transaction.id)).length,
       warnings,
       recommendations,
       transactionCount: transactions.length,
@@ -518,10 +624,14 @@ export class FinanceService {
 
   payload(month) {
     const selectedMonth = validMonth(month);
+    const allTransactions = this.transactions();
+    const classifications = classifyTransactions(allTransactions);
     return {
       settings: this.settings(),
       summary: this.summary(selectedMonth),
-      transactions: this.transactions().filter((transaction) => transaction.date.startsWith(selectedMonth)),
+      transactions: allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth)).map((transaction) => classifications.has(transaction.id)
+        ? { ...transaction, excluded: true, exclusionReason: classifications.get(transaction.id) }
+        : transaction),
       categories: FINANCE_CATEGORIES,
       recurring: this.recurring(),
       agent: { history: this.agentHistory() },

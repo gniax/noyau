@@ -13,7 +13,7 @@ class MemoryStore {
 
 test("finance summary computes savings and budget warnings", async () => {
   const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
-  await service.updateSettings({ savingsGoal: 500, currentSavings: 1000, emergencyMonths: 3, budgets: { food: 400 } });
+  await service.updateSettings({ savingsGoal: 500, liquidSavings: 1000, emergencyMonths: 3, budgets: { food: 400 } });
   await service.addTransaction({ kind: "income", amount: 2500, description: "Salaire", date: "2026-07-28" });
   await service.addTransaction({ kind: "expense", amount: 350, description: "Courses", category: "food", date: "2026-08-10" });
   await service.addTransaction({ kind: "expense", amount: 800, description: "Loyer", category: "housing", date: "2026-08-02" });
@@ -88,4 +88,32 @@ test("bank transaction import is stable and updates duplicate", async () => {
   assert.deepEqual(await service.importTransactions([{ ...transaction, description: "Courses corrigées" }]), { imported: 0, updated: 1 });
   assert.equal(service.transactions().length, 1);
   assert.equal(service.transactions()[0].description, "Courses corrigées");
+});
+
+test("bank analysis excludes transfers, learns salary, and tracks Revolut envelope", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  await service.updateSettings({ liquidSavings: 1800, investedAssets: 6500 });
+  let entry = 0;
+  async function bank({ kind, amount, description, date, account, category = "other" }) {
+    entry += 1;
+    await service.importTransactions([{ kind, amount, description, date, account, category, source: "enable-banking", sourceAccount: account, externalId: `entry-${entry}` }]);
+  }
+  await bank({ kind: "income", amount: 2598.04, description: "VIR SEPA Employeur France", date: "2026-05-27", account: "Banxo" });
+  await bank({ kind: "income", amount: 2344.09, description: "VIR SEPA Employeur France", date: "2026-06-26", account: "Banxo" });
+  await bank({ kind: "income", amount: 4051.2, description: "VIR SEPA Employeur France", date: "2026-07-27", account: "Banxo" });
+  await bank({ kind: "income", amount: 4004.32, description: "VIR SEPA AMUNDI ESR", date: "2026-06-10", account: "Banxo" });
+  await bank({ kind: "expense", amount: 600, description: "VIR SEPA MR TEST", date: "2026-08-07", account: "Banxo" });
+  await bank({ kind: "income", amount: 600, description: "MR TEST", date: "2026-08-07", account: "Revolut" });
+  await bank({ kind: "expense", amount: 616.24, description: "Dépenses courantes", date: "2026-08-20", account: "Revolut", category: "shopping" });
+  await bank({ kind: "expense", amount: 25, description: "CARTE 17/08/26 Doctolib CB*4177", date: "2026-08-17", account: "Boursorama Banque · Compte courant", category: "health" });
+  await bank({ kind: "expense", amount: 25, description: "CARTE 17/08/26 Doctolib", date: "2026-08-17", account: "Boursorama Banque · Carte Visa", category: "health" });
+
+  const summary = service.summary("2026-08");
+  assert.equal(summary.inferredIncome, 2598.04);
+  assert.equal(summary.expenses, 641.24);
+  assert.deepEqual(summary.assets, { liquid: 1800, invested: 6500, total: 8300 });
+  assert.deepEqual(summary.spendingEnvelope, { account: "Revolut", funded: 600, spent: 616.24, remaining: -16.24, exceeded: 16.24 });
+  assert.equal(summary.excludedTransactionCount, 3);
+  assert.equal(summary.warnings.find(({ id }) => id === "revolut-envelope")?.tone, "danger");
+  assert.equal(service.payload("2026-08").transactions.filter(({ excluded }) => excluded).length, 3);
 });

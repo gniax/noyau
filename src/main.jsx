@@ -599,7 +599,8 @@ function FinanceView({ onView }) {
       setSettings({
         ...payload.settings,
         savingsGoal: String(payload.settings.savingsGoal || ""),
-        currentSavings: String(payload.settings.currentSavings || ""),
+        liquidSavings: String(payload.settings.liquidSavings || ""),
+        investedAssets: String(payload.settings.investedAssets || ""),
         safetyBuffer: String(payload.settings.safetyBuffer || ""),
         budgets: Object.fromEntries(Object.entries(payload.settings.budgets).map(([id, value]) => [id, String(value || "")])),
       });
@@ -626,7 +627,8 @@ function FinanceView({ onView }) {
         body: JSON.stringify({
           month,
           savingsGoal: Number(settings.savingsGoal || 0),
-          currentSavings: Number(settings.currentSavings || 0),
+          liquidSavings: Number(settings.liquidSavings || 0),
+          investedAssets: Number(settings.investedAssets || 0),
           safetyBuffer: Number(settings.safetyBuffer || 0),
           emergencyMonths: Number(settings.emergencyMonths),
           budgets: Object.fromEntries(Object.entries(settings.budgets).map(([id, value]) => [id, Number(value || 0)])),
@@ -667,7 +669,7 @@ function FinanceView({ onView }) {
         <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>ENCORE DÉPENSABLE</small><strong>{euro(summary.safeToSpend)}</strong><span>Sans toucher charges, réserve, épargne</span></article>
         <article><small>RYTHME MAX</small><strong>{euro(summary.dailyAllowance)}</strong><span>Par jour · {summary.daysRemaining} jour{summary.daysRemaining > 1 ? "s" : ""}</span></article>
         <article><small>CHARGES À VENIR</small><strong>{euro(summary.futureEssentialExpenses)}</strong><span>Essentiels estimés restants</span></article>
-        <article className="positive"><small>ÉPARGNE PROTÉGÉE</small><strong>{euro(summary.protectedSavings)}</strong><span>{summary.protectedSavings < Number(settings.savingsGoal || 0) ? "Objectif réduit car irréaliste" : "Soutenable selon données"}</span></article>
+        <article className="positive"><small>PATRIMOINE SUIVI</small><strong>{euro(summary.assets.total)}</strong><span>Liquide {euro(summary.assets.liquid)} · investi {euro(summary.assets.invested)}</span></article>
       </section>
 
       <section className="panel spending-plan">
@@ -679,12 +681,13 @@ function FinanceView({ onView }) {
             <span><small>Charges essentielles restantes</small><b>− {euro(summary.futureEssentialExpenses)}</b></span>
             <span><small>Réserve imprévus {summary.safetyBufferAutomatic ? "auto" : "fixe"}</small><b>− {euro(summary.safetyBuffer)}</b></span>
             <span><small>Épargne soutenable protégée</small><b>− {euro(summary.protectedSavings)}</b></span>
+            {summary.spendingEnvelope && <span><small>Enveloppe Revolut restante</small><b className={summary.spendingEnvelope.remaining < 0 ? "negative" : "positive"}>{summary.spendingEnvelope.remaining < 0 ? "− " : "+ "}{euro(Math.abs(summary.spendingEnvelope.remaining))}</b></span>}
             {summary.flexibleBudgetApplied && <span><small>Plafond budgets libres</small><b>{euro(summary.flexibleBudgetRemaining)}</b></span>}
           </div>
           <div className="month-forecast">
             <small>PROJECTION FIN DE MOIS</small><strong>{euro(summary.projectedExpenses)}</strong><span>dépenses probables</span>
             <div><b className={summary.projectedSavings >= 0 ? "positive" : "negative"}>{summary.projectedSavings >= 0 ? "+" : "−"}{euro(Math.abs(summary.projectedSavings))}</b><small>{summary.projectedSavings >= 0 ? "marge avant imprévus" : "déficit projeté"}</small></div>
-            <p>{summary.historyMonths} mois historique · {summary.transactionCount} opérations ce mois</p>
+            <p>{summary.historyMonths} mois historique · {summary.transactionCount} opérations utiles · {summary.excludedTransactionCount} transferts ignorés</p>
           </div>
         </div>
       </section>
@@ -720,7 +723,8 @@ function FinanceView({ onView }) {
           <div className="finance-form-grid">
             <label><span>Objectif épargne / mois</span><input type="number" min="0" step="0.01" value={settings.savingsGoal} onChange={(event) => setSettings({ ...settings, savingsGoal: event.target.value })} placeholder="0 €" /></label>
             <label><span>Réserve imprévus (0 = auto)</span><input type="number" min="0" step="0.01" value={settings.safetyBuffer} onChange={(event) => setSettings({ ...settings, safetyBuffer: event.target.value })} placeholder="Auto" /></label>
-            <label><span>Épargne actuelle</span><input type="number" min="0" step="0.01" value={settings.currentSavings} onChange={(event) => setSettings({ ...settings, currentSavings: event.target.value })} placeholder="0 €" /></label>
+            <label><span>Épargne liquide (LEP…)</span><input type="number" min="0" step="0.01" value={settings.liquidSavings} onChange={(event) => setSettings({ ...settings, liquidSavings: event.target.value })} placeholder="0 €" /></label>
+            <label><span>Placements (PEA…)</span><input type="number" min="0" step="0.01" value={settings.investedAssets} onChange={(event) => setSettings({ ...settings, investedAssets: event.target.value })} placeholder="0 €" /></label>
             <label><span>Fonds sécurité</span><select value={settings.emergencyMonths} onChange={(event) => setSettings({ ...settings, emergencyMonths: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6, 9, 12].map((value) => <option key={value} value={value}>{value} mois</option>)}</select></label>
           </div>
           <div className="budget-inputs">{data.categories.map((category) => <label key={category.id}><span>{category.label}</span><input type="number" min="0" step="0.01" value={settings.budgets[category.id]} onChange={(event) => setSettings({ ...settings, budgets: { ...settings.budgets, [category.id]: event.target.value } })} placeholder="Budget €" /></label>)}</div>
@@ -795,7 +799,7 @@ function FinanceTransactionsView({ onView }) {
         <section className="panel finance-transactions">
           <div className="panel-head"><div><h3>Historique</h3><p>{data?.transactions.length || 0} opération{data?.transactions.length > 1 ? "s" : ""}</p></div></div>
           <div className="transaction-list">
-            {(data?.transactions || []).map((item) => <article key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{item.date.split("-").reverse().join("/")} · {item.account} · {data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
+            {(data?.transactions || []).map((item) => <article className={item.excluded ? "excluded" : ""} key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.excluded ? "↔" : item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{item.date.split("-").reverse().join("/")} · {item.account} · {item.excluded ? item.exclusionReason === "placement" ? "Placement ignoré du budget" : item.exclusionReason === "doublon-carte" ? "Doublon carte ignoré" : "Transfert interne ignoré" : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
             {data && !data.transactions.length && <p className="finance-empty">Aucune opération ce mois.</p>}
           </div>
         </section>

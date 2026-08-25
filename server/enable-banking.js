@@ -47,7 +47,7 @@ function connectionPayload(id, value) {
     sessionId: value.sessionId,
     validUntil: value.validUntil,
     accountCount: value.accounts?.length || 0,
-    accounts: (value.accounts || []).map(({ name, currency, masked }) => ({ name, currency, masked })),
+    accounts: (value.accounts || []).map(({ name, currency, masked, balance, balanceType, balanceAt }) => ({ name, currency, masked, balance, balanceType, balanceAt })),
     connectedAt: value.connectedAt,
     lastSyncAt: value.lastSyncAt || null,
     lastSyncCount: value.lastSyncCount || 0,
@@ -63,7 +63,7 @@ function transactionDescription(transaction, kind) {
 function transactionCategory(transaction, description) {
   const mcc = String(transaction.merchant_category_code || "");
   const normalized = description.toLowerCase();
-  if (/loyer|rent|immobilier|mortgage|edf|engie|electric|gaz|eau\b/.test(normalized) || ["4900", "6513"].includes(mcc)) return "housing";
+  if (/loyer|rent|immobilier|mortgage|vilogia|edf|engie|electric|gaz|eau\b/.test(normalized) || ["4900", "6513"].includes(mcc)) return "housing";
   if (/carrefour|auchan|monoprix|intermarch|lidl|aldi|restaurant|boulanger|uber eats|deliveroo/.test(normalized) || /^(5411|5422|5441|5451|5462|5499|5812|5814)$/.test(mcc)) return "food";
   if (/sncf|ratp|uber|bolt|essence|totalenergies|parking|péage|peage/.test(normalized) || /^(4111|4121|4131|4784|5541|5542|7523)$/.test(mcc)) return "transport";
   if (/netflix|spotify|apple\.com\/bill|google|abonnement|subscription|adobe|canva/.test(normalized)) return "subscriptions";
@@ -267,7 +267,26 @@ export class EnableBankingService {
     let skipped = 0;
     for (const [id, connection] of targets) {
       const connectionTransactions = [];
+      const syncedAccounts = [];
       for (const account of connection.accounts || []) {
+        let syncedAccount = account;
+        try {
+          const payload = await this.request(`/accounts/${encodeURIComponent(account.uid)}/balances`);
+          const priorities = ["ITAV", "CLAV", "FWAV", "ITBD", "CLBD", "INFO", "OTHR"];
+          const balances = (payload.balances || []).filter((balance) => balance.balance_amount?.currency === "EUR" && Number.isFinite(Number(balance.balance_amount?.amount)));
+          const priority = (balance) => {
+            const index = priorities.indexOf(balance.balance_type);
+            return index < 0 ? priorities.length : index;
+          };
+          const selected = [...balances].sort((left, right) => priority(left) - priority(right))[0];
+          if (selected) syncedAccount = {
+            ...account,
+            balance: Math.round(Number(selected.balance_amount.amount) * 100) / 100,
+            balanceType: text(selected.balance_type, 8),
+            balanceAt: selected.last_change_date_time || selected.reference_date || this.now().toISOString(),
+          };
+        } catch { /* solde facultatif selon banque */ }
+        syncedAccounts.push(syncedAccount);
         let continuationKey = null;
         for (let page = 0; page < 20; page += 1) {
           const query = new URLSearchParams({ date_from: dateFrom, strategy: "longest" });
@@ -303,7 +322,7 @@ export class EnableBankingService {
       const result = await this.finance.importTransactions(connectionTransactions);
       imported += result.imported;
       updated += result.updated;
-      await this.store.set(id, { ...connection, lastSyncAt: this.now().toISOString(), lastSyncCount: result.imported + result.updated });
+      await this.store.set(id, { ...connection, accounts: syncedAccounts, lastSyncAt: this.now().toISOString(), lastSyncCount: result.imported + result.updated });
     }
     return { imported, updated, skipped };
   }

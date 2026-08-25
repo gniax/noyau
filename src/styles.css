@@ -177,6 +177,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .money-equation small, .money-equation b { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .money-equation small { color: #68726b; font-size: 7px; }
 .money-equation b { margin-top: 9px; color: #dbe3dd; font: 600 12px/1 ui-monospace,monospace; }
+.money-equation b.positive { color: var(--green); }
+.money-equation b.negative { color: #e37f87; }
 .month-forecast { min-width: 0; padding: 18px; background: #0c100e; }
 .month-forecast > small, .month-forecast > strong, .month-forecast > span { display: block; }
 .month-forecast > small { color: #68726b; font: 700 7px/1 ui-monospace,monospace; letter-spacing: .8px; }
@@ -248,6 +250,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .transaction-list b.income { color: var(--green); }
 .transaction-list b.expense { color: #d9e0db; }
 .transaction-list button { width: 25px; height: 25px; border: 0; background: transparent; color: #69716c; cursor: pointer; font-size: 17px; }
+.transaction-list article.excluded { opacity: .58; }
 
 @media (max-width: 1050px) {
   .finance-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -335,7 +338,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .finance-agent-dock input { min-width: 0; height: 40px; padding: 0 11px; border: 1px solid #35423a; border-radius: 7px; background: #080c0a; color: #e0e7e2; font-size: 16px; }
 .finance-agent-dock form button { border: 1px solid #526b42; border-radius: 7px; background: #22301f; color: var(--green); font-size: 18px; }
 .finance-agent-dock form button:disabled { opacity: .4; }
-.finance-form-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.finance-form-grid { grid-template-columns: repeat(5,minmax(0,1fr)); }
 .finance-chat .panel-head > span { padding: 6px 8px; border: 1px solid #405534; border-radius: 5px; color: var(--green); font: 700 7px/1 ui-monospace,monospace; }
 .finance-chat-messages { height: min(48vh,430px); min-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 15px; border-top: 1px solid var(--line); background: #0a0e0c; }
 .finance-chat-messages article { max-width: 82%; padding: 10px 12px; border: 1px solid #29312c; border-radius: 8px; background: #111613; }
