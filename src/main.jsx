@@ -202,9 +202,7 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span>◫</span>Projets</button>
         <button><span>↗</span>Veille <em>Bientôt</em></button>
-        <button className={!activeId && view === "finances" ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Dépenses</button>
-        <button className={!activeId && view === "finance-transactions" ? "active" : ""} onClick={() => { onOpen(null); onView("finance-transactions"); onClose(); }}><span>±</span>Opérations</button>
-        <button className={!activeId && view === "finance-agent" ? "active" : ""} onClick={() => { onOpen(null); onView("finance-agent"); onClose(); }}><span>◇</span>Agent finances</button>
+        <button className={!activeId && ["finances", "finance-transactions", "finance-agent"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
         <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
       </nav>
       <div className="sidebar-title"><span>AGENTS</span><button onClick={onNew} aria-label="Nouvelle session">+</button></div>
@@ -341,7 +339,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
       </section>
 
       <section className="future-grid">
-        <article className="panel"><span>NOUVEAU</span><h3>Dépenses & budgets</h3><p>Capacité épargne, enveloppes et alertes mensuelles.</p><button onClick={onFinances}>Ouvrir</button></article>
+        <article className="panel"><span>NOUVEAU</span><h3>Budget</h3><p>Capacité épargne, enveloppes et alertes mensuelles.</p><button onClick={onFinances}>Ouvrir</button></article>
       </section>
     </div>
   );
@@ -545,7 +543,19 @@ function BankingPanel({ banks, month, onSynced }) {
   );
 }
 
-function FinanceView({ onTransactions }) {
+function BudgetMenu({ onView }) {
+  return (
+    <details className="finance-more">
+      <summary aria-label="Ouvrir menu Budget" title="Menu Budget">＋</summary>
+      <nav>
+        <button onClick={() => onView("finance-transactions")}><span>±</span><b>Opérations</b><small>Saisie et historique</small></button>
+        <button onClick={() => onView("finance-agent")}><span>◇</span><b>Agent finances</b><small>Charges et prévisions</small></button>
+      </nav>
+    </details>
+  );
+}
+
+function FinanceView({ onView }) {
   const today = new Date().toISOString().slice(0, 10);
   const [month, setMonth] = useState(today.slice(0, 7));
   const [data, setData] = useState(null);
@@ -621,8 +631,8 @@ function FinanceView({ onTransactions }) {
   return (
     <div className="page finance-page">
       <section className="hero-row finance-hero">
-        <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Dépenses.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p></div>
-        <div className="finance-hero-actions"><button className="ghost" onClick={onTransactions}>Opérations</button><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
+        <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Budget.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p></div>
+        <div className="finance-hero-actions"><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
       </section>
 
       {error && <p className="finance-error">{error}</p>}
@@ -696,7 +706,7 @@ function FinanceView({ onTransactions }) {
   );
 }
 
-function FinanceTransactionsView() {
+function FinanceTransactionsView({ onView }) {
   const today = new Date().toISOString().slice(0, 10);
   const [month, setMonth] = useState(today.slice(0, 7));
   const [data, setData] = useState(null);
@@ -741,7 +751,7 @@ function FinanceTransactionsView() {
   const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
   return (
     <div className="page finance-page finance-operations-page">
-      <section className="hero-row finance-hero"><div><p className="eyebrow">HISTORIQUE LOCAL</p><h1>Opérations.</h1><p className="muted">Saisie manuelle et imports bancaires.</p></div><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · HISTORIQUE LOCAL</p><h1>Opérations.</h1><p className="muted">Saisie manuelle et imports bancaires.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></div></section>
       {error && <p className="finance-error">{error}</p>}
       <section className="operations-layout">
         <form className="panel transaction-form" onSubmit={addTransaction}>
@@ -768,7 +778,7 @@ function FinanceTransactionsView() {
   );
 }
 
-function FinanceAgentView() {
+function FinanceAgentView({ onView }) {
   const month = new Date().toISOString().slice(0, 7);
   const [messages, setMessages] = useState([]);
   const [recurring, setRecurring] = useState([]);
@@ -814,7 +824,7 @@ function FinanceAgentView() {
   }
   return (
     <div className="page finance-agent-page">
-      <section className="hero-row"><div><p className="eyebrow">PRÉVISIONS</p><h1>Agent finances.</h1><p className="muted">Transforme phrases en charges datées; calcul reste dépensable automatiquement.</p></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · PRÉVISIONS</p><h1>Agent finances.</h1><p className="muted">Transforme phrases en charges datées; calcul reste dépensable automatiquement.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /></div></section>
       {error && <p className="finance-error">{error}</p>}
       <section className="finance-agent-layout">
         <section className="panel finance-chat">
@@ -1693,9 +1703,9 @@ function App() {
           <>
             {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
             {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} /></>}
-            {view === "finances" && <><Header title="Dépenses" subtitle="Budgets et épargne" onMenu={() => setMenu(true)} /><FinanceView onTransactions={() => setView("finance-transactions")} /></>}
-            {view === "finance-transactions" && <><Header title="Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView /></>}
-            {view === "finance-agent" && <><Header title="Agent finances" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView /></>}
+            {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
+            {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
+            {view === "finance-agent" && <><Header title="Budget · Agent" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}
             {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} /></>}
           </>
         ) : (
