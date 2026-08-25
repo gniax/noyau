@@ -144,6 +144,17 @@ test("spending envelope splits one affordable limit by history", async () => {
   assert.match(summary.recommendations.find((item) => item.includes("Dépenses courantes")), /Vire 450\.00 €/);
 });
 
+test("fixed charge breakdown excludes incidental bank fees", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  for (const month of ["05", "06", "07"]) {
+    await service.addTransaction({ kind: "expense", amount: 1000, description: "Loyer", category: "housing", date: `2026-${month}-01` });
+    await service.addTransaction({ kind: "expense", amount: 8, description: "Commission", category: "bank_fees", date: `2026-${month}-02` });
+  }
+  const summary = service.summary("2026-08");
+  assert.equal(summary.monthlyPlan.fixedCosts, 1000);
+  assert.deepEqual(summary.monthlyPlan.fixedChargeBreakdown.map(({ category, amount, basis }) => ({ category, amount, basis })), [{ category: "housing", amount: 1000, basis: "history" }]);
+});
+
 test("known payment processor leaves uncategorized bucket", async () => {
   const service = new FinanceService({ store: new MemoryStore() });
   await service.importTransactions([{ kind: "expense", amount: 42, description: "PRLV PayPal Europe S.a.r.l.", category: "other", date: "2026-08-10", account: "Banque", source: "enable-banking", sourceAccount: "bank", externalId: "paypal" }]);

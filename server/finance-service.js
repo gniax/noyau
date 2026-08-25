@@ -867,8 +867,25 @@ export class FinanceService {
       .filter(({ monthlyNet }) => monthlyNet > 0)
       .sort((a, b) => b.monthlyNet - a.monthlyNet);
     const primaryEnvelope = spendingEnvelopes[0] || null;
-    const fixedCategoryIds = ["housing", "subscriptions", "insurance", "taxes", "bank_fees"];
-    const fixedCosts = round(fixedCategoryIds.reduce((total, id) => total + Math.max(settings.budgets[id] || 0, categoryPlans[id].historicalAverage, categoryPlans[id].recurringExpected), 0));
+    const fixedCategoryIds = ["housing", "subscriptions", "insurance", "taxes"];
+    const fixedChargeBreakdown = fixedCategoryIds.map((category) => {
+      const plan = categoryPlans[category];
+      const sources = [
+        { basis: "budget", amount: settings.budgets[category] || 0 },
+        { basis: "history", amount: plan.historicalAverage },
+        { basis: "configured", amount: plan.recurringExpected },
+      ].sort((left, right) => right.amount - left.amount);
+      return {
+        category,
+        amount: sources[0].amount,
+        basis: sources[0].basis,
+        current: plan.spent,
+        historicalMedian: plan.historicalAverage,
+        configured: plan.recurringExpected,
+        contracts: detectedRecurring.filter((item) => item.category === category).slice(0, 8),
+      };
+    }).filter(({ amount }) => amount > 0);
+    const fixedCosts = round(fixedChargeBreakdown.reduce((total, item) => total + item.amount, 0));
     const flexibleLimit = primaryEnvelope?.recommendedFunding || Math.floor(median(history.map(({ expenses: value }) => value)) * 0.25 / 10) * 10;
     const savingsRoom = round(Math.max(0, income - fixedCosts - flexibleLimit - safetyBuffer));
     const recommendedSavings = settings.savingsGoal ? round(Math.min(settings.savingsGoal, savingsRoom)) : Math.floor(Math.min(income * 0.1, savingsRoom) / 10) * 10;
@@ -880,6 +897,7 @@ export class FinanceService {
       safetyBuffer,
       recommendedSavings,
       unallocated: round(Math.max(0, income - fixedCosts - flexibleLimit - safetyBuffer - recommendedSavings)),
+      fixedChargeBreakdown,
       categoryLimits: Object.fromEntries(FINANCE_CATEGORIES.map((category) => {
         const plan = categoryPlans[category.id];
         const envelopeTarget = primaryEnvelope?.recommendedCategoryLimits[category.id];

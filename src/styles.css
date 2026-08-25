@@ -234,6 +234,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .monthly-limit-list article > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .monthly-limit-list article small { display: block; margin-top: 4px; color: #68736c; font-size: 7px; }
 .monthly-limit-list article > b { flex: none; color: #d7dfd9; font: 600 8px/1 ui-monospace,monospace; }
+.fixed-charge-list article > span { white-space: normal; }
+.fixed-charge-list article small { line-height: 1.45; }
 .monthly-targets > footer { padding: 11px 17px; color: #748078; font-size: 8px; line-height: 1.45; }
 .planned-breakdown { margin-bottom: 10px; overflow: hidden; }
 .planned-breakdown .panel-head > b { color: var(--orange); font: 600 13px/1 ui-monospace,monospace; }
