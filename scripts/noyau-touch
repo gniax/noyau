@@ -8,6 +8,19 @@ app_url="${NOYAU_TOUCH_URL:-http://127.0.0.1:4242/?touch=1}"
 runtime_root="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 launch_lock="$runtime_root/noyau-touch-launch.lock"
 
+if [ -z "${DISPLAY:-}" ]; then
+  DISPLAY=$(systemctl --user show-environment | sed -n 's/^DISPLAY=//p' | head -n 1)
+  export DISPLAY
+fi
+if [ -z "${XAUTHORITY:-}" ]; then
+  XAUTHORITY=$(systemctl --user show-environment | sed -n 's/^XAUTHORITY=//p' | head -n 1)
+  export XAUTHORITY
+fi
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+  DBUS_SESSION_BUS_ADDRESS=$(systemctl --user show-environment | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' | head -n 1)
+  export DBUS_SESSION_BUS_ADDRESS
+fi
+
 exec 9>"$launch_lock"
 flock -n 9 || exit 0
 
@@ -56,13 +69,25 @@ case "$profile_root" in
 esac
 
 attempt=0
+server_ready=false
 while [ "$attempt" -lt 40 ]; do
   if curl --fail --silent --output /dev/null http://127.0.0.1:4242/version.json; then
+    server_ready=true
     break
   fi
   attempt=$((attempt + 1))
   sleep 0.25
 done
+
+if [ "$server_ready" != true ]; then
+  notify-send "Noyau Desk" "Serveur Noyau indisponible; Firefox non lancé"
+  exit 1
+fi
+
+if [ -z "${DISPLAY:-}" ]; then
+  notify-send "Noyau Desk" "Session graphique indisponible"
+  exit 1
+fi
 
 /usr/bin/firefox --new-instance --profile "$profile_root" --kiosk "$app_url" &
 firefox_launcher=$!

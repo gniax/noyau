@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
+import path from "node:path";
 import { TmuxController, classifyAssistant, createSessionId, validSessionId } from "../server/tmux.js";
 
 test("session identifiers stay tmux-safe", () => {
@@ -16,6 +17,16 @@ test("assistant classification uses metadata first", () => {
   assert.equal(classifyAssistant("zsh", null), "shell");
 });
 
+test("missing tmux socket is an empty session list", async () => {
+  const controller = new TmuxController({ store: {}, workspaceRoot: os.tmpdir() });
+  controller.run = async () => {
+    const error = new Error("Command failed");
+    error.stderr = "error connecting to /tmp/tmux-1000/default (No such file or directory)";
+    throw error;
+  };
+  assert.deepEqual(await controller.list(), []);
+});
+
 test("unrestricted mode uses agent-specific CLI flag", async () => {
   const saved = [];
   const controller = new TmuxController({ store: { set: async (_id, value) => saved.push(value) }, workspaceRoot: os.tmpdir() });
@@ -28,6 +39,11 @@ test("unrestricted mode uses agent-specific CLI flag", async () => {
 
   await controller.create({ assistant: "claude", cwd: os.tmpdir(), yolo: true });
   assert.deepEqual(command.slice(command.indexOf("claude")), ["claude", "--dangerously-skip-permissions"]);
+});
+
+test("new agent rejects missing working directory", async () => {
+  const controller = new TmuxController({ store: {}, workspaceRoot: os.tmpdir() });
+  await assert.rejects(() => controller.create({ assistant: "codex", cwd: path.join(os.tmpdir(), "noyau-missing-directory") }), /Dossier de travail introuvable/);
 });
 
 test("agent restart targets first pane and preserves exact context", async () => {

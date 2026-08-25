@@ -41,7 +41,7 @@ export class TmuxController {
     try {
       ({ stdout } = await this.run(["list-sessions", "-F", FORMATS]));
     } catch (error) {
-      if (/no server running|failed to connect/i.test(error.stderr || error.message)) return [];
+      if (/no server running|failed to connect|error connecting/i.test(error.stderr || error.message)) return [];
       throw error;
     }
 
@@ -134,7 +134,13 @@ export class TmuxController {
   async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, favorite = false }) {
     if (!["codex", "claude", "shell"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
-    const stat = await fs.stat(resolvedCwd);
+    let stat;
+    try {
+      stat = await fs.stat(resolvedCwd);
+    } catch (error) {
+      if (error.code === "ENOENT") throw new Error("Dossier de travail introuvable.");
+      throw error;
+    }
     if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
 
     const id = createSessionId(assistant);

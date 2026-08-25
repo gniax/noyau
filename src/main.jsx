@@ -1684,12 +1684,13 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   );
 }
 
-function NewSessionModal({ projects, onClose, onCreated }) {
+function NewSessionModal({ projects, sessions, onClose, onCreated }) {
   const [assistant, setAssistant] = useState("codex");
   const [name, setName] = useState("");
   const [yolo, setYolo] = useState(false);
   const [projectLogo, setProjectLogo] = useState(true);
   const [projectId, setProjectId] = useState("");
+  const [cwd, setCwd] = useState("");
   const [favorite, setFavorite] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1699,7 +1700,7 @@ function NewSessionModal({ projects, onClose, onCreated }) {
     setLoading(true);
     setError("");
     try {
-      const result = await api("/api/sessions", { method: "POST", body: JSON.stringify({ assistant, name, yolo, projectLogo, projectId: projectId || null, favorite }) });
+      const result = await api("/api/sessions", { method: "POST", body: JSON.stringify({ assistant, name, cwd: cwd.trim() || undefined, yolo, projectLogo, projectId: projectId || null, favorite }) });
       onCreated(result.session);
     } catch (reason) {
       setError(reason.message);
@@ -1721,7 +1722,10 @@ function NewSessionModal({ projects, onClose, onCreated }) {
           <input id="name" value={name} onChange={(event) => setName(event.target.value)} placeholder={`Ex. ${assistant === "shell" ? "Serveur local" : "Refonte dashboard"}`} />
           <label htmlFor="project">Projet</label>
           <select id="project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
-          <p className="form-hint">Dossier de travail automatique. Projet sert au classement, sans dossier racine requis.</p>
+          <label htmlFor="cwd">Dossier de travail</label>
+          <input id="cwd" list="agent-directories" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="/home/user/projects/mon-projet" autoComplete="off" spellCheck="false" />
+          <datalist id="agent-directories">{[...new Set(sessions.map((session) => session.cwd).filter(Boolean))].map((directory) => <option value={directory} key={directory} />)}</datalist>
+          <p className="form-hint">Chemin existant sur ce PC. Vide = dossier projets par défaut. Projet sert seulement au classement.</p>
           {assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{assistant === "codex" ? "Codex --yolo" : "Claude --dangerously-skip-permissions"}</small></span></label>}
           <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Cherche logo/icon dans dossier projet</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
@@ -2103,7 +2107,7 @@ function App() {
           <TerminalView session={active} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { setActiveId(id); refresh(); }} onRefresh={refresh} />
         )}
       </main>
-      {modal && <NewSessionModal projects={projects} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); setActiveId(session.id); refresh(); }} />}
+      {modal && <NewSessionModal projects={projects} sessions={orderedSessions} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); setActiveId(session.id); refresh(); }} />}
       {editingSession && <EditSessionModal session={editingSession} projects={projects} onClose={() => setEditingId(null)} onSaved={() => { setEditingId(null); refresh(); }} />}
       {projectModalId && <ProjectModal project={editingProject} onClose={() => setProjectModalId(null)} onSaved={() => { setProjectModalId(null); refresh(); }} />}
     </div>
