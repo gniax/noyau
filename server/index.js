@@ -930,7 +930,7 @@ sockets.on("connection", (websocket, request) => {
           .catch(() => {});
       }
       if (message.type === "scroll" && ["up", "down"].includes(message.direction)) {
-        const count = Math.max(1, Math.min(12, Math.trunc(Number(message.count)) || 1));
+        const count = Math.max(1, Math.min(80, Math.trunc(Number(message.count)) || 1));
         keyQueue = keyQueue
           .then(async () => {
             if (!mobileCopyMode) {

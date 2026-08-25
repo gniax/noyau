@@ -1182,6 +1182,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       if (touch) touchRef.current = {
         x: touch.clientX,
         y: touch.clientY,
+        latestY: touch.clientY,
         scrollTop: xtermViewport?.scrollTop || 0,
         lastScrollDelta: 0,
         moved: false,
@@ -1191,6 +1192,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const touchMove = (event) => {
       if (!coarsePointer || !touchRef.current || !event.touches[0]) return;
       const touch = event.touches[0];
+      touchRef.current.latestY = touch.clientY;
       const deltaX = touch.clientX - touchRef.current.x;
       const deltaY = touch.clientY - touchRef.current.y;
       if (!touchRef.current.moved && Math.hypot(deltaX, deltaY) > 8) {
@@ -1217,7 +1219,17 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     };
     const touchEnd = (event) => {
       if (!coarsePointer) return;
-      if (touchRef.current && !touchRef.current.moved) {
+      const gesture = touchRef.current;
+      if (gesture?.scrolling && xtermViewport?.scrollHeight <= xtermViewport?.clientHeight + 1) {
+        const finalY = event.changedTouches[0]?.clientY ?? gesture.latestY;
+        const remainingDelta = finalY - gesture.y - gesture.lastScrollDelta;
+        if (Math.abs(remainingDelta) >= 10 && socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({
+          type: "scroll",
+          direction: remainingDelta > 0 ? "up" : "down",
+          count: Math.min(80, Math.max(1, Math.floor(Math.abs(remainingDelta) / 10))),
+        }));
+      }
+      if (gesture && !gesture.moved) {
         event.preventDefault();
         event.stopPropagation();
         focusKeyboard();
