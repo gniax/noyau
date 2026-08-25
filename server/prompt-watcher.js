@@ -38,6 +38,10 @@ export class PromptWatcher {
     this.tick().catch((error) => console.error(`Surveillance validations: ${error.message}`));
   }
 
+  isWaiting(id) {
+    return this.waiting.has(id);
+  }
+
   async tick() {
     if (this.running) return;
     this.running = true;

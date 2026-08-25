@@ -121,6 +121,8 @@ export class TmuxController {
       projectLogo: Boolean(projectLogo),
       projectId: projectId || null,
       favorite: Boolean(favorite),
+      agentState: prompt ? "working" : "available",
+      agentStateUpdatedAt: new Date().toISOString(),
     };
     await this.store.set(id, entry);
     return { id, ...entry, managed: true };

@@ -190,6 +190,10 @@ function sortAgents(sessions) {
   return [...sessions].sort((a, b) => Number(Boolean(b.favorite)) - Number(Boolean(a.favorite)) || (a.project?.name || "zzz").localeCompare(b.project?.name || "zzz", "fr") || a.name.localeCompare(b.name, "fr"));
 }
 
+function euro(value) {
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(Number(value) || 0);
+}
+
 function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose }) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
@@ -198,7 +202,7 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span>◫</span>Projets</button>
         <button><span>↗</span>Veille <em>Bientôt</em></button>
-        <button><span>€</span>Dépenses <em>Bientôt</em></button>
+        <button className={!activeId && view === "finances" ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Dépenses</button>
         <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
       </nav>
       <div className="sidebar-title"><span>AGENTS</span><button onClick={onNew} aria-label="Nouvelle session">+</button></div>
@@ -206,8 +210,8 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         {sessions.map((session) => (
           <button className={activeId === session.id ? "active" : ""} onClick={() => { onOpen(session.id); onClose(); }} key={session.id}>
             <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small />
-            <span><strong>{session.favorite && <b className="favorite-star">★</b>}{session.name}</strong><small>{session.project?.name || assistantMeta[session.assistant]?.label || "Terminal"} · <RelativeTime date={session.activityAt} /></small></span>
-            <i className="live-dot" />
+            <span><strong>{session.favorite && <b className="favorite-star">★</b>}{session.name}</strong><small>{session.project?.name || assistantMeta[session.assistant]?.label || "Terminal"} · {session.agentStatus?.label || "Disponible"}</small></span>
+            <i className={`live-dot ${session.agentStatus?.state || "available"}`} title={session.agentStatus?.label || "Disponible"} />
           </button>
         ))}
         {!sessions.length && <p className="empty-small">Aucune session active.</p>}
@@ -232,7 +236,7 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite }) {
     <article className="agent-card">
       <button className="agent-card-open" onClick={() => onOpen(session.id)}>
         <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} />
-        <span className="agent-info"><strong>{session.name}</strong><small>{session.project?.name || "Sans projet"} · {session.cwd || session.id}</small><em><i /> Actif · {session.usage?.contextPercent ?? "—"}% contexte · <RelativeTime date={session.activityAt} /></em></span>
+        <span className="agent-info"><strong>{session.name}</strong><small>{session.project?.name || "Sans projet"} · {session.cwd || session.id}</small><em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {session.usage?.contextPercent ?? "—"}% contexte · <RelativeTime date={session.activityAt} /></em></span>
         <span className="open-arrow">›</span>
       </button>
       {session.managed && <div className="agent-card-actions"><button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button><button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`}>Éditer</button></div>}
@@ -240,7 +244,7 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite }) {
   );
 }
 
-function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavorite, onProjects }) {
+function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavorite, onProjects, onFinances }) {
   const [weather, setWeather] = useState(() => {
     try {
       const cached = JSON.parse(localStorage.getItem("noyau-weather"));
@@ -335,7 +339,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
       </section>
 
       <section className="future-grid">
-        <article className="panel"><span>PLUS TARD</span><h3>Dépenses & veille</h3><p>Budgets, abonnements et alertes sites réunis ici.</p><button disabled>Planifié</button></article>
+        <article className="panel"><span>NOUVEAU</span><h3>Dépenses & budgets</h3><p>Capacité épargne, enveloppes et alertes mensuelles.</p><button onClick={onFinances}>Ouvrir</button></article>
       </section>
     </div>
   );
@@ -402,7 +406,7 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
               <header><ProjectIcon project={project} /><span><strong>{project.name}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span><div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div></header>
               <p>{agents.length} agent{agents.length > 1 ? "s" : ""} actif{agents.length > 1 ? "s" : ""}</p>
               <div className="project-agents">
-                {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small>{assistantMeta[session.assistant]?.label}</small></span><b>›</b></button>)}
+                {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {session.agentStatus?.label || "Disponible"}</small></span><b>›</b></button>)}
                 {!agents.length && <span className="project-empty">Aucun agent rattaché.</span>}
               </div>
               {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
@@ -411,6 +415,174 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
         })}
         {!projects.length && <button className="panel empty-project-card" onClick={onNew}><span>＋</span><strong>Créer premier projet</strong><small>Nom uniquement</small></button>}
       </div>
+    </div>
+  );
+}
+
+function FinanceView() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [month, setMonth] = useState(today.slice(0, 7));
+  const [data, setData] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const [transaction, setTransaction] = useState({ kind: "expense", amount: "", description: "", category: "food", date: today, account: "" });
+  const [saving, setSaving] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setError("");
+      const payload = await api(`/api/finance?month=${encodeURIComponent(month)}`);
+      setData(payload);
+      setSettings({
+        ...payload.settings,
+        monthlyIncome: String(payload.settings.monthlyIncome || ""),
+        savingsGoal: String(payload.settings.savingsGoal || ""),
+        currentSavings: String(payload.settings.currentSavings || ""),
+        budgets: Object.fromEntries(Object.entries(payload.settings.budgets).map(([id, value]) => [id, String(value || "")])),
+      });
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }, [month]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function shiftMonth(offset) {
+    const [year, value] = month.split("-").map(Number);
+    const next = new Date(Date.UTC(year, value - 1 + offset, 1));
+    setMonth(next.toISOString().slice(0, 7));
+  }
+
+  async function saveSettings(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const payload = await api("/api/finance/settings", {
+        method: "PATCH",
+        body: JSON.stringify({
+          month,
+          monthlyIncome: Number(settings.monthlyIncome || 0),
+          savingsGoal: Number(settings.savingsGoal || 0),
+          currentSavings: Number(settings.currentSavings || 0),
+          emergencyMonths: Number(settings.emergencyMonths),
+          budgets: Object.fromEntries(Object.entries(settings.budgets).map(([id, value]) => [id, Number(value || 0)])),
+        }),
+      });
+      setData(payload);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addTransaction(event) {
+    event.preventDefault();
+    setAdding(true);
+    setError("");
+    try {
+      await api("/api/finance/transactions", { method: "POST", body: JSON.stringify({ ...transaction, amount: Number(transaction.amount) }) });
+      setTransaction((current) => ({ ...current, amount: "", description: "" }));
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function removeTransaction(id) {
+    if (!window.confirm("Supprimer cette opération ?")) return;
+    try {
+      await api(`/api/finance/transactions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }
+
+  const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
+  if (!data || !settings) return <div className="page finance-page"><section className="hero-row"><div><p className="eyebrow">ARGENT</p><h1>Finances.</h1><p className="muted">{error || "Chargement données locales…"}</p></div></section></div>;
+  const { summary } = data;
+  return (
+    <div className="page finance-page">
+      <section className="hero-row finance-hero">
+        <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Dépenses.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p></div>
+        <div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div>
+      </section>
+
+      {error && <p className="finance-error">{error}</p>}
+
+      <section className="finance-metrics">
+        <article><small>REVENUS</small><strong>{euro(summary.income)}</strong><span>{summary.recordedIncome ? "Importés / saisis" : "Prévision mensuelle"}</span></article>
+        <article><small>DÉPENSES</small><strong>{euro(summary.expenses)}</strong><span>{summary.transactionCount} opération{summary.transactionCount > 1 ? "s" : ""}</span></article>
+        <article className={summary.savingsCapacity < 0 ? "negative" : "positive"}><small>CAPACITÉ ÉPARGNE</small><strong>{euro(summary.savingsCapacity)}</strong><span>{summary.savingsRate}% revenus</span></article>
+        <article className={summary.afterGoal < 0 ? "negative" : "positive"}><small>APRÈS OBJECTIF</small><strong>{euro(summary.afterGoal)}</strong><span>Objectif {euro(Number(settings.savingsGoal || 0))}</span></article>
+      </section>
+
+      <section className="finance-layout">
+        <section className="panel finance-budgets">
+          <div className="panel-head"><div><h3>Budgets du mois</h3><p>Progression par catégorie</p></div><span>{euro(summary.budgetTotal)}</span></div>
+          <div className="budget-list">
+            {data.categories.map((category) => {
+              const spent = summary.spentByCategory[category.id] || 0;
+              const budget = Number(settings.budgets[category.id] || 0);
+              const ratio = budget ? Math.round((spent / budget) * 100) : 0;
+              return <div className="budget-row" key={category.id}><span><strong>{category.label}</strong><small>{euro(spent)} / {budget ? euro(budget) : "non défini"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{budget ? `${ratio}%` : "—"}</b></div>;
+            })}
+          </div>
+        </section>
+
+        <section className="panel finance-insights">
+          <div className="panel-head"><div><h3>Alertes & leviers</h3><p>Repères automatiques, pas conseil financier</p></div></div>
+          <div className="insight-list">
+            {summary.warnings.map((warning) => <article className={warning.tone} key={warning.id}><i /><span><strong>{warning.title}</strong><small>{warning.detail}</small></span></article>)}
+            {summary.recommendations.map((recommendation, index) => <article className="tip" key={recommendation}><i>{index + 1}</i><span><strong>Optimisation</strong><small>{recommendation}</small></span></article>)}
+            {!summary.warnings.length && !summary.recommendations.length && <p className="finance-empty">Ajoute revenus, budgets et dépenses pour générer analyse.</p>}
+          </div>
+        </section>
+      </section>
+
+      <section className="finance-layout finance-forms">
+        <form className="panel finance-settings" onSubmit={saveSettings}>
+          <div className="panel-head"><div><h3>Plan mensuel</h3><p>Base calcul épargne</p></div><button className="primary" disabled={saving}>{saving ? "…" : "Enregistrer"}</button></div>
+          <div className="finance-form-grid">
+            <label><span>Revenu net mensuel</span><input type="number" min="0" step="0.01" value={settings.monthlyIncome} onChange={(event) => setSettings({ ...settings, monthlyIncome: event.target.value })} placeholder="0 €" /></label>
+            <label><span>Objectif épargne / mois</span><input type="number" min="0" step="0.01" value={settings.savingsGoal} onChange={(event) => setSettings({ ...settings, savingsGoal: event.target.value })} placeholder="0 €" /></label>
+            <label><span>Épargne actuelle</span><input type="number" min="0" step="0.01" value={settings.currentSavings} onChange={(event) => setSettings({ ...settings, currentSavings: event.target.value })} placeholder="0 €" /></label>
+            <label><span>Fonds sécurité</span><select value={settings.emergencyMonths} onChange={(event) => setSettings({ ...settings, emergencyMonths: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6, 9, 12].map((value) => <option key={value} value={value}>{value} mois</option>)}</select></label>
+          </div>
+          <div className="budget-inputs">{data.categories.map((category) => <label key={category.id}><span>{category.label}</span><input type="number" min="0" step="0.01" value={settings.budgets[category.id]} onChange={(event) => setSettings({ ...settings, budgets: { ...settings.budgets, [category.id]: event.target.value } })} placeholder="Budget €" /></label>)}</div>
+        </form>
+
+        <form className="panel transaction-form" onSubmit={addTransaction}>
+          <div className="panel-head"><div><h3>Ajouter opération</h3><p>Manuel avant synchronisation bancaire</p></div></div>
+          <div className="transaction-fields">
+            <label><span>Type</span><select value={transaction.kind} onChange={(event) => setTransaction({ ...transaction, kind: event.target.value })}><option value="expense">Dépense</option><option value="income">Revenu</option></select></label>
+            <label><span>Montant</span><input type="number" min="0.01" step="0.01" value={transaction.amount} onChange={(event) => setTransaction({ ...transaction, amount: event.target.value })} required placeholder="0,00 €" /></label>
+            <label className="wide"><span>Description</span><input value={transaction.description} onChange={(event) => setTransaction({ ...transaction, description: event.target.value })} required maxLength="120" placeholder="Courses, loyer, salaire…" /></label>
+            {transaction.kind === "expense" && <label><span>Catégorie</span><select value={transaction.category} onChange={(event) => setTransaction({ ...transaction, category: event.target.value })}>{data.categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>}
+            <label><span>Date</span><input type="date" value={transaction.date} onChange={(event) => setTransaction({ ...transaction, date: event.target.value })} required /></label>
+            <label className="wide"><span>Compte</span><input value={transaction.account} onChange={(event) => setTransaction({ ...transaction, account: event.target.value })} maxLength="60" placeholder="Optionnel" /></label>
+            <button className="primary wide" disabled={adding}>{adding ? "Ajout…" : "Ajouter"}</button>
+          </div>
+        </form>
+      </section>
+
+      <section className="panel bank-connectors">
+        <div className="panel-head"><div><h3>Connexions bancaires</h3><p>{data.banking.aggregator.name} · {data.banking.aggregator.configured ? "clés détectées" : "clés API requises"}</p></div><span className={data.banking.aggregator.configured ? "ready" : "pending"}>{data.banking.aggregator.configured ? "PRÊT" : "À CONFIGURER"}</span></div>
+        <div className="bank-list">{data.banking.banks.map((bank) => <article key={bank.id}><i>{bank.name[0]}</i><span><strong>{bank.name}</strong><small>{bank.access}</small></span><button disabled>Connexion étape 2</button></article>)}</div>
+      </section>
+
+      <section className="panel finance-transactions">
+        <div className="panel-head"><div><h3>Opérations</h3><p>{monthName}</p></div></div>
+        <div className="transaction-list">
+          {data.transactions.map((item) => <article key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small>{item.date.split("-").reverse().join("/")} · {item.account} · {data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
+          {!data.transactions.length && <p className="finance-empty">Aucune opération ce mois.</p>}
+        </div>
+      </section>
     </div>
   );
 }
@@ -750,7 +922,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       <div className="terminal-toolbar">
         <button className="icon-button" onClick={onBack} aria-label="Retour">‹</button>
         <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small />
-        <div><strong>{session.name}</strong><small><i className={connected ? "online" : ""} /> {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small></div>
+        <div><strong>{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small></div>
         <div className="terminal-actions">
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
           {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} disabled={migrating}>{migrating ? "Récap…" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
@@ -931,7 +1103,7 @@ function App() {
   const [moduleProposals, setModuleProposals] = useState([]);
   const [quotas, setQuotas] = useState({ codex: null, claude: null });
   const [activeId, setActiveId] = useState(() => new URLSearchParams(location.search).get("session"));
-  const [view, setView] = useState(() => ["projects", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
+  const [view, setView] = useState(() => ["projects", "finances", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
   const [modal, setModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [projectModalId, setProjectModalId] = useState(null);
@@ -1200,8 +1372,9 @@ function App() {
       <main className="content">
         {!active ? (
           <>
-            {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} /></>}
+            {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
             {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} /></>}
+            {view === "finances" && <><Header title="Dépenses" subtitle="Budgets et épargne" onMenu={() => setMenu(true)} /><FinanceView /></>}
             {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} /></>}
           </>
         ) : (

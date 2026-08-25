@@ -20,6 +20,8 @@ import { ProjectLogoService } from "./project-logo.js";
 import { PromptWatcher } from "./prompt-watcher.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { ModuleService } from "./module-service.js";
+import { FinanceService } from "./finance-service.js";
+import { agentStatus } from "./agent-status.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -81,6 +83,8 @@ const projects = new SessionStore(path.join(dataDir, "projects.json"));
 await projects.load();
 const moduleStore = new SessionStore(path.join(dataDir, "modules.json"));
 await moduleStore.load();
+const financeStore = new SessionStore(path.join(dataDir, "finance.json"));
+await financeStore.load();
 const providerState = new SessionStore(path.join(dataDir, "provider-state.json"));
 await providerState.load();
 const claudeQuota = new ClaudeQuotaService({ store: providerState });
@@ -102,6 +106,10 @@ const moduleService = new ModuleService({
     });
   },
 });
+const financeService = new FinanceService({
+  store: financeStore,
+  aggregatorConfigured: Boolean(process.env.NOYAU_GOCARDLESS_SECRET_ID && process.env.NOYAU_GOCARDLESS_SECRET_KEY),
+});
 const tmux = new TmuxController({
   store,
   workspaceRoot,
@@ -116,6 +124,12 @@ const fileUpload = multer({
 
 function logoUrl(session) {
   return session.projectLogo ? `/api/sessions/${encodeURIComponent(session.id)}/logo` : null;
+}
+
+async function setAgentState(sessionId, agentState) {
+  const current = store.get(sessionId);
+  if (!current || !["working", "available", "waiting"].includes(agentState)) return;
+  await store.set(sessionId, { ...current, agentState, agentStateUpdatedAt: new Date().toISOString() });
 }
 
 function projectPayload(id, project) {
@@ -268,6 +282,43 @@ app.get("/api/weather", async (request, response, next) => {
     weatherCache.set(key, { cachedAt: Date.now(), payload });
     if (weatherCache.size > 100) weatherCache.delete(weatherCache.keys().next().value);
     response.json(payload);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/finance", (request, response, next) => {
+  try {
+    const month = request.query.month || new Date().toISOString().slice(0, 7);
+    response.json(financeService.payload(month));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/finance/settings", async (request, response, next) => {
+  try {
+    await financeService.updateSettings(request.body);
+    const month = request.body?.month || new Date().toISOString().slice(0, 7);
+    response.json(financeService.payload(month));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/finance/transactions", async (request, response, next) => {
+  try {
+    const transaction = await financeService.addTransaction(request.body);
+    response.status(201).json({ transaction });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/finance/transactions/:id", async (request, response, next) => {
+  try {
+    await financeService.removeTransaction(request.params.id);
+    response.status(204).end();
   } catch (error) {
     next(error);
   }
@@ -453,6 +504,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
   try {
     const { source, sessionId, event = {} } = request.body || {};
     const completion = (source === "codex" && event.type === "agent-turn-complete") || (source === "claude" && event.hook_event_name === "Stop");
+    const attention = source === "claude" && event.hook_event_name === "Notification";
     const existing = sessionId && validSessionId(sessionId) ? store.get(sessionId) : null;
     let metadata = existing;
     if (existing) {
@@ -461,6 +513,8 @@ app.post("/api/hooks/notify", async (request, response, next) => {
         threadId: source === "codex" ? event["thread-id"] || existing.threadId : existing.threadId,
         transcriptPath: source === "claude" ? event.transcript_path || existing.transcriptPath : existing.transcriptPath,
         agentSessionId: source === "claude" ? event.session_id || existing.agentSessionId : existing.agentSessionId,
+        agentState: completion ? "available" : attention ? "waiting" : existing.agentState,
+        agentStateUpdatedAt: completion || attention ? new Date().toISOString() : existing.agentStateUpdatedAt,
       };
       await store.set(sessionId, metadata);
     }
@@ -479,7 +533,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
         tag: `${source}-${event["thread-id"] || event.session_id || "complete"}`,
       };
     }
-    if (source === "claude" && event.hook_event_name === "Notification") {
+    if (attention) {
       payload = {
         title: event.title || "Claude attend",
         body: event.message || "Action demandée.",
@@ -544,7 +598,7 @@ app.get("/api/sessions", async (_request, response, next) => {
         }
       }
       const project = session.projectId ? projects.get(session.projectId) : null;
-      return { ...session, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session), usage: await usage.get({ ...session, ...metadata }, await tmux.capture(session.id)) };
+      return { ...session, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id)), usage: await usage.get({ ...session, ...metadata }, await tmux.capture(session.id)) };
     }));
     const codexUsage = enriched.find((session) => session.assistant === "codex" && Number.isFinite(session.usage?.rateRemainingPercent))?.usage;
     response.json({
@@ -626,7 +680,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
     if (!["codex", "claude"].includes(target) || target === session.assistant) throw new Error("Agent cible invalide.");
     if (migrations.has(session.id)) throw new Error("Migration déjà en cours.");
     migrations.set(session.id, { target, startedAt: new Date().toISOString() });
-    await store.set(session.id, { ...store.get(session.id), migrationState: "summarizing", migrationTarget: target, migratedTo: null });
+    await store.set(session.id, { ...store.get(session.id), migrationState: "summarizing", migrationTarget: target, migratedTo: null, agentState: "working", agentStateUpdatedAt: new Date().toISOString() });
     await tmux.submit(session.id, `Prépare passation vers ${target === "codex" ? "Codex" : "Claude"}. Réponds uniquement avec récapitulatif autonome et compact: objectif, décisions, fichiers modifiés, état actuel, tests, commandes utiles, blocages, prochaines étapes. N'effectue aucune autre action.`);
     response.status(202).json({ ok: true, state: "summarizing", target });
   } catch (error) {
@@ -723,10 +777,12 @@ sockets.on("connection", (websocket, request) => {
       const message = JSON.parse(raw.toString());
       if (message.type === "input" && typeof message.data === "string") {
         terminal.write(message.data.slice(0, 16384));
+        if (/[\r\n]/.test(message.data)) void setAgentState(request.sessionId, "working");
       }
       if (message.type === "submit" && typeof message.data === "string" && message.data.length) {
         const data = message.data.slice(0, 16384);
         keyQueue = keyQueue
+          .then(() => setAgentState(request.sessionId, "working"))
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, "-l", data]))
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, "C-m"]))
           .then(() => websocket.readyState === websocket.OPEN && websocket.send(JSON.stringify({ type: "key-ack", key: "Enter" })))
@@ -734,6 +790,7 @@ sockets.on("connection", (websocket, request) => {
       }
       if (message.type === "key" && specialKeys[message.key]) {
         keyQueue = keyQueue
+          .then(() => message.key === "Enter" ? setAgentState(request.sessionId, "working") : null)
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, specialKeys[message.key]]))
           .then(() => websocket.readyState === websocket.OPEN && websocket.send(JSON.stringify({ type: "key-ack", key: message.key })))
           .catch(() => {});
