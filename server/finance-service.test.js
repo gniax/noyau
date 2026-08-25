@@ -141,6 +141,7 @@ test("spending envelope splits one affordable limit by history", async () => {
   assert.equal(summary.monthlyPlan.flexibleLimit, 450);
   assert.equal(summary.monthlyPlan.categoryLimits.food, 360);
   assert.equal(summary.monthlyPlan.categoryLimits.shopping, 90);
+  assert.match(summary.recommendations.find((item) => item.includes("Dépenses courantes")), /Vire 450\.00 €/);
 });
 
 test("known payment processor leaves uncategorized bucket", async () => {

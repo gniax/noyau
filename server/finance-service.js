@@ -909,6 +909,8 @@ export class FinanceService {
     }
     const recommendations = [];
     if (protectedSavings > 0) recommendations.push(`Épargne soutenable ce mois: ${protectedSavings.toFixed(2)} €, après charges et réserve.`);
+    if (recommendedSavings > 0) recommendations.push(`Automatise ${recommendedSavings.toFixed(2)} € d’épargne dès réception du salaire; augmente seulement après trois mois sans déficit.`);
+    if (primaryEnvelope?.recommendedFunding > 0) recommendations.push(`Vire ${primaryEnvelope.recommendedFunding.toFixed(2)} € vers ${primaryEnvelope.name} une fois par mois et fais-y passer toutes dépenses variables; aucun rechargement.`);
     if (!settings.safetyBuffer && automaticBuffer > 0) recommendations.push(`Réserve imprévus automatique: ${automaticBuffer.toFixed(2)} €. Ajustable dans plan mensuel.`);
     if (emergencyTarget > 0 && assets.liquid < emergencyTarget) recommendations.push(`Fonds sécurité liquide: encore ${round(emergencyTarget - assets.liquid).toFixed(2)} € pour ${settings.emergencyMonths} mois essentiels. Actifs investis exclus de ce calcul.`);
     const largest = FINANCE_CATEGORIES.filter(({ id }) => !ESSENTIAL_CATEGORY_IDS.has(id)).map((category) => ({ ...category, spent: spentByCategory[category.id] })).sort((a, b) => b.spent - a.spent)[0];
