@@ -133,6 +133,7 @@ const tmux = new TmuxController({
 });
 const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, cwd: root });
 financeService.setAdvisor(({ message, month, action }) => financeAdvisor.answer({ message, month, action, payload: financePayload(month), history: financeService.agentHistory() }));
+financeService.setClassifier((groups, categories) => financeAdvisor.classify(groups, categories));
 const promptWatcher = new PromptWatcher({ tmux, push });
 const fileUpload = multer({
   storage: multer.memoryStorage(),
@@ -396,6 +397,16 @@ app.post("/api/finance/transactions", async (request, response, next) => {
   }
 });
 
+app.post("/api/finance/transactions/categorize", async (request, response, next) => {
+  try {
+    const month = request.body?.all ? null : request.body?.month || currentMonthParis();
+    const result = await financeService.categorizeTransactions({ force: Boolean(request.body?.force), month });
+    response.json({ result, finance: financePayload(request.body?.month || currentMonthParis()) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.delete("/api/finance/transactions/:id", async (request, response, next) => {
   try {
     await financeService.removeTransaction(request.params.id);
@@ -440,7 +451,13 @@ app.post("/api/finance/banking/sync", async (request, response, next) => {
   try {
     const result = await enableBanking.sync(request.body?.bankId || null);
     const month = request.body?.month || currentMonthParis();
-    response.json({ result, finance: financePayload(month), banking: enableBanking.status() });
+    let categorization;
+    try {
+      categorization = await financeService.categorizeTransactions({ month });
+    } catch (error) {
+      categorization = { error: error.message };
+    }
+    response.json({ result, categorization, finance: financePayload(month), banking: enableBanking.status() });
   } catch (error) {
     next(error);
   }

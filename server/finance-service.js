@@ -83,12 +83,15 @@ function aggregate(items) {
       const amount = Math.abs(transaction.amount);
       expenses += amount;
       if (spentByCategory[transaction.category] !== undefined) spentByCategory[transaction.category] += amount;
+    } else if (CATEGORY_IDS.has(transaction.category)) {
+      expenses -= transaction.amount;
+      spentByCategory[transaction.category] -= transaction.amount;
     } else {
       recordedIncome += transaction.amount;
     }
   }
-  for (const id of CATEGORY_IDS) spentByCategory[id] = round(spentByCategory[id]);
-  return { expenses: round(expenses), recordedIncome: round(recordedIncome), spentByCategory };
+  for (const id of CATEGORY_IDS) spentByCategory[id] = round(Math.max(0, spentByCategory[id]));
+  return { expenses: round(Math.max(0, expenses)), recordedIncome: round(recordedIncome), spentByCategory };
 }
 
 function normalized(value) {
@@ -109,6 +112,20 @@ function cardPurchaseSignature(description) {
     .replace(/\s+cb\s+\d+.*$/, "")
     .replace(/\s+\d+(?:\s+\d+)?\s+(?:eur|us)$/, "")
     .replace(/\s+fact\s+\d{6}.*$/, "");
+}
+
+function recurringSignature(description) {
+  const first = String(description || "").split(" · ")[0];
+  return cardPurchaseSignature(first)
+    .replace(/^(?:prlv|prelevement)(?: sepa)?\s+/, "")
+    .replace(/^(?:rem|remboursement|refund)\s+/, "")
+    .replace(/\s+fact\s+\d{6}.*$/, "")
+    .replace(/\s+\d{6,}.*$/, "")
+    .trim() || normalized(first);
+}
+
+function refundLike(transaction) {
+  return transaction.amount > 0 && /^(?:avoir|rem\b|remboursement|refund)/.test(normalized(transaction.description));
 }
 
 function embeddedCardDate(transaction) {
@@ -192,7 +209,7 @@ function classifyTransactions(items, modules = []) {
 function learnedSalaryDescriptions(items, classifications) {
   const groups = new Map();
   for (const transaction of items) {
-    if (transaction.amount < 500 || classifications.has(transaction.id) || transaction.source !== "enable-banking") continue;
+    if (transaction.amount < 500 || transaction.category !== "income" || classifications.has(transaction.id) || transaction.source !== "enable-banking") continue;
     const description = normalized(transaction.description);
     if (!description || SALARY_PATTERN.test(description)) continue;
     const months = groups.get(description) || new Map();
@@ -212,10 +229,10 @@ function categoryForDescription(description) {
   if (/loyer|vilogia|credit immobilier|electricite|\bedf\b|engie|\bgaz\b|\beau\b|assurance habitation/.test(value)) return "housing";
   if (/carrefour|auchan|monoprix|intermarch|\blidl\b|\baldi\b|franprix|leclerc|costco|tang freres|picard|souss market|pottier distribut|tgtg|too good to go|restaurant|rest |repas|boulanger|deliveroo|uber eats|mcdonald|five guys|\bkfc\b|aim thai|hao hao|palmito|pistacho|delice|coffee|brunch|bistro|relay daily|nous anti gaspi|studenac|tommy\d|slasticarnica|ajme ajme|selecta|courses|alimentation|u etab paiement/.test(value)) return "food";
   if (/transport|\btrain\b|sncf|ratp|metro|navigo|essence|parking|peage|autoroute|cofiroute|atlandes|bidegi|certas esso|plenergy|easyjet|lmnext|lastminute|\buber\b|ubr pending|\bbolt\b|levaparc|dac uep|zracna luka|pbp versailles/.test(value)) return "transport";
-  if (/abonnement|netflix|spotify|canva|adobe|telephone|internet|\borange\b|apple com bill|google storage/.test(value)) return "subscriptions";
+  if (/abonnement|offre confort|netflix|spotify|canva|adobe|telephone|internet|\borange\b|apple com bill|google storage/.test(value)) return "subscriptions";
   if (/assurance|assura|\bmaif\b|\bgmf\b|l olivier/.test(value)) return "insurance";
   if (/direction generale des fina|dgfip|finances publiques|tresor public|\bimpot/.test(value)) return "taxes";
-  if (/offre confort|frais bancaire|comm(?:ission)? intervention|cotisation carte|\bagios\b/.test(value)) return "bank_fees";
+  if (/frais bancaire|comm(?:ission)? intervention|cotisation carte|\bagios\b/.test(value)) return "bank_fees";
   if (/amazon|aliexpress|ebay|zara|uniqlo|abercrombie|\bcos\b|courir|wconcept|normal le chesn|lovegobuy/.test(value)) return "shopping";
   if (/sante|mutuelle|medecin|docteur|doctolib|pharm|\bphie\b|dentiste|hopital|cso cc parly|\bdr\s/.test(value)) return "health";
   if (/keepcool|delfin nautica|loisir|cinema|concert|sport|\bjeu\b|steam|playstation/.test(value)) return "leisure";
@@ -259,11 +276,12 @@ function previousDate(date) {
 }
 
 export class FinanceService {
-  constructor({ store, aggregatorConfigured = false, now = () => new Date(), advisor = null } = {}) {
+  constructor({ store, aggregatorConfigured = false, now = () => new Date(), advisor = null, classifier = null } = {}) {
     this.store = store;
     this.aggregatorConfigured = aggregatorConfigured;
     this.now = now;
     this.advisor = advisor;
+    this.classifier = classifier;
   }
 
   setAggregatorConfigured(value) {
@@ -272,6 +290,10 @@ export class FinanceService {
 
   setAdvisor(advisor) {
     this.advisor = advisor;
+  }
+
+  setClassifier(classifier) {
+    this.classifier = classifier;
   }
 
   settings() {
@@ -563,6 +585,65 @@ export class FinanceService {
     await this.store.remove(id);
   }
 
+  async categorizeTransactions({ force = false, month = null } = {}) {
+    if (!this.classifier) throw new Error("Classificateur Codex indisponible.");
+    if (month) validMonth(month);
+    const transactions = this.transactions().filter((transaction) => transaction.source === "enable-banking" && (!month || transaction.date.startsWith(month)));
+    const groups = new Map();
+    for (const transaction of transactions) {
+      const flow = transaction.amount < 0 || refundLike(transaction) ? "expense" : "income";
+      const key = `${flow}:${recurringSignature(transaction.description)}`;
+      const group = groups.get(key) || { key, transactions: [] };
+      group.transactions.push(transaction);
+      groups.set(key, group);
+    }
+    const candidates = [...groups.values()].filter(({ transactions: items }) => force || items.some(({ categorySource }) => categorySource !== "codex"));
+    if (!candidates.length) return { categorized: 0, groups: 0 };
+    const input = candidates.map((group, index) => {
+      const byMonth = new Map();
+      for (const transaction of group.transactions) byMonth.set(transaction.date.slice(0, 7), round((byMonth.get(transaction.date.slice(0, 7)) || 0) + transaction.amount));
+      return {
+        id: `g${index}`,
+        description: group.transactions[0].description,
+        examples: [...new Set(group.transactions.slice(0, 4).map(({ description }) => description))],
+        flow: group.key.startsWith("expense:") ? "expense-or-refund" : "income",
+        months: [...byMonth.keys()].sort(),
+        count: group.transactions.length,
+        medianDebit: median(group.transactions.filter(({ amount }) => amount < 0).map(({ amount }) => Math.abs(amount))),
+        medianCredit: median(group.transactions.filter(({ amount }) => amount > 0).map(({ amount }) => amount)),
+        medianMonthlyNet: median([...byMonth.values()].map((amount) => Math.abs(Math.min(0, amount)))),
+        currentCategories: [...new Set(group.transactions.map(({ category }) => category))],
+      };
+    });
+    const classifications = await this.classifier(input, FINANCE_CATEGORIES);
+    const entries = [];
+    for (const classification of classifications) {
+      const index = Number(String(classification.id || "").replace(/^g/, ""));
+      const group = candidates[index];
+      if (!group) continue;
+      let category = String(classification.category || "other");
+      if (group.key.startsWith("expense:") && category === "income") category = "other";
+      if (category !== "income" && !CATEGORY_IDS.has(category)) category = "other";
+      for (const transaction of group.transactions) {
+        const stored = this.store.get(transaction.id);
+        if (!stored) continue;
+        entries.push([transaction.id, {
+          ...stored,
+          category,
+          categorySource: "codex",
+          categoryReason: String(classification.reason || "Classé par Codex").trim().slice(0, 180),
+          recurringDetected: Boolean(classification.recurring),
+          categorizedAt: new Date().toISOString(),
+        }]);
+      }
+    }
+    if (entries.length) {
+      if (this.store.setMany) await this.store.setMany(entries);
+      else for (const [id, value] of entries) await this.store.set(id, value);
+    }
+    return { categorized: entries.length, groups: classifications.length };
+  }
+
   async importTransactions(items = []) {
     const entries = [];
     let imported = 0;
@@ -575,23 +656,30 @@ export class FinanceService {
       if (!kind || !item.externalId || !item.sourceAccount) continue;
       const absoluteAmount = money(item.amount, "Montant importé");
       if (!absoluteAmount) continue;
-      const matchedCategory = categoryMatchers.find(({ match }) => normalized(item.description).includes(match))?.category;
-      const category = kind === "income" ? "income" : matchedCategory || (CATEGORY_IDS.has(item.category) ? item.category : "other");
       const date = validDate(item.date);
       const key = crypto.createHash("sha256").update(`${item.source}:${item.sourceAccount}:${item.externalId}`).digest("hex").slice(0, 32);
       const id = `transaction-bank-${key}`;
       const existing = this.store.get(id);
+      const matchedCategory = categoryMatchers.find(({ match }) => normalized(item.description).includes(match))?.category;
+      const importedCategory = kind === "income" ? "income" : matchedCategory || (CATEGORY_IDS.has(item.category) ? item.category : "other");
+      const keepCodexCategory = existing?.categorySource === "codex" && (existing.kind === kind) && Number(existing.amount) === (kind === "expense" ? -absoluteAmount : absoluteAmount);
       const transaction = {
         type: "transaction",
         kind,
         amount: kind === "expense" ? -absoluteAmount : absoluteAmount,
         description: String(item.description || "Opération bancaire").trim().slice(0, 120) || "Opération bancaire",
-        category,
+        category: keepCodexCategory ? existing.category : importedCategory,
         date,
         ...(item.bookingDate ? { bookingDate: validDate(item.bookingDate) } : {}),
         account: String(item.account || "Compte bancaire").trim().slice(0, 60) || "Compte bancaire",
         source: String(item.source || "bank").slice(0, 40),
         externalId: String(item.externalId).slice(0, 500),
+        ...(keepCodexCategory ? {
+          categorySource: existing.categorySource,
+          categoryReason: existing.categoryReason,
+          recurringDetected: existing.recurringDetected,
+          categorizedAt: existing.categorizedAt,
+        } : {}),
         createdAt: existing?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -635,11 +723,11 @@ export class FinanceService {
     const now = this.now();
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     const salaryDescriptions = learnedSalaryDescriptions(allTransactions, classifications);
-    const recordedSalary = round(transactions.filter((transaction) => transaction.amount > 0 && (SALARY_PATTERN.test(normalized(transaction.description)) || salaryDescriptions.has(normalized(transaction.description)))).reduce((total, transaction) => total + transaction.amount, 0));
+    const recordedSalary = round(transactions.filter((transaction) => transaction.amount > 0 && transaction.category === "income" && (SALARY_PATTERN.test(normalized(transaction.description)) || salaryDescriptions.has(normalized(transaction.description)))).reduce((total, transaction) => total + transaction.amount, 0));
     const incomeHistory = [-1, -2, -3, -4, -5, -6]
       .map((offset) => {
         const historyMonth = shiftMonth(selectedMonth, offset);
-        const incoming = budgetTransactions.filter((transaction) => transaction.date.startsWith(historyMonth) && transaction.amount > 0);
+        const incoming = budgetTransactions.filter((transaction) => transaction.date.startsWith(historyMonth) && transaction.amount > 0 && transaction.category === "income");
         const salary = round(incoming.filter((transaction) => {
           const description = normalized(transaction.description);
           return SALARY_PATTERN.test(description) || salaryDescriptions.has(description);
@@ -746,8 +834,49 @@ export class FinanceService {
         const envelopeTransactions = allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth) && normalized(transaction.account).includes(matcher));
         const funded = round(envelopeTransactions.filter((transaction) => transaction.amount > 0 && classifications.get(transaction.id) === "transfert-interne").reduce((total, transaction) => total + transaction.amount, 0));
         const spent = round(Math.max(0, -envelopeTransactions.filter((transaction) => !classifications.has(transaction.id)).reduce((total, transaction) => total + transaction.amount, 0)));
-        return { id: module.id, name: module.name, accountMatch: module.accountMatch, funded, spent, remaining: round(funded - spent), exceeded: round(Math.max(0, spent - funded)) };
+        const historySpending = [-1, -2, -3].map((offset) => {
+          const historyMonth = shiftMonth(selectedMonth, offset);
+          return round(Math.max(0, -allTransactions.filter((transaction) => transaction.date.startsWith(historyMonth) && normalized(transaction.account).includes(matcher) && !classifications.has(transaction.id)).reduce((total, transaction) => total + transaction.amount, 0)));
+        }).filter((amount) => amount > 0);
+        const historicalMedian = median(historySpending);
+        const recommendedFunding = Math.floor((historicalMedian * 0.9) / 10) * 10;
+        return { id: module.id, name: module.name, accountMatch: module.accountMatch, funded, spent, remaining: round(funded - spent), exceeded: round(Math.max(0, spent - funded)), historicalMedian, recommendedFunding };
       });
+    const recurringGroups = new Map();
+    for (const transaction of budgetTransactions.filter(({ source }) => source === "enable-banking")) {
+      const signature = recurringSignature(transaction.description);
+      const group = recurringGroups.get(signature) || { signature, name: transaction.description.split(" · ")[0], category: transaction.category, months: new Map(), detected: false };
+      group.months.set(transaction.date.slice(0, 7), round((group.months.get(transaction.date.slice(0, 7)) || 0) + transaction.amount));
+      if (transaction.amount < 0) group.category = transaction.category;
+      group.detected ||= Boolean(transaction.recurringDetected);
+      recurringGroups.set(signature, group);
+    }
+    const detectedRecurring = [...recurringGroups.values()]
+      .filter(({ months, detected }) => detected || months.size >= 3)
+      .map(({ signature, name, category, months }) => ({ id: signature, name, category, months: months.size, monthlyNet: median([...months.values()].map((amount) => Math.max(0, -amount))) }))
+      .filter(({ monthlyNet }) => monthlyNet > 0)
+      .sort((a, b) => b.monthlyNet - a.monthlyNet);
+    const primaryEnvelope = spendingEnvelopes[0] || null;
+    const fixedCategoryIds = ["housing", "subscriptions", "insurance", "taxes", "bank_fees"];
+    const fixedCosts = round(fixedCategoryIds.reduce((total, id) => total + Math.max(settings.budgets[id] || 0, categoryPlans[id].historicalAverage, categoryPlans[id].recurringExpected), 0));
+    const flexibleLimit = primaryEnvelope?.recommendedFunding || Math.floor(median(history.map(({ expenses: value }) => value)) * 0.25 / 10) * 10;
+    const savingsRoom = round(Math.max(0, income - fixedCosts - flexibleLimit - safetyBuffer));
+    const recommendedSavings = settings.savingsGoal ? round(Math.min(settings.savingsGoal, savingsRoom)) : Math.floor(Math.min(income * 0.1, savingsRoom) / 10) * 10;
+    const monthlyPlan = {
+      income: round(income),
+      fixedCosts,
+      flexibleLimit,
+      flexibleAccount: primaryEnvelope?.name || "Dépenses courantes",
+      safetyBuffer,
+      recommendedSavings,
+      unallocated: round(Math.max(0, income - fixedCosts - flexibleLimit - safetyBuffer - recommendedSavings)),
+      categoryLimits: Object.fromEntries(FINANCE_CATEGORIES.map((category) => {
+        const plan = categoryPlans[category.id];
+        const historicalTarget = category.id === "other" ? 0 : plan.historicalAverage;
+        const target = plan.essential ? Math.max(plan.recurringExpected, historicalTarget) : historicalTarget * 0.9;
+        return [category.id, Math.ceil(target / 5) * 5];
+      })),
+    };
     const warnings = [];
     if (!income) warnings.push({ id: "income", tone: "info", title: "Salaire historique introuvable", detail: "Importe anciens relevés; salaire sera détecté automatiquement." });
     if (incomeSource === "history") warnings.push({ id: "income-estimate", tone: "info", title: "Salaire estimé", detail: `Base prudente sur ${incomeHistoryMonths} mois: ${inferredIncome.toFixed(2)} €.` });
@@ -808,6 +937,8 @@ export class FinanceService {
       emergencyTarget,
       assets,
       spendingEnvelopes,
+      detectedRecurring,
+      monthlyPlan,
       excludedTransactionCount: allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth) && classifications.has(transaction.id)).length,
       warnings,
       recommendations,
@@ -830,6 +961,11 @@ export class FinanceService {
       modules: this.modules(),
       recurring: this.recurring(),
       agent: { history: this.agentHistory() },
+      classification: {
+        bankTransactions: allTransactions.filter(({ source }) => source === "enable-banking").length,
+        categorizedByCodex: allTransactions.filter(({ source, categorySource }) => source === "enable-banking" && categorySource === "codex").length,
+        lastCategorizedAt: allTransactions.filter(({ categorizedAt }) => categorizedAt).map(({ categorizedAt }) => categorizedAt).sort().at(-1) || null,
+      },
       banking: {
         aggregator: { id: "enable-banking", name: "Enable Banking", configured: this.aggregatorConfigured },
         banks: [

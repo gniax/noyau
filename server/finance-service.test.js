@@ -224,3 +224,32 @@ test("current forecast does not replay old uncategorized spending", async () => 
   assert.equal(plan.projected, 124);
   assert.equal(plan.remaining, 24);
 });
+
+test("Codex categories persist and refunds reduce recurring subscription cost", async () => {
+  const store = new MemoryStore();
+  const service = new FinanceService({
+    store,
+    now: () => new Date("2026-08-25T12:00:00Z"),
+    classifier: async (groups) => groups.map(({ id }) => ({ id, category: "subscriptions", recurring: true, reason: "Offre bancaire mensuelle avec remise" })),
+  });
+  let entry = 0;
+  for (const month of ["06", "07", "08"]) {
+    for (const item of [
+      { kind: "expense", amount: 33.1, description: "* OFFRE CONFORT" },
+      { kind: "income", amount: 25.15, description: "* REM OFFRE CONFORT" },
+    ]) {
+      entry += 1;
+      await service.importTransactions([{ ...item, category: item.kind === "income" ? "income" : "other", date: `2026-${month}-16`, account: "Banque", source: "enable-banking", sourceAccount: "account", externalId: String(entry) }]);
+    }
+  }
+  assert.deepEqual(await service.categorizeTransactions({ force: true }), { categorized: 6, groups: 1 });
+  const summary = service.summary("2026-08");
+  assert.equal(summary.expenses, 7.95);
+  assert.equal(summary.recordedIncome, 0);
+  assert.equal(summary.spentByCategory.subscriptions, 7.95);
+  assert.equal(summary.detectedRecurring[0].monthlyNet, 7.95);
+  const saved = service.transactions()[0];
+  assert.equal(saved.categorySource, "codex");
+  await service.importTransactions([{ kind: saved.kind, amount: Math.abs(saved.amount), description: saved.description, category: "income", date: saved.date, account: saved.account, source: "enable-banking", sourceAccount: "account", externalId: saved.externalId }]);
+  assert.equal(service.transactions()[0].category, "subscriptions");
+});

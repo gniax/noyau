@@ -25,23 +25,16 @@ export class FinanceAdvisor {
     this.timeout = timeout;
   }
 
-  async answer({ message, month, payload, history = [], action = null }) {
+  async run(prompt, schema = null) {
     const output = path.join(os.tmpdir(), `noyau-finance-${crypto.randomBytes(8).toString("hex")}.txt`);
-    const prompt = [
-      "Tu es Agent finances de Noyau, vrai agent conversationnel Codex.",
-      "Réponds en français, directement, clairement, en texte brut sans Markdown, avec montants exacts. Distingue toujours dépenses réelles, dépenses prévues, solde bancaire actuel et estimation.",
-      "Explique calculs avec catégories responsables. Ne donne pas de conseil financier certain. Ne lance aucun outil: réponds uniquement depuis snapshot fourni.",
-      "Dates carte ont déjà été corrigées vers date achat. Doublons carte, transferts internes, placements et Corporate Card sont exclus du budget personnel.",
-      "Projection mois courant: catégories essentielles utilisent maximum entre réel, budget, médiane historique, charge récurrente et rythme courant; catégories libres sans budget utilisent seulement rythme courant. 'Autres' ne réinjecte plus ancien historique.",
-      action ? `Action locale déjà validée/exécutée: ${action}` : "Aucune action locale exécutée pour ce message.",
-      `Mois demandé: ${month}`,
-      `Conversation récente: ${JSON.stringify(history.filter(({ content }) => !String(content).startsWith("Commande non comprise.")).slice(-20).map(({ role, content }) => ({ role, content })))}`,
-      `Snapshot financier local: ${JSON.stringify(compactPayload(payload))}`,
-      `Message utilisateur: ${message}`,
-    ].join("\n\n");
+    const schemaFile = schema ? path.join(os.tmpdir(), `noyau-finance-schema-${crypto.randomBytes(8).toString("hex")}.json`) : null;
+    if (schemaFile) await fs.writeFile(schemaFile, JSON.stringify(schema), { mode: 0o600 });
     try {
       await new Promise((resolve, reject) => {
-        const child = spawn(this.binary, ["exec", "--ephemeral", "--sandbox", "read-only", "--color", "never", "--output-last-message", output, "-C", this.cwd, "-"], {
+        const args = ["exec", "--ephemeral", "--sandbox", "read-only", "--color", "never", "-c", "notify=[]", "--output-last-message", output];
+        if (schemaFile) args.push("--output-schema", schemaFile);
+        args.push("-C", this.cwd, "-");
+        const child = spawn(this.binary, args, {
           cwd: this.cwd,
           env: process.env,
           stdio: ["pipe", "ignore", "pipe"],
@@ -57,11 +50,67 @@ export class FinanceAdvisor {
         }, this.timeout);
         child.on("close", () => clearTimeout(timer));
       });
-      const reply = (await fs.readFile(output, "utf8")).trim().slice(0, 5000);
+      const reply = (await fs.readFile(output, "utf8")).trim().slice(0, schema ? 100_000 : 5000);
       if (!reply) throw new Error("Codex finance: réponse vide.");
       return reply;
     } finally {
       await fs.rm(output, { force: true }).catch(() => {});
+      if (schemaFile) await fs.rm(schemaFile, { force: true }).catch(() => {});
     }
+  }
+
+  async answer({ message, month, payload, history = [], action = null }) {
+    const prompt = [
+      "Tu es Agent finances de Noyau, vrai agent conversationnel Codex.",
+      "Réponds en français, directement, clairement, en texte brut sans Markdown, avec montants exacts. Distingue toujours dépenses réelles, dépenses prévues, solde bancaire actuel et estimation.",
+      "Explique calculs avec catégories responsables. Ne donne pas de conseil financier certain. Ne lance aucun outil: réponds uniquement depuis snapshot fourni.",
+      "Dates carte ont déjà été corrigées vers date achat. Doublons carte, transferts internes, placements et Corporate Card sont exclus du budget personnel.",
+      "Projection mois courant: catégories essentielles utilisent maximum entre réel, budget, médiane historique, charge récurrente et rythme courant; catégories libres sans budget utilisent seulement rythme courant. 'Autres' ne réinjecte plus ancien historique.",
+      action ? `Action locale déjà validée/exécutée: ${action}` : "Aucune action locale exécutée pour ce message.",
+      `Mois demandé: ${month}`,
+      `Conversation récente: ${JSON.stringify(history.filter(({ content }) => !String(content).startsWith("Commande non comprise.")).slice(-20).map(({ role, content }) => ({ role, content })))}`,
+      `Snapshot financier local: ${JSON.stringify(compactPayload(payload))}`,
+      `Message utilisateur: ${message}`,
+    ].join("\n\n");
+    return this.run(prompt);
+  }
+
+  async classify(groups, categories) {
+    const allowed = ["income", ...categories.map(({ id }) => id)];
+    const schema = {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              category: { type: "string", enum: allowed },
+              recurring: { type: "boolean" },
+              reason: { type: "string" },
+            },
+            required: ["id", "category", "recurring", "reason"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["items"],
+      additionalProperties: false,
+    };
+    const results = [];
+    for (let index = 0; index < groups.length; index += 60) {
+      const batch = groups.slice(index, index + 60);
+      const prompt = [
+        "Tu classes opérations bancaires françaises. Retour JSON selon schéma, exactement une sortie par id. Aucun outil.",
+        `Catégories: ${JSON.stringify(categories)}. income = salaire/vrai revenu/don reçu. Crédit AVOIR/REM/remboursement reprend catégorie achat, jamais income.`,
+        "Abonnements inclut offres bancaires/cartes, télécom, logiciels, salles de sport et services mensuels. Frais bancaires = commissions/agios ponctuels. Virement externe = argent envoyé à tiers. Autres seulement si impossible.",
+        "recurring=true si répétition mensuelle observée ou contrat/prélèvement vraisemblablement récurrent. Utilise mois/count/net mensuel fournis.",
+        `Groupes: ${JSON.stringify(batch)}`,
+      ].join("\n\n");
+      const parsed = JSON.parse(await this.run(prompt, schema));
+      results.push(...parsed.items);
+    }
+    return results;
   }
 }
