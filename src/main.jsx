@@ -1283,12 +1283,13 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
 
   useEffect(() => {
     const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+    const touchTerminal = TOUCH_MODE || coarsePointer;
     const terminal = new Terminal({
       cursorBlink: true,
-      disableStdin: coarsePointer,
+      disableStdin: touchTerminal,
       fontSize: 13,
       fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-      scrollback: coarsePointer ? 0 : 5000,
+      scrollback: touchTerminal ? 0 : 5000,
       theme: { background: "#080b0a", foreground: "#d9e0dc", cursor: "#b8ff5e", selectionBackground: "#31551f88" },
     });
     const fit = new FitAddon();
@@ -1297,7 +1298,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     fit.fit();
     terminalRef.current = terminal;
     const xtermViewport = terminalNode.current.querySelector(".xterm-viewport");
-    if (coarsePointer) {
+    if (touchTerminal) {
       const helper = terminalNode.current.querySelector(".xterm-helper-textarea");
       if (helper) {
         helper.readOnly = true;
@@ -1351,16 +1352,20 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       activeSocket.send(JSON.stringify({ type: "input", data: output }));
     });
     const touchStart = (event) => {
-      if (!coarsePointer) return;
+      if (!touchTerminal) return;
       const touch = event.touches[0];
-      if (touch) touchRef.current = {
-        x: touch.clientX,
-        y: touch.clientY,
-        latestY: touch.clientY,
-        scrollTimer: null,
-        moved: false,
-        scrolling: false,
-      };
+      if (touch) {
+        event.preventDefault();
+        event.stopPropagation();
+        touchRef.current = {
+          x: touch.clientX,
+          y: touch.clientY,
+          latestY: touch.clientY,
+          scrollTimer: null,
+          moved: false,
+          scrolling: false,
+        };
+      }
     };
     const sendTouchScroll = (gesture) => {
       const delta = gesture.latestY - gesture.y;
@@ -1373,7 +1378,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       gesture.y = gesture.latestY;
     };
     const touchMove = (event) => {
-      if (!coarsePointer || !touchRef.current || !event.touches[0]) return;
+      if (!touchTerminal || !touchRef.current || !event.touches[0]) return;
+      event.preventDefault();
+      event.stopPropagation();
       const touch = event.touches[0];
       touchRef.current.latestY = touch.clientY;
       const deltaX = touch.clientX - touchRef.current.x;
@@ -1383,8 +1390,6 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         touchRef.current.scrolling = Math.abs(deltaY) > Math.abs(deltaX);
       }
       if (touchRef.current.scrolling && xtermViewport) {
-        event.preventDefault();
-        event.stopPropagation();
         clearTimeout(touchRef.current.scrollTimer);
         const gesture = touchRef.current;
         gesture.scrollTimer = setTimeout(() => {
@@ -1393,7 +1398,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       }
     };
     const touchEnd = (event) => {
-      if (!coarsePointer) return;
+      if (!touchTerminal) return;
+      event.preventDefault();
+      event.stopPropagation();
       const gesture = touchRef.current;
       if (gesture?.scrolling) {
         clearTimeout(gesture.scrollTimer);
@@ -1401,8 +1408,6 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         sendTouchScroll(gesture);
       }
       if (gesture && !gesture.moved) {
-        event.preventDefault();
-        event.stopPropagation();
         focusKeyboard();
       }
       touchRef.current = null;
@@ -1411,7 +1416,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       clearTimeout(touchRef.current?.scrollTimer);
       touchRef.current = null;
     };
-    terminalNode.current.addEventListener("touchstart", touchStart, { capture: true, passive: true });
+    terminalNode.current.addEventListener("touchstart", touchStart, { capture: true, passive: false });
     terminalNode.current.addEventListener("touchmove", touchMove, { capture: true, passive: false });
     terminalNode.current.addEventListener("touchend", touchEnd, { capture: true, passive: false });
     terminalNode.current.addEventListener("touchcancel", touchCancel, { capture: true, passive: true });
@@ -1436,7 +1441,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         setConnected(true);
         resize();
         socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
-        if (!coarsePointer) terminal.focus();
+        if (!touchTerminal) terminal.focus();
       });
       socket.addEventListener("message", handleMessage);
       socket.addEventListener("close", () => {
@@ -1487,7 +1492,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   }
 
   function focusKeyboard() {
-    if (window.matchMedia("(pointer: coarse)").matches) {
+    if (TOUCH_MODE || window.matchMedia("(pointer: coarse)").matches) {
       const input = keyboardRef.current;
       try {
         input?.focus({ preventScroll: true });
