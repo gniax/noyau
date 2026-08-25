@@ -1351,21 +1351,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       setAlt(false);
       activeSocket.send(JSON.stringify({ type: "input", data: output }));
     });
-    const touchStart = (event) => {
-      if (!touchTerminal) return;
-      const touch = event.touches[0];
-      if (touch) {
-        event.preventDefault();
-        event.stopPropagation();
-        touchRef.current = {
-          x: touch.clientX,
-          y: touch.clientY,
-          latestY: touch.clientY,
-          scrollTimer: null,
-          moved: false,
-          scrolling: false,
-        };
-      }
+    const beginTouchScroll = (x, y, pointerId = null) => {
+      terminal.clearSelection();
+      touchRef.current = { x, y, latestY: y, pointerId, scrollTimer: null, moved: false, scrolling: false };
     };
     const sendTouchScroll = (gesture) => {
       const delta = gesture.latestY - gesture.y;
@@ -1377,14 +1365,11 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       }));
       gesture.y = gesture.latestY;
     };
-    const touchMove = (event) => {
-      if (!touchTerminal || !touchRef.current || !event.touches[0]) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const touch = event.touches[0];
-      touchRef.current.latestY = touch.clientY;
-      const deltaX = touch.clientX - touchRef.current.x;
-      const deltaY = touch.clientY - touchRef.current.y;
+    const continueTouchScroll = (x, y) => {
+      if (!touchRef.current) return;
+      touchRef.current.latestY = y;
+      const deltaX = x - touchRef.current.x;
+      const deltaY = y - touchRef.current.y;
       if (!touchRef.current.moved && Math.hypot(deltaX, deltaY) > 8) {
         touchRef.current.moved = true;
         touchRef.current.scrolling = Math.abs(deltaY) > Math.abs(deltaX);
@@ -1397,29 +1382,73 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         }, 80);
       }
     };
-    const touchEnd = (event) => {
-      if (!touchTerminal) return;
-      event.preventDefault();
-      event.stopPropagation();
+    const finishTouchScroll = (y) => {
       const gesture = touchRef.current;
       if (gesture?.scrolling) {
         clearTimeout(gesture.scrollTimer);
-        gesture.latestY = event.changedTouches[0]?.clientY ?? gesture.latestY;
+        gesture.latestY = y ?? gesture.latestY;
         sendTouchScroll(gesture);
       }
-      if (gesture && !gesture.moved) {
-        focusKeyboard();
-      }
+      if (gesture && !gesture.moved) focusKeyboard();
       touchRef.current = null;
     };
-    const touchCancel = () => {
+    const cancelTouchScroll = () => {
       clearTimeout(touchRef.current?.scrollTimer);
       touchRef.current = null;
     };
-    terminalNode.current.addEventListener("touchstart", touchStart, { capture: true, passive: false });
-    terminalNode.current.addEventListener("touchmove", touchMove, { capture: true, passive: false });
-    terminalNode.current.addEventListener("touchend", touchEnd, { capture: true, passive: false });
-    terminalNode.current.addEventListener("touchcancel", touchCancel, { capture: true, passive: true });
+    const stopPointerEvent = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const pointerStart = (event) => {
+      if (!touchTerminal || (!TOUCH_MODE && event.pointerType !== "touch")) return;
+      stopPointerEvent(event);
+      terminalNode.current.setPointerCapture?.(event.pointerId);
+      beginTouchScroll(event.clientX, event.clientY, event.pointerId);
+    };
+    const pointerMove = (event) => {
+      if (touchRef.current?.pointerId !== event.pointerId) return;
+      stopPointerEvent(event);
+      continueTouchScroll(event.clientX, event.clientY);
+    };
+    const pointerEnd = (event) => {
+      if (touchRef.current?.pointerId !== event.pointerId) return;
+      stopPointerEvent(event);
+      terminalNode.current.releasePointerCapture?.(event.pointerId);
+      finishTouchScroll(event.clientY);
+    };
+    const pointerCancel = (event) => {
+      if (touchRef.current?.pointerId !== event.pointerId) return;
+      stopPointerEvent(event);
+      cancelTouchScroll();
+    };
+    const touchStart = (event) => {
+      if (!touchTerminal || !event.touches[0]) return;
+      stopPointerEvent(event);
+      beginTouchScroll(event.touches[0].clientX, event.touches[0].clientY);
+    };
+    const touchMove = (event) => {
+      if (!touchRef.current || !event.touches[0]) return;
+      stopPointerEvent(event);
+      continueTouchScroll(event.touches[0].clientX, event.touches[0].clientY);
+    };
+    const touchEnd = (event) => {
+      if (!touchRef.current) return;
+      stopPointerEvent(event);
+      finishTouchScroll(event.changedTouches[0]?.clientY);
+    };
+    const pointerGestures = "PointerEvent" in window;
+    if (pointerGestures) {
+      terminalNode.current.addEventListener("pointerdown", pointerStart, true);
+      terminalNode.current.addEventListener("pointermove", pointerMove, true);
+      terminalNode.current.addEventListener("pointerup", pointerEnd, true);
+      terminalNode.current.addEventListener("pointercancel", pointerCancel, true);
+    } else {
+      terminalNode.current.addEventListener("touchstart", touchStart, { capture: true, passive: false });
+      terminalNode.current.addEventListener("touchmove", touchMove, { capture: true, passive: false });
+      terminalNode.current.addEventListener("touchend", touchEnd, { capture: true, passive: false });
+      terminalNode.current.addEventListener("touchcancel", cancelTouchScroll, { capture: true, passive: true });
+    }
     const handleMessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "output") {
@@ -1467,10 +1496,14 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       window.removeEventListener("online", resumeConnection);
       observer.disconnect();
       clearTimeout(resizeTimer);
+      terminalNode.current?.removeEventListener("pointerdown", pointerStart, true);
+      terminalNode.current?.removeEventListener("pointermove", pointerMove, true);
+      terminalNode.current?.removeEventListener("pointerup", pointerEnd, true);
+      terminalNode.current?.removeEventListener("pointercancel", pointerCancel, true);
       terminalNode.current?.removeEventListener("touchstart", touchStart, true);
       terminalNode.current?.removeEventListener("touchmove", touchMove, true);
       terminalNode.current?.removeEventListener("touchend", touchEnd, true);
-      terminalNode.current?.removeEventListener("touchcancel", touchCancel, true);
+      terminalNode.current?.removeEventListener("touchcancel", cancelTouchScroll, true);
       inputDisposable.dispose();
       socket?.close();
       socketRef.current = null;
