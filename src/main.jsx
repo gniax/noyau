@@ -1114,7 +1114,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       disableStdin: coarsePointer,
       fontSize: 13,
       fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
-      scrollback: 5000,
+      scrollback: coarsePointer ? 0 : 5000,
       theme: { background: "#080b0a", foreground: "#d9e0dc", cursor: "#b8ff5e", selectionBackground: "#31551f88" },
     });
     const fit = new FitAddon();
@@ -1202,25 +1202,21 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       if (touchRef.current.scrolling && xtermViewport) {
         event.preventDefault();
         event.stopPropagation();
-        if (xtermViewport.scrollHeight > xtermViewport.clientHeight + 1) {
-          xtermViewport.scrollTop = touchRef.current.scrollTop - deltaY;
-        } else {
-          const pendingDelta = deltaY - touchRef.current.lastScrollDelta;
-          if (Math.abs(pendingDelta) >= 24 && socketRef.current?.readyState === WebSocket.OPEN) {
-            socketRef.current.send(JSON.stringify({
-              type: "scroll",
-              direction: pendingDelta > 0 ? "up" : "down",
-              count: Math.min(12, Math.max(1, Math.floor(Math.abs(pendingDelta) / 12))),
-            }));
-            touchRef.current.lastScrollDelta = deltaY;
-          }
+        const pendingDelta = deltaY - touchRef.current.lastScrollDelta;
+        if (Math.abs(pendingDelta) >= 24 && socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({
+            type: "scroll",
+            direction: pendingDelta > 0 ? "up" : "down",
+            count: Math.min(12, Math.max(1, Math.floor(Math.abs(pendingDelta) / 12))),
+          }));
+          touchRef.current.lastScrollDelta = deltaY;
         }
       }
     };
     const touchEnd = (event) => {
       if (!coarsePointer) return;
       const gesture = touchRef.current;
-      if (gesture?.scrolling && xtermViewport?.scrollHeight <= xtermViewport?.clientHeight + 1) {
+      if (gesture?.scrolling) {
         const finalY = event.changedTouches[0]?.clientY ?? gesture.latestY;
         const remainingDelta = finalY - gesture.y - gesture.lastScrollDelta;
         if (Math.abs(remainingDelta) >= 10 && socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({
