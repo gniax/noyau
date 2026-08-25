@@ -233,7 +233,7 @@ function categoryForDescription(description) {
   if (/assurance|assura|\bmaif\b|\bgmf\b|l olivier/.test(value)) return "insurance";
   if (/direction generale des fina|dgfip|finances publiques|tresor public|\bimpot/.test(value)) return "taxes";
   if (/frais bancaire|comm(?:ission)? intervention|cotisation carte|\bagios\b/.test(value)) return "bank_fees";
-  if (/amazon|aliexpress|ebay|zara|uniqlo|abercrombie|\bcos\b|courir|wconcept|normal le chesn|lovegobuy/.test(value)) return "shopping";
+  if (/amazon|paypal|aliexpress|ebay|zara|uniqlo|abercrombie|\bcos\b|courir|wconcept|normal le chesn|lovegobuy/.test(value)) return "shopping";
   if (/sante|mutuelle|medecin|docteur|doctolib|pharm|\bphie\b|dentiste|hopital|cso cc parly|\bdr\s/.test(value)) return "health";
   if (/keepcool|delfin nautica|loisir|cinema|concert|sport|\bjeu\b|steam|playstation/.test(value)) return "leisure";
   if (/planity|coiffeur|beaute|barbier|esthetique/.test(value)) return "personal";
@@ -840,13 +840,17 @@ export class FinanceService {
         const envelopeTransactions = allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth) && normalized(transaction.account).includes(matcher));
         const funded = round(envelopeTransactions.filter((transaction) => transaction.amount > 0 && classifications.get(transaction.id) === "transfert-interne").reduce((total, transaction) => total + transaction.amount, 0));
         const spent = round(Math.max(0, -envelopeTransactions.filter((transaction) => !classifications.has(transaction.id)).reduce((total, transaction) => total + transaction.amount, 0)));
-        const historySpending = [-1, -2, -3].map((offset) => {
+        const historyTransactions = [-1, -2, -3].map((offset) => {
           const historyMonth = shiftMonth(selectedMonth, offset);
-          return round(Math.max(0, -allTransactions.filter((transaction) => transaction.date.startsWith(historyMonth) && normalized(transaction.account).includes(matcher) && !classifications.has(transaction.id)).reduce((total, transaction) => total + transaction.amount, 0)));
-        }).filter((amount) => amount > 0);
+          return allTransactions.filter((transaction) => transaction.date.startsWith(historyMonth) && normalized(transaction.account).includes(matcher) && !classifications.has(transaction.id));
+        }).filter((items) => items.length > 0);
+        const historySpending = historyTransactions.map((items) => round(Math.max(0, -items.reduce((total, transaction) => total + transaction.amount, 0))));
         const historicalMedian = median(historySpending);
         const recommendedFunding = Math.floor((historicalMedian * 0.9) / 10) * 10;
-        return { id: module.id, name: module.name, accountMatch: module.accountMatch, funded, spent, remaining: round(funded - spent), exceeded: round(Math.max(0, spent - funded)), historicalMedian, recommendedFunding };
+        const categoryHistory = Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, median(historyTransactions.map((items) => round(Math.max(0, -items.filter(({ category }) => category === id).reduce((total, transaction) => total + transaction.amount, 0)))))]));
+        const categoryHistoryTotal = round(Object.values(categoryHistory).reduce((total, amount) => total + amount, 0));
+        const recommendedCategoryLimits = Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, categoryHistoryTotal > 0 ? Math.floor((recommendedFunding * categoryHistory[id] / categoryHistoryTotal) / 5) * 5 : 0]));
+        return { id: module.id, name: module.name, accountMatch: module.accountMatch, funded, spent, remaining: round(funded - spent), exceeded: round(Math.max(0, spent - funded)), historicalMedian, recommendedFunding, categoryHistory, recommendedCategoryLimits };
       });
     const recurringGroups = new Map();
     for (const transaction of budgetTransactions.filter(({ source }) => source === "enable-banking")) {
@@ -878,8 +882,10 @@ export class FinanceService {
       unallocated: round(Math.max(0, income - fixedCosts - flexibleLimit - safetyBuffer - recommendedSavings)),
       categoryLimits: Object.fromEntries(FINANCE_CATEGORIES.map((category) => {
         const plan = categoryPlans[category.id];
+        const envelopeTarget = primaryEnvelope?.recommendedCategoryLimits[category.id];
+        if (!fixedCategoryIds.includes(category.id) && envelopeTarget !== undefined) return [category.id, envelopeTarget];
         const historicalTarget = category.id === "other" ? 0 : plan.historicalAverage;
-        const target = plan.essential ? Math.max(plan.recurringExpected, historicalTarget) : historicalTarget * 0.9;
+        const target = fixedCategoryIds.includes(category.id) ? Math.max(plan.recurringExpected, historicalTarget) : historicalTarget * 0.9;
         return [category.id, Math.ceil(target / 5) * 5];
       })),
     };

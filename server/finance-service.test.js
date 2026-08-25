@@ -124,6 +124,33 @@ test("bank analysis uses configurable assets, transfers, and spending envelope",
   assert.equal(service.payload("2026-08").transactions.filter(({ excluded }) => excluded).length, 3);
 });
 
+test("spending envelope splits one affordable limit by history", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  await service.addModule({ moduleType: "envelope", name: "Dépenses courantes", accountMatch: "Revolut" });
+  let entry = 0;
+  for (const month of ["05", "06", "07"]) {
+    for (const item of [
+      { amount: 400, description: "Courses", category: "food" },
+      { amount: 100, description: "Achats", category: "shopping" },
+    ]) {
+      entry += 1;
+      await service.importTransactions([{ kind: "expense", ...item, date: `2026-${month}-10`, account: "Revolut", source: "enable-banking", sourceAccount: "revolut", externalId: String(entry) }]);
+    }
+  }
+  const summary = service.summary("2026-08");
+  assert.equal(summary.monthlyPlan.flexibleLimit, 450);
+  assert.equal(summary.monthlyPlan.categoryLimits.food, 360);
+  assert.equal(summary.monthlyPlan.categoryLimits.shopping, 90);
+});
+
+test("known payment processor leaves uncategorized bucket", async () => {
+  const service = new FinanceService({ store: new MemoryStore() });
+  await service.importTransactions([{ kind: "expense", amount: 42, description: "PRLV PayPal Europe S.a.r.l.", category: "other", date: "2026-08-10", account: "Banque", source: "enable-banking", sourceAccount: "bank", externalId: "paypal" }]);
+  const summary = service.summary("2026-08");
+  assert.equal(summary.spentByCategory.shopping, 42);
+  assert.equal(summary.spentByCategory.other, 0);
+});
+
 test("legacy values migrate into editable finance modules", async () => {
   const store = new MemoryStore();
   await store.set("settings", { liquidSavings: 1800, investedAssets: 6500, savingsGoal: 200 });

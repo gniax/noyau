@@ -709,9 +709,9 @@ function FinanceView({ onView }) {
           <article><small>RÉSERVE IMPRÉVUS</small><strong>{euro(summary.monthlyPlan.safetyBuffer)}</strong><span>Conservée si mois atypique</span></article>
           <article className="positive"><small>ÉPARGNE AUTOMATIQUE</small><strong>{euro(summary.monthlyPlan.recommendedSavings)}</strong><span>Objectif soutenable calculé</span></article>
         </div>
-        <details><summary>Voir limites par catégorie <b>›</b></summary><div className="monthly-limit-list">{data.categories.filter(({ id }) => summary.monthlyPlan.categoryLimits[id] > 0).map((category) => <article key={category.id}><span>{category.label}</span><b>{euro(summary.monthlyPlan.categoryLimits[category.id])}</b></article>)}</div></details>
+        <details><summary>Voir limites fixes + enveloppe <b>›</b></summary><div className="monthly-limit-list">{data.categories.filter(({ id }) => summary.monthlyPlan.categoryLimits[id] > 0).map((category) => <article key={category.id}><span>{category.label}</span><b>{euro(summary.monthlyPlan.categoryLimits[category.id])}</b></article>)}</div></details>
         <details><summary>Récurrents détectés · {summary.detectedRecurring.length} <b>›</b></summary><div className="monthly-limit-list">{summary.detectedRecurring.map((item) => <article key={item.id}><span>{item.name}<small>{data.categories.find(({ id }) => id === item.category)?.label || "Autres"} · {item.months} mois</small></span><b>{euro(item.monthlyNet)} / mois</b></article>)}</div></details>
-        {summary.spendingEnvelopes[0] && <footer>{summary.spendingEnvelopes[0].name}: médiane historique {euro(summary.spendingEnvelopes[0].historicalMedian)} · plafond conseillé −10% {euro(summary.spendingEnvelopes[0].recommendedFunding)} · ne pas recharger après dépassement.</footer>}
+        {summary.spendingEnvelopes[0] && <footer>{summary.spendingEnvelopes[0].name}: médiane historique {euro(summary.spendingEnvelopes[0].historicalMedian)} · plafond conseillé −10% {euro(summary.spendingEnvelopes[0].recommendedFunding)} · toutes dépenses variables passent ici; achat ailleurs s’ajoute au plafond.</footer>}
       </section>
 
       <section className="panel spending-plan">
