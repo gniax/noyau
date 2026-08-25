@@ -133,7 +133,7 @@ export class EnableBankingService {
     return `${unsigned}.${signature}`;
   }
 
-  async request(pathname, { method = "GET", body } = {}) {
+  async request(pathname, { method = "GET", body } = {}, attempt = 0) {
     const response = await this.fetch(`${API_BASE}${pathname}`, {
       method,
       headers: {
@@ -147,6 +147,12 @@ export class EnableBankingService {
     const raw = await response.text();
     let payload = null;
     try { payload = raw ? JSON.parse(raw) : {}; } catch { payload = { message: raw }; }
+    if (response.status === 429 && attempt < 2) {
+      const retryAfter = Number(response.headers.get("retry-after"));
+      const delay = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(10_000, retryAfter * 1000) : 1000 * (attempt + 1);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return this.request(pathname, { method, body }, attempt + 1);
+    }
     if (!response.ok) throw new Error(`Enable Banking (${response.status}): ${text(payload?.message || payload?.error || "requête refusée")}`);
     return payload;
   }
@@ -259,33 +265,41 @@ export class EnableBankingService {
   }
 
   async sync(bankId = null) {
-    const targets = Object.entries(this.store.all()).filter(([id, value]) => id.startsWith("connection-") && value?.sessionId && (!bankId || value.bankId === bankId));
+    const targets = Object.entries(this.store.all())
+      .filter(([id, value]) => id.startsWith("connection-") && value?.sessionId && (!bankId || value.bankId === bankId))
+      .sort(([, left], [, right]) => String(left.lastSyncAt || "").localeCompare(String(right.lastSyncAt || "")));
     if (!targets.length) throw new Error("Aucun compte bancaire lié.");
-    const dateFrom = new Date(this.now().getTime() - 120 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const fullHistoryFrom = new Date(this.now().getTime() - 120 * 24 * 60 * 60 * 1000);
     let imported = 0;
     let updated = 0;
     let skipped = 0;
     for (const [id, connection] of targets) {
+      const lastSync = new Date(connection.lastSyncAt || 0);
+      const overlapFrom = new Date(lastSync.getTime() - 3 * 24 * 60 * 60 * 1000);
+      const dateFrom = new Date(Math.max(fullHistoryFrom.getTime(), Number.isNaN(overlapFrom.getTime()) ? 0 : overlapFrom.getTime())).toISOString().slice(0, 10);
+      const balancesFresh = !Number.isNaN(lastSync.getTime()) && this.now().getTime() - lastSync.getTime() < 10 * 60 * 1000;
       const connectionTransactions = [];
       const syncedAccounts = [];
       for (const account of connection.accounts || []) {
         let syncedAccount = account;
-        try {
-          const payload = await this.request(`/accounts/${encodeURIComponent(account.uid)}/balances`);
-          const priorities = ["ITAV", "CLAV", "FWAV", "ITBD", "CLBD", "INFO", "OTHR"];
-          const balances = (payload.balances || []).filter((balance) => balance.balance_amount?.currency === "EUR" && Number.isFinite(Number(balance.balance_amount?.amount)));
-          const priority = (balance) => {
-            const index = priorities.indexOf(balance.balance_type);
-            return index < 0 ? priorities.length : index;
-          };
-          const selected = [...balances].sort((left, right) => priority(left) - priority(right))[0];
-          if (selected) syncedAccount = {
-            ...account,
-            balance: Math.round(Number(selected.balance_amount.amount) * 100) / 100,
-            balanceType: text(selected.balance_type, 8),
-            balanceAt: selected.last_change_date_time || selected.reference_date || this.now().toISOString(),
-          };
-        } catch { /* solde facultatif selon banque */ }
+        if (!balancesFresh) {
+          try {
+            const payload = await this.request(`/accounts/${encodeURIComponent(account.uid)}/balances`);
+            const priorities = ["ITAV", "CLAV", "FWAV", "ITBD", "CLBD", "INFO", "OTHR"];
+            const balances = (payload.balances || []).filter((balance) => balance.balance_amount?.currency === "EUR" && Number.isFinite(Number(balance.balance_amount?.amount)));
+            const priority = (balance) => {
+              const index = priorities.indexOf(balance.balance_type);
+              return index < 0 ? priorities.length : index;
+            };
+            const selected = [...balances].sort((left, right) => priority(left) - priority(right))[0];
+            if (selected) syncedAccount = {
+              ...account,
+              balance: Math.round(Number(selected.balance_amount.amount) * 100) / 100,
+              balanceType: text(selected.balance_type, 8),
+              balanceAt: selected.last_change_date_time || selected.reference_date || this.now().toISOString(),
+            };
+          } catch { /* solde facultatif selon banque */ }
+        }
         syncedAccounts.push(syncedAccount);
         let continuationKey = null;
         for (let page = 0; page < 20; page += 1) {

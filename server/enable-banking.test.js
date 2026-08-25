@@ -11,8 +11,8 @@ class MemoryStore {
   async remove(id) { delete this.data[id]; }
 }
 
-function jsonResponse(payload, status = 200) {
-  return { ok: status >= 200 && status < 300, status, async text() { return JSON.stringify(payload); } };
+function jsonResponse(payload, status = 200, headers = {}) {
+  return { ok: status >= 200 && status < 300, status, headers: { get(name) { return headers[name.toLowerCase()] || null; } }, async text() { return JSON.stringify(payload); } };
 }
 
 function keys() {
@@ -50,6 +50,7 @@ test("Enable Banking completes consent and imports booked EUR transactions once"
   const imported = [];
   const finance = { async importTransactions(items) { imported.push(...items); return { imported: items.length, updated: 0 }; } };
   let authBody;
+  const transactionUrls = [];
   const service = new EnableBankingService({
     store: new MemoryStore(),
     finance,
@@ -62,7 +63,10 @@ test("Enable Banking completes consent and imports booked EUR transactions once"
       }
       if (url.endsWith("/sessions")) return jsonResponse({ session_id: "session-1", access: { valid_until: "2026-11-23T08:00:00Z" }, accounts: [{ uid: "account-1", identification_hash: "hash-1", name: "Compte courant", currency: "EUR", account_id: { iban: "FR761234567890" } }] });
       if (url.endsWith("/accounts/account-1/balances")) return jsonResponse({ balances: [{ balance_type: "CLAV", balance_amount: { amount: "1234.56", currency: "EUR" }, reference_date: "2026-08-25" }] });
-      if (url.includes("/accounts/account-1/transactions?")) return jsonResponse({ transactions: [{ entry_reference: "entry-1", status: "BOOK", credit_debit_indicator: "DBIT", booking_date: "2026-08-20", transaction_amount: { amount: "950.00", currency: "EUR" }, creditor: { name: "Loyer résidence" } }] });
+      if (url.includes("/accounts/account-1/transactions?")) {
+        transactionUrls.push(url);
+        return jsonResponse({ transactions: [{ entry_reference: "entry-1", status: "BOOK", credit_debit_indicator: "DBIT", booking_date: "2026-08-20", transaction_amount: { amount: "950.00", currency: "EUR" }, creditor: { name: "Loyer résidence" } }] });
+      }
       throw new Error(`Unexpected URL ${url}`);
     },
   });
@@ -78,4 +82,22 @@ test("Enable Banking completes consent and imports booked EUR transactions once"
   assert.equal(imported[0].category, "housing");
   assert.equal(service.status().connections[0].accounts[0].masked, "•••• 7890");
   assert.equal(service.status().connections[0].accounts[0].balance, 1234.56);
+  await service.sync();
+  assert.equal(imported.length, 2);
+  assert.match(transactionUrls.at(-1), /date_from=2026-08-22/);
+});
+
+test("Enable Banking retries rate limits", async () => {
+  const pair = keys();
+  let calls = 0;
+  const service = new EnableBankingService({
+    store: new MemoryStore(),
+    fetchImpl: async () => {
+      calls += 1;
+      return calls === 1 ? jsonResponse({ message: "Too many requests" }, 429, { "retry-after": "0.001" }) : jsonResponse({ ok: true });
+    },
+  });
+  await service.saveConfig({ appId: "app-12345678", privateKey: pair.privateKey, redirectUrl: "https://noyau.lan:4243/api/finance/banking/callback" });
+  assert.deepEqual(await service.request("/test"), { ok: true });
+  assert.equal(calls, 2);
 });
