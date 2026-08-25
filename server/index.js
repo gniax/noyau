@@ -131,6 +131,11 @@ const tmux = new TmuxController({
   codexBinary,
   claudeBinary,
 });
+const restorePlan = await tmux.initializeRestorePlan();
+const restoreResult = await tmux.restorePersisted();
+if (restorePlan.migrated || restoreResult.restored.length || restoreResult.failed.length) {
+  console.log(`Restauration agents: ${restoreResult.restored.length} repris, ${restoreResult.failed.length} échecs, ${restorePlan.migrated} états initialisés.`);
+}
 const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, cwd: root });
 financeService.setAdvisor(({ message, month, action }) => financeAdvisor.answer({ message, month, action, payload: financePayload(month), history: financeService.agentHistory() }));
 financeService.setClassifier((groups, categories) => financeAdvisor.classify(groups, categories));

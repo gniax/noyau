@@ -24,6 +24,7 @@ test("unrestricted mode uses agent-specific CLI flag", async () => {
   await controller.create({ assistant: "codex", cwd: os.tmpdir(), yolo: true });
   assert.deepEqual(command.slice(command.indexOf("codex")), ["codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false"]);
   assert.equal(saved[0].runningYolo, true);
+  assert.equal(saved[0].autoRestore, true);
 
   await controller.create({ assistant: "claude", cwd: os.tmpdir(), yolo: true });
   assert.deepEqual(command.slice(command.indexOf("claude")), ["claude", "--dangerously-skip-permissions"]);
@@ -35,4 +36,43 @@ test("agent restart targets first pane and preserves exact context", async () =>
   controller.run = async (args) => { command = args; return { stdout: "" }; };
   await controller.restartAgent({ id: "noyau-codex-safe", assistant: "codex", cwd: os.tmpdir(), threadId: "thread-id", yolo: true });
   assert.deepEqual(command, ["respawn-pane", "-k", "-t", "=noyau-codex-safe:0.0", "-c", os.tmpdir(), "codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false", "resume", "thread-id"]);
+});
+
+test("legacy restore plan keeps only live sessions", async () => {
+  const data = {
+    "noyau-codex-live": { assistant: "codex" },
+    "noyau-codex-stale": { assistant: "codex" },
+  };
+  const store = {
+    all: () => data,
+    setMany: async (entries) => entries.forEach(([id, value]) => { data[id] = value; }),
+  };
+  const controller = new TmuxController({ store, workspaceRoot: os.tmpdir() });
+  controller.list = async () => [{ id: "noyau-codex-live" }];
+  const result = await controller.initializeRestorePlan();
+  assert.deepEqual(result, { live: 1, migrated: 2 });
+  assert.equal(data["noyau-codex-live"].autoRestore, true);
+  assert.equal(data["noyau-codex-stale"].autoRestore, false);
+});
+
+test("boot restore resumes exact agent contexts", async () => {
+  const data = {
+    "noyau-codex-safe": { assistant: "codex", cwd: os.tmpdir(), yolo: true, threadId: "codex-thread", autoRestore: true },
+    "noyau-claude-safe": { assistant: "claude", cwd: os.tmpdir(), yolo: true, agentSessionId: "claude-session", autoRestore: true },
+    "noyau-shell-safe": { assistant: "shell", cwd: os.tmpdir(), autoRestore: true },
+  };
+  const store = {
+    all: () => data,
+    set: async (id, value) => { data[id] = value; },
+  };
+  const commands = [];
+  const controller = new TmuxController({ store, workspaceRoot: os.tmpdir() });
+  controller.list = async () => [];
+  controller.run = async (args) => { commands.push(args); return { stdout: "" }; };
+  const result = await controller.restorePersisted();
+  assert.deepEqual(result.failed, []);
+  assert.equal(result.restored.length, 3);
+  assert.deepEqual(commands[0], ["new-session", "-d", "-s", "noyau-codex-safe", "-c", os.tmpdir(), "-e", "NOYAU_SESSION_ID=noyau-codex-safe", "codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false", "resume", "codex-thread"]);
+  assert.deepEqual(commands[1], ["new-session", "-d", "-s", "noyau-claude-safe", "-c", os.tmpdir(), "-e", "NOYAU_SESSION_ID=noyau-claude-safe", "claude", "--dangerously-skip-permissions", "--resume", "claude-session"]);
+  assert.deepEqual(commands[2], ["new-session", "-d", "-s", "noyau-shell-safe", "-c", os.tmpdir(), "-e", "NOYAU_SESSION_ID=noyau-shell-safe"]);
 });

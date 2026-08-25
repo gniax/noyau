@@ -88,6 +88,49 @@ export class TmuxController {
     }
   }
 
+  async initializeRestorePlan() {
+    const live = new Set((await this.list()).map(({ id }) => id));
+    const legacy = Object.entries(this.store.all())
+      .filter(([id, entry]) => validSessionId(id) && id.startsWith("noyau-") && typeof entry.autoRestore !== "boolean")
+      .map(([id, entry]) => [id, { ...entry, autoRestore: live.has(id) }]);
+    if (legacy.length) await this.store.setMany(legacy);
+    return { live: live.size, migrated: legacy.length };
+  }
+
+  async restorePersisted() {
+    const live = new Set((await this.list()).map(({ id }) => id));
+    const restored = [];
+    const failed = [];
+    for (const [id, entry] of Object.entries(this.store.all())) {
+      if (!entry.autoRestore || live.has(id) || !validSessionId(id) || !id.startsWith("noyau-")) continue;
+      try {
+        if (!["codex", "claude", "shell"].includes(entry.assistant)) throw new Error("Assistant invalide.");
+        const cwd = path.resolve(entry.cwd || this.workspaceRoot);
+        const stat = await fs.stat(cwd);
+        if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
+        const args = ["new-session", "-d", "-s", id, "-c", cwd, "-e", `NOYAU_SESSION_ID=${id}`];
+        if (entry.assistant === "codex") {
+          args.push(this.commands.codex, "--no-alt-screen");
+          if (entry.yolo) args.push("--yolo");
+          args.push("-c", "check_for_update_on_startup=false", "resume", entry.threadId ? String(entry.threadId) : "--last");
+        } else if (entry.assistant === "claude") {
+          args.push(this.commands.claude);
+          if (entry.yolo) args.push("--dangerously-skip-permissions");
+          args.push(entry.agentSessionId ? "--resume" : "--continue");
+          if (entry.agentSessionId) args.push(String(entry.agentSessionId));
+        }
+        await this.run(args);
+        live.add(id);
+        await this.store.set(id, { ...entry, runningYolo: Boolean(entry.yolo), agentState: "available", agentStateUpdatedAt: new Date().toISOString(), restoredAt: new Date().toISOString(), restoreError: null });
+        restored.push(id);
+      } catch (error) {
+        await this.store.set(id, { ...entry, restoreError: error.message, restoreFailedAt: new Date().toISOString() });
+        failed.push({ id, error: error.message });
+      }
+    }
+    return { restored, failed };
+  }
+
   async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, favorite = false }) {
     if (!["codex", "claude", "shell"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
@@ -121,6 +164,7 @@ export class TmuxController {
       projectLogo: Boolean(projectLogo),
       projectId: projectId || null,
       favorite: Boolean(favorite),
+      autoRestore: true,
       agentState: prompt ? "working" : "available",
       agentStateUpdatedAt: new Date().toISOString(),
     };
