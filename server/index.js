@@ -112,6 +112,7 @@ const moduleService = new ModuleService({
 const financeService = new FinanceService({
   store: financeStore,
 });
+await financeService.migrateLegacyModules();
 const environmentBankingConfig = process.env.NOYAU_ENABLE_BANKING_APP_ID && process.env.NOYAU_ENABLE_BANKING_PRIVATE_KEY && process.env.NOYAU_ENABLE_BANKING_REDIRECT_URL
   ? {
       appId: process.env.NOYAU_ENABLE_BANKING_APP_ID,
@@ -326,6 +327,32 @@ app.patch("/api/finance/settings", async (request, response, next) => {
     await financeService.updateSettings(request.body);
     const month = request.body?.month || new Date().toISOString().slice(0, 7);
     response.json(financeService.payload(month));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/finance/modules", async (request, response, next) => {
+  try {
+    const module = await financeService.addModule(request.body);
+    response.status(201).json({ module });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/finance/modules/:id", async (request, response, next) => {
+  try {
+    response.json({ module: await financeService.updateModule(request.params.id, request.body) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/finance/modules/:id", async (request, response, next) => {
+  try {
+    await financeService.removeModule(request.params.id);
+    response.status(204).end();
   } catch (error) {
     next(error);
   }
@@ -836,6 +863,9 @@ server.on("upgrade", upgradeTerminal);
 secureServer?.on("upgrade", upgradeTerminal);
 
 sockets.on("connection", (websocket, request) => {
+  const terminalUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+  const initialCols = Math.max(20, Math.min(300, Math.trunc(Number(terminalUrl.searchParams.get("cols"))) || 100));
+  const initialRows = Math.max(5, Math.min(120, Math.trunc(Number(terminalUrl.searchParams.get("rows"))) || 30));
   const specialKeys = {
     Enter: "C-m",
     Backspace: "BSpace",
@@ -852,8 +882,8 @@ sockets.on("connection", (websocket, request) => {
   let keyQueue = Promise.resolve();
   const terminal = pty.spawn(tmux.binary, ["attach-session", "-t", `=${request.sessionId}`], {
     name: "xterm-256color",
-    cols: 100,
-    rows: 30,
+    cols: initialCols,
+    rows: initialRows,
     cwd: workspaceRoot,
     env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },
   });

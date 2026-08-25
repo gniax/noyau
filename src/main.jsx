@@ -202,7 +202,7 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span>◫</span>Projets</button>
         <button><span>↗</span>Veille <em>Bientôt</em></button>
-        <button className={!activeId && ["finances", "finance-transactions", "finance-agent"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
+        <button className={!activeId && ["finances", "finance-transactions", "finance-agent", "finance-modules"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
         <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
       </nav>
       <div className="sidebar-title"><span>AGENTS</span><button onClick={onNew} aria-label="Nouvelle session">+</button></div>
@@ -549,6 +549,7 @@ function BudgetMenu({ onView }) {
       <summary aria-label="Ouvrir menu Budget" title="Menu Budget">＋</summary>
       <nav>
         <button onClick={() => onView("finance-transactions")}><span>±</span><b>Opérations</b><small>Saisie et historique</small></button>
+        <button onClick={() => onView("finance-modules")}><span>◇</span><b>Modules financiers</b><small>Actifs, charges, enveloppes</small></button>
       </nav>
     </details>
   );
@@ -599,8 +600,6 @@ function FinanceView({ onView }) {
       setSettings({
         ...payload.settings,
         savingsGoal: String(payload.settings.savingsGoal || ""),
-        liquidSavings: String(payload.settings.liquidSavings || ""),
-        investedAssets: String(payload.settings.investedAssets || ""),
         safetyBuffer: String(payload.settings.safetyBuffer || ""),
         budgets: Object.fromEntries(Object.entries(payload.settings.budgets).map(([id, value]) => [id, String(value || "")])),
       });
@@ -627,8 +626,6 @@ function FinanceView({ onView }) {
         body: JSON.stringify({
           month,
           savingsGoal: Number(settings.savingsGoal || 0),
-          liquidSavings: Number(settings.liquidSavings || 0),
-          investedAssets: Number(settings.investedAssets || 0),
           safetyBuffer: Number(settings.safetyBuffer || 0),
           emergencyMonths: Number(settings.emergencyMonths),
           budgets: Object.fromEntries(Object.entries(settings.budgets).map(([id, value]) => [id, Number(value || 0)])),
@@ -681,7 +678,7 @@ function FinanceView({ onView }) {
             <span><small>Charges essentielles restantes</small><b>− {euro(summary.futureEssentialExpenses)}</b></span>
             <span><small>Réserve imprévus {summary.safetyBufferAutomatic ? "auto" : "fixe"}</small><b>− {euro(summary.safetyBuffer)}</b></span>
             <span><small>Épargne soutenable protégée</small><b>− {euro(summary.protectedSavings)}</b></span>
-            {summary.spendingEnvelope && <span><small>Enveloppe Revolut restante</small><b className={summary.spendingEnvelope.remaining < 0 ? "negative" : "positive"}>{summary.spendingEnvelope.remaining < 0 ? "− " : "+ "}{euro(Math.abs(summary.spendingEnvelope.remaining))}</b></span>}
+            {summary.spendingEnvelopes.map((envelope) => <span key={envelope.id}><small>{envelope.name} restante</small><b className={envelope.remaining < 0 ? "negative" : "positive"}>{envelope.remaining < 0 ? "− " : "+ "}{euro(Math.abs(envelope.remaining))}</b></span>)}
             {summary.flexibleBudgetApplied && <span><small>Plafond budgets libres</small><b>{euro(summary.flexibleBudgetRemaining)}</b></span>}
           </div>
           <div className="month-forecast">
@@ -723,8 +720,6 @@ function FinanceView({ onView }) {
           <div className="finance-form-grid">
             <label><span>Objectif épargne / mois</span><input type="number" min="0" step="0.01" value={settings.savingsGoal} onChange={(event) => setSettings({ ...settings, savingsGoal: event.target.value })} placeholder="0 €" /></label>
             <label><span>Réserve imprévus (0 = auto)</span><input type="number" min="0" step="0.01" value={settings.safetyBuffer} onChange={(event) => setSettings({ ...settings, safetyBuffer: event.target.value })} placeholder="Auto" /></label>
-            <label><span>Épargne liquide (LEP…)</span><input type="number" min="0" step="0.01" value={settings.liquidSavings} onChange={(event) => setSettings({ ...settings, liquidSavings: event.target.value })} placeholder="0 €" /></label>
-            <label><span>Placements (PEA…)</span><input type="number" min="0" step="0.01" value={settings.investedAssets} onChange={(event) => setSettings({ ...settings, investedAssets: event.target.value })} placeholder="0 €" /></label>
             <label><span>Fonds sécurité</span><select value={settings.emergencyMonths} onChange={(event) => setSettings({ ...settings, emergencyMonths: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6, 9, 12].map((value) => <option key={value} value={value}>{value} mois</option>)}</select></label>
           </div>
           <div className="budget-inputs">{data.categories.map((category) => <label key={category.id}><span>{category.label}</span><input type="number" min="0" step="0.01" value={settings.budgets[category.id]} onChange={(event) => setSettings({ ...settings, budgets: { ...settings.budgets, [category.id]: event.target.value } })} placeholder="Budget €" /></label>)}</div>
@@ -732,6 +727,121 @@ function FinanceView({ onView }) {
       </section>
       <BankingPanel banks={data.banking.banks} month={month} onSynced={load} />
       <FinanceAgentDock month={month} onExpand={() => onView("finance-agent")} onChanged={load} />
+    </div>
+  );
+}
+
+function financeModuleDraft(module = {}) {
+  return {
+    moduleType: module.moduleType || "asset",
+    name: module.name || "",
+    enabled: module.enabled !== false,
+    amount: module.amount === undefined ? "" : String(module.amount),
+    bucket: module.bucket || "liquid",
+    institution: module.institution || "",
+    accountMatch: module.accountMatch || "",
+    transactionMatch: module.transactionMatch || "",
+    category: module.category || "housing",
+    startDate: module.startDate || new Date().toISOString().slice(0, 10),
+    endDate: module.endDate || "",
+    dayOfMonth: module.dayOfMonth || 1,
+  };
+}
+
+function FinanceModuleFields({ draft, onChange, categories, lockType = false }) {
+  const field = (key, value) => onChange({ ...draft, [key]: value });
+  return (
+    <div className="finance-module-fields">
+      <label><span>Type</span><select value={draft.moduleType} disabled={lockType} onChange={(event) => field("moduleType", event.target.value)}><option value="asset">Actif</option><option value="recurring">Charge récurrente</option><option value="envelope">Enveloppe dépenses</option><option value="transfer">Règle transfert interne</option></select></label>
+      <label className="wide"><span>Nom</span><input value={draft.name} onChange={(event) => field("name", event.target.value)} maxLength="120" required placeholder="Nom libre" /></label>
+      {draft.moduleType === "asset" && <>
+        <label><span>Valeur actuelle</span><input type="number" min="0" step="0.01" value={draft.amount} onChange={(event) => field("amount", event.target.value)} required placeholder="0,00 €" /></label>
+        <label><span>Classe</span><select value={draft.bucket} onChange={(event) => field("bucket", event.target.value)}><option value="liquid">Liquide</option><option value="invested">Investi</option></select></label>
+        <label><span>Établissement</span><input value={draft.institution} onChange={(event) => field("institution", event.target.value)} maxLength="80" placeholder="Optionnel" /></label>
+        <label className="wide"><span>Motifs transferts à exclure</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" placeholder="Sépare avec virgules" /></label>
+      </>}
+      {draft.moduleType === "recurring" && <>
+        <label><span>Montant mensuel</span><input type="number" min="0.01" step="0.01" value={draft.amount} onChange={(event) => field("amount", event.target.value)} required /></label>
+        <label><span>Catégorie</span><select value={draft.category} onChange={(event) => field("category", event.target.value)}>{categories.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label>
+        <label><span>Jour</span><input type="number" min="1" max="31" value={draft.dayOfMonth} onChange={(event) => field("dayOfMonth", event.target.value)} required /></label>
+        <label><span>Début</span><input type="date" value={draft.startDate} onChange={(event) => field("startDate", event.target.value)} required /></label>
+        <label><span>Fin</span><input type="date" value={draft.endDate} onChange={(event) => field("endDate", event.target.value)} /></label>
+        <label className="wide"><span>Motifs bancaires pour catégorie</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" placeholder="Nom créancier, séparé par virgules" /></label>
+      </>}
+      {draft.moduleType === "envelope" && <label className="wide"><span>Nom du compte à suivre</span><input value={draft.accountMatch} onChange={(event) => field("accountMatch", event.target.value)} maxLength="120" required placeholder="Correspondance partielle" /></label>}
+      {draft.moduleType === "transfer" && <label className="wide"><span>Motifs transactions à exclure</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" required placeholder="Sépare avec virgules" /></label>}
+      <label className="module-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => field("enabled", event.target.checked)} /><span>Module actif</span></label>
+    </div>
+  );
+}
+
+function FinanceModuleEditor({ module, categories, onSaved, onRemoved }) {
+  const [draft, setDraft] = useState(() => financeModuleDraft(module));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function save(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/finance/modules/${encodeURIComponent(module.id)}`, { method: "PATCH", body: JSON.stringify({ ...draft, amount: Number(draft.amount || 0), dayOfMonth: Number(draft.dayOfMonth), endDate: draft.endDate || null }) });
+      await onSaved();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function remove() {
+    if (!window.confirm(`Supprimer module « ${module.name} » ?`)) return;
+    setBusy(true);
+    try {
+      await api(`/api/finance/modules/${encodeURIComponent(module.id)}`, { method: "DELETE" });
+      await onRemoved();
+    } catch (reason) {
+      setError(reason.message);
+      setBusy(false);
+    }
+  }
+  const typeLabel = { asset: "ACTIF", recurring: "CHARGE", envelope: "ENVELOPPE", transfer: "TRANSFERT" }[module.moduleType];
+  return <form className="panel finance-module-card" onSubmit={save}><div className="panel-head"><div><h3>{module.name}</h3><p>{typeLabel} · {module.enabled === false ? "désactivé" : "actif"}</p></div><div className="module-actions"><button type="button" className="danger-link" onClick={remove} disabled={busy} aria-label={`Supprimer ${module.name}`}>×</button><button className="primary" disabled={busy}>{busy ? "…" : "Enregistrer"}</button></div></div>{error && <p className="finance-error">{error}</p>}<FinanceModuleFields draft={draft} onChange={setDraft} categories={categories} lockType /></form>;
+}
+
+function FinanceModulesView({ onView }) {
+  const [data, setData] = useState(null);
+  const [draft, setDraft] = useState(() => financeModuleDraft());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const load = useCallback(async () => {
+    try {
+      setData(await api(`/api/finance?month=${new Date().toISOString().slice(0, 7)}`));
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  async function add(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api("/api/finance/modules", { method: "POST", body: JSON.stringify({ ...draft, amount: Number(draft.amount || 0), dayOfMonth: Number(draft.dayOfMonth), endDate: draft.endDate || null }) });
+      setDraft(financeModuleDraft());
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const modules = data?.modules || [];
+  return (
+    <div className="page finance-page finance-modules-page">
+      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · COMPOSANTS</p><h1>Modules financiers.</h1><p className="muted">Données et règles configurables. Aucun compte personnel codé dans moteur.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /></div></section>
+      {error && <p className="finance-error">{error}</p>}
+      <form className="panel finance-module-card new-module" onSubmit={add}><div className="panel-head"><div><h3>Nouveau module</h3><p>Actif, charge, enveloppe ou exclusion transfert</p></div><button className="primary" disabled={busy}>{busy ? "Ajout…" : "Ajouter"}</button></div><FinanceModuleFields draft={draft} onChange={setDraft} categories={data?.categories || []} /></form>
+      <section className="finance-module-list">{modules.map((module) => <FinanceModuleEditor key={module.id} module={module} categories={data.categories} onSaved={load} onRemoved={load} />)}{data && !modules.length && <section className="panel"><p className="finance-empty">Aucun module.</p></section>}</section>
     </div>
   );
 }
@@ -989,6 +1099,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(terminalNode.current);
+    fit.fit();
     terminalRef.current = terminal;
     const xtermViewport = terminalNode.current.querySelector(".xterm-viewport");
     if (coarsePointer) {
@@ -1110,12 +1221,14 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     };
     const connect = () => {
       if (disposed || socketRef.current?.readyState === WebSocket.OPEN || socketRef.current?.readyState === WebSocket.CONNECTING) return;
-      socket = new WebSocket(`${protocol}//${location.host}/ws/terminal/${session.id}`);
+      const terminalSize = new URLSearchParams({ cols: String(terminal.cols), rows: String(terminal.rows) });
+      socket = new WebSocket(`${protocol}//${location.host}/ws/terminal/${session.id}?${terminalSize}`);
       socketRef.current = socket;
       socket.addEventListener("open", () => {
         snapBottomRef.current = true;
         setConnected(true);
         resize();
+        socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
         if (!coarsePointer) terminal.focus();
       });
       socket.addEventListener("message", handleMessage);
@@ -1499,7 +1612,7 @@ function App() {
   const [moduleProposals, setModuleProposals] = useState([]);
   const [quotas, setQuotas] = useState({ codex: null, claude: null });
   const [activeId, setActiveId] = useState(() => new URLSearchParams(location.search).get("session"));
-  const [view, setView] = useState(() => ["projects", "finances", "finance-transactions", "finance-agent", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
+  const [view, setView] = useState(() => ["projects", "finances", "finance-transactions", "finance-agent", "finance-modules", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
   const [modal, setModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [projectModalId, setProjectModalId] = useState(null);
@@ -1773,6 +1886,7 @@ function App() {
             {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
             {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
             {view === "finance-agent" && <><Header title="Budget · Agent" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}
+            {view === "finance-modules" && <><Header title="Budget · Modules" subtitle="Actifs et règles" onMenu={() => setMenu(true)} /><FinanceModulesView onView={setView} /></>}
             {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} /></>}
           </>
         ) : (

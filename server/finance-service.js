@@ -12,14 +12,13 @@ export const FINANCE_CATEGORIES = [
 ];
 
 const CATEGORY_IDS = new Set(FINANCE_CATEGORIES.map(({ id }) => id));
+const MODULE_TYPES = new Set(["asset", "recurring", "envelope", "transfer"]);
 const ESSENTIAL_CATEGORY_IDS = new Set(["housing", "food", "transport", "subscriptions", "health"]);
 const PACED_CATEGORY_IDS = new Set(["food", "transport", "shopping", "health", "leisure", "other"]);
 const SALARY_PATTERN = /salaire|salary|payroll|remuneration|traitement|fiche de paie|virement employeur/;
-const INVESTMENT_TRANSFER_PATTERN = /\bamundi\b|\bepargne\b|\blivret\b|\blep\b|\bpea\b|assurance vie|compte titres/;
+const INVESTMENT_TRANSFER_PATTERN = /\bepargne\b|\blivret\b|assurance vie|compte titres/;
 const DEFAULT_SETTINGS = {
   savingsGoal: 0,
-  liquidSavings: 0,
-  investedAssets: 0,
   safetyBuffer: 0,
   emergencyMonths: 3,
   budgets: Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, 0])),
@@ -91,6 +90,10 @@ function normalized(value) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function matchTerms(value) {
+  return String(value || "").split(/[\n,;|]+/).map(normalized).filter(Boolean);
+}
+
 function transferSignature(description) {
   return normalized(description).replace(/^(?:vir|virement)(?: sepa| inst| instantane)?\s+/, "");
 }
@@ -99,7 +102,10 @@ function cardPurchaseSignature(description) {
   return normalized(description).replace(/\s+cb\s+\d+.*$/, "");
 }
 
-function classifyTransactions(items) {
+function classifyTransactions(items, modules = []) {
+  const configuredTransferMatchers = modules
+    .filter(({ moduleType, enabled, transactionMatch }) => ["asset", "transfer"].includes(moduleType) && enabled !== false && transactionMatch)
+    .flatMap(({ moduleType, transactionMatch }) => matchTerms(transactionMatch).map((match) => ({ match, reason: moduleType === "asset" ? "placement" : "transfert-interne" })));
   const directions = new Map();
   for (const transaction of items) {
     if (transaction.source !== "enable-banking") continue;
@@ -114,8 +120,9 @@ function classifyTransactions(items) {
   for (const transaction of items) {
     if (transaction.source !== "enable-banking") continue;
     const description = normalized(transaction.description);
-    if (INVESTMENT_TRANSFER_PATTERN.test(description)) {
-      result.set(transaction.id, "placement");
+    const configuredTransfer = configuredTransferMatchers.find(({ match }) => description.includes(match));
+    if (INVESTMENT_TRANSFER_PATTERN.test(description) || configuredTransfer) {
+      result.set(transaction.id, configuredTransfer?.reason || "placement");
       continue;
     }
     const rawDescription = normalized(transaction.description);
@@ -173,6 +180,18 @@ function categoryForDescription(description) {
   return "other";
 }
 
+function applyCategoryModules(items, modules) {
+  const matchers = modules
+    .filter(({ moduleType, enabled, transactionMatch }) => moduleType === "recurring" && enabled !== false && transactionMatch)
+    .flatMap(({ transactionMatch, category }) => matchTerms(transactionMatch).map((match) => ({ match, category })));
+  if (!matchers.length) return items;
+  return items.map((transaction) => {
+    if (transaction.amount >= 0) return transaction;
+    const category = matchers.find(({ match }) => normalized(transaction.description).includes(match))?.category;
+    return category ? { ...transaction, category } : transaction;
+  });
+}
+
 function frenchDate(value, now) {
   const match = normalized(value).match(/(?:^|\s)(\d{1,2})(?:er)?\s+(janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre)(?:\s+(\d{4}))?/);
   if (!match) return null;
@@ -208,13 +227,52 @@ export class FinanceService {
 
   settings() {
     const saved = this.store.get("settings") || {};
-    const { monthlyIncome: _ignored, currentSavings, ...stored } = saved;
+    const { monthlyIncome: _ignored, currentSavings: _legacySavings, liquidSavings: _legacyLiquid, investedAssets: _legacyInvested, ...stored } = saved;
     return {
       ...DEFAULT_SETTINGS,
       ...stored,
-      liquidSavings: stored.liquidSavings ?? currentSavings ?? 0,
       budgets: { ...DEFAULT_SETTINGS.budgets, ...(saved.budgets || {}) },
     };
+  }
+
+  modules() {
+    return Object.entries(this.store.all())
+      .filter(([id, value]) => id.startsWith("finance-module-") && value?.type === "finance-module" && MODULE_TYPES.has(value.moduleType))
+      .map(([id, value]) => ({ id, ...value }))
+      .sort((a, b) => a.moduleType.localeCompare(b.moduleType) || a.name.localeCompare(b.name, "fr"));
+  }
+
+  async migrateLegacyModules() {
+    const entries = [];
+    const removals = [];
+    for (const [id, value] of Object.entries(this.store.all())) {
+      if (!id.startsWith("recurring-") || value?.type !== "recurring") continue;
+      entries.push([`finance-module-${id.slice("recurring-".length)}`, {
+        ...value,
+        type: "finance-module",
+        moduleType: "recurring",
+        name: value.description,
+        enabled: true,
+      }]);
+      removals.push(id);
+    }
+    const saved = this.store.get("settings") || {};
+    const legacyLiquid = Number(saved.liquidSavings ?? saved.currentSavings ?? 0);
+    const legacyInvested = Number(saved.investedAssets ?? 0);
+    const existingAssets = this.modules().filter(({ moduleType }) => moduleType === "asset");
+    if (legacyLiquid > 0 && !existingAssets.some(({ bucket }) => bucket === "liquid")) entries.push(["finance-module-legacy-liquid", {
+      type: "finance-module", moduleType: "asset", name: "Épargne liquide", amount: round(legacyLiquid), bucket: "liquid", institution: "", transactionMatch: "", enabled: true, createdAt: new Date().toISOString(),
+    }]);
+    if (legacyInvested > 0 && !existingAssets.some(({ bucket }) => bucket === "invested")) entries.push(["finance-module-legacy-invested", {
+      type: "finance-module", moduleType: "asset", name: "Placements", amount: round(legacyInvested), bucket: "invested", institution: "", transactionMatch: "", enabled: true, createdAt: new Date().toISOString(),
+    }]);
+    if (entries.length) await this.store.setMany(entries);
+    if (saved.currentSavings !== undefined || saved.liquidSavings !== undefined || saved.investedAssets !== undefined) {
+      const { currentSavings: _current, liquidSavings: _liquid, investedAssets: _invested, ...cleanSettings } = saved;
+      await this.store.set("settings", cleanSettings);
+    }
+    for (const id of removals) await this.store.remove(id);
+    return { migrated: entries.length };
   }
 
   transactions() {
@@ -225,10 +283,83 @@ export class FinanceService {
   }
 
   recurring() {
-    return Object.entries(this.store.all())
-      .filter(([id, value]) => id.startsWith("recurring-") && value?.type === "recurring")
-      .map(([id, value]) => ({ id, ...value }))
+    return this.modules()
+      .filter(({ moduleType }) => moduleType === "recurring")
       .sort((a, b) => a.startDate.localeCompare(b.startDate) || a.description.localeCompare(b.description));
+  }
+
+  moduleInput(input = {}, existing = null) {
+    const moduleType = String(input.moduleType || existing?.moduleType || "");
+    if (!MODULE_TYPES.has(moduleType)) throw new Error("Type module financier invalide.");
+    const name = String(input.name ?? existing?.name ?? "").trim().slice(0, 120);
+    if (!name) throw new Error("Nom module requis.");
+    const common = {
+      type: "finance-module",
+      moduleType,
+      name,
+      enabled: input.enabled === undefined ? existing?.enabled !== false : Boolean(input.enabled),
+      createdAt: existing?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (moduleType === "asset") {
+      return {
+        ...common,
+        amount: money(input.amount ?? existing?.amount ?? 0, "Montant actif"),
+        bucket: ["liquid", "invested"].includes(input.bucket ?? existing?.bucket) ? input.bucket ?? existing.bucket : "liquid",
+        institution: String(input.institution ?? existing?.institution ?? "").trim().slice(0, 80),
+        transactionMatch: String(input.transactionMatch ?? existing?.transactionMatch ?? "").trim().slice(0, 240),
+      };
+    }
+    if (moduleType === "envelope") {
+      const accountMatch = String(input.accountMatch ?? existing?.accountMatch ?? "").trim().slice(0, 120);
+      if (!accountMatch) throw new Error("Compte à suivre requis.");
+      return { ...common, accountMatch };
+    }
+    if (moduleType === "transfer") {
+      const transactionMatch = String(input.transactionMatch ?? existing?.transactionMatch ?? "").trim().slice(0, 240);
+      if (!matchTerms(transactionMatch).length) throw new Error("Motif transfert requis.");
+      return { ...common, transactionMatch };
+    }
+    const amount = money(input.amount ?? existing?.amount, "Montant charge");
+    if (!amount) throw new Error("Montant nul interdit.");
+    const startDate = validDate(input.startDate ?? existing?.startDate ?? this.now().toISOString().slice(0, 10));
+    const dayOfMonth = Number(input.dayOfMonth ?? existing?.dayOfMonth ?? startDate.slice(8, 10));
+    if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) throw new Error("Jour mensuel invalide.");
+    const endDateValue = input.endDate === undefined ? existing?.endDate : input.endDate;
+    const endDate = endDateValue ? validDate(endDateValue) : null;
+    if (endDate && endDate < startDate) throw new Error("Fin charge antérieure au début.");
+    return {
+      ...common,
+      description: name,
+      amount,
+      category: CATEGORY_IDS.has(input.category ?? existing?.category) ? input.category ?? existing.category : categoryForDescription(name),
+      startDate,
+      endDate,
+      dayOfMonth,
+      account: String(input.account ?? existing?.account ?? "Prévision").trim().slice(0, 60) || "Prévision",
+      transactionMatch: String(input.transactionMatch ?? existing?.transactionMatch ?? "").trim().slice(0, 240),
+    };
+  }
+
+  async addModule(input = {}) {
+    const module = this.moduleInput(input);
+    const id = `finance-module-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
+    await this.store.set(id, module);
+    return { id, ...module };
+  }
+
+  async updateModule(id, input = {}) {
+    if (!/^finance-module-[a-z0-9-]+$/.test(id)) throw new Error("Module financier introuvable.");
+    const existing = this.store.get(id);
+    if (existing?.type !== "finance-module") throw new Error("Module financier introuvable.");
+    const module = this.moduleInput(input, existing);
+    await this.store.set(id, module);
+    return { id, ...module };
+  }
+
+  async removeModule(id) {
+    if (!/^finance-module-[a-z0-9-]+$/.test(id) || this.store.get(id)?.type !== "finance-module") throw new Error("Module financier introuvable.");
+    await this.store.remove(id);
   }
 
   agentHistory() {
@@ -248,20 +379,7 @@ export class FinanceService {
     const startDate = validDate(input.startDate || this.now().toISOString().slice(0, 10));
     const dayOfMonth = input.dayOfMonth === undefined ? Number(startDate.slice(8, 10)) : Number(input.dayOfMonth);
     if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) throw new Error("Jour mensuel invalide.");
-    const id = `recurring-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
-    const rule = {
-      type: "recurring",
-      description,
-      amount,
-      category,
-      startDate,
-      endDate: null,
-      dayOfMonth,
-      account: String(input.account || "Prévision").trim().slice(0, 60) || "Prévision",
-      createdAt: new Date().toISOString(),
-    };
-    await this.store.set(id, rule);
-    return { id, ...rule };
+    return this.addModule({ ...input, moduleType: "recurring", name: description, amount, category, startDate, endDate: null, dayOfMonth });
   }
 
   async changeRecurring({ match, amount, effectiveDate } = {}) {
@@ -274,18 +392,17 @@ export class FinanceService {
     const nextAmount = money(amount, "Nouveau montant");
     if (!nextAmount) throw new Error("Montant nul interdit.");
     if (date <= current.startDate) {
-      const updated = { ...this.store.get(current.id), amount: nextAmount, startDate: date, dayOfMonth: Number(date.slice(8, 10)), updatedAt: new Date().toISOString() };
-      await this.store.set(current.id, updated);
-      return { previous: null, current: { id: current.id, ...updated } };
+      const updated = await this.updateModule(current.id, { amount: nextAmount, startDate: date, dayOfMonth: Number(date.slice(8, 10)) });
+      return { previous: null, current: updated };
     }
-    await this.store.set(current.id, { ...this.store.get(current.id), endDate: previousDate(date), updatedAt: new Date().toISOString() });
+    await this.updateModule(current.id, { endDate: previousDate(date) });
     const replacement = await this.addRecurring({ ...current, amount: nextAmount, startDate: date, dayOfMonth: Number(date.slice(8, 10)) });
     return { previous: current, current: replacement };
   }
 
   async removeRecurring(id) {
-    if (!/^recurring-[a-z0-9-]+$/.test(id) || !this.store.get(id)) throw new Error("Charge récurrente introuvable.");
-    await this.store.remove(id);
+    if (this.store.get(id)?.moduleType !== "recurring") throw new Error("Charge récurrente introuvable.");
+    await this.removeModule(id);
   }
 
   async recordAgentMessage(role, content) {
@@ -339,8 +456,6 @@ export class FinanceService {
     const current = this.settings();
     const next = {
       savingsGoal: input.savingsGoal === undefined ? current.savingsGoal : money(input.savingsGoal, "Objectif épargne"),
-      liquidSavings: input.liquidSavings === undefined ? current.liquidSavings : money(input.liquidSavings, "Épargne liquide"),
-      investedAssets: input.investedAssets === undefined ? current.investedAssets : money(input.investedAssets, "Placements"),
       safetyBuffer: input.safetyBuffer === undefined ? current.safetyBuffer : money(input.safetyBuffer, "Réserve imprévus"),
       emergencyMonths: input.emergencyMonths === undefined ? current.emergencyMonths : Number(input.emergencyMonths),
       budgets: { ...current.budgets },
@@ -390,12 +505,16 @@ export class FinanceService {
     const entries = [];
     let imported = 0;
     let updated = 0;
+    const categoryMatchers = this.recurring()
+      .filter(({ enabled, transactionMatch }) => enabled !== false && transactionMatch)
+      .flatMap(({ transactionMatch, category }) => matchTerms(transactionMatch).map((match) => ({ match, category })));
     for (const item of items) {
       const kind = item.kind === "income" ? "income" : item.kind === "expense" ? "expense" : null;
       if (!kind || !item.externalId || !item.sourceAccount) continue;
       const absoluteAmount = money(item.amount, "Montant importé");
       if (!absoluteAmount) continue;
-      const category = kind === "income" ? "income" : CATEGORY_IDS.has(item.category) ? item.category : "other";
+      const matchedCategory = categoryMatchers.find(({ match }) => normalized(item.description).includes(match))?.category;
+      const category = kind === "income" ? "income" : matchedCategory || (CATEGORY_IDS.has(item.category) ? item.category : "other");
       const date = validDate(item.date);
       const key = crypto.createHash("sha256").update(`${item.source}:${item.sourceAccount}:${item.externalId}`).digest("hex").slice(0, 32);
       const id = `transaction-bank-${key}`;
@@ -427,8 +546,9 @@ export class FinanceService {
   summary(month) {
     const selectedMonth = validMonth(month);
     const settings = this.settings();
-    const allTransactions = this.transactions();
-    const classifications = classifyTransactions(allTransactions);
+    const modules = this.modules();
+    const allTransactions = applyCategoryModules(this.transactions(), modules);
+    const classifications = classifyTransactions(allTransactions, modules);
     const budgetTransactions = allTransactions.filter((transaction) => !classifications.has(transaction.id));
     const transactions = budgetTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth));
     const { expenses, recordedIncome, spentByCategory } = aggregate(transactions);
@@ -445,6 +565,7 @@ export class FinanceService {
     const monthLast = `${selectedMonth}-${String(new Date(Date.UTC(selectedYear, selectedMonthNumber, 0)).getUTCDate()).padStart(2, "0")}`;
     const recurringByCategory = Object.fromEntries(FINANCE_CATEGORIES.map(({ id }) => [id, 0]));
     for (const rule of this.recurring()) {
+      if (rule.enabled === false) continue;
       if (rule.startDate > monthLast || (rule.endDate && rule.endDate < monthFirst)) continue;
       recurringByCategory[rule.category] = round((recurringByCategory[rule.category] || 0) + rule.amount);
     }
@@ -545,21 +666,24 @@ export class FinanceService {
     const dataConfidence = history.length >= 3 ? "high" : history.length >= 2 ? "medium" : "low";
     const essentialBase = round([...ESSENTIAL_CATEGORY_IDS].reduce((total, id) => total + Math.max(settings.budgets[id], categoryPlans[id].historicalAverage, spentByCategory[id]), 0));
     const emergencyTarget = round(essentialBase * settings.emergencyMonths);
+    const assetEntries = modules
+      .filter(({ moduleType, enabled }) => moduleType === "asset" && enabled !== false)
+      .map(({ id, name, institution, amount, bucket }) => ({ id, name, institution, amount, bucket }));
     const assets = {
-      liquid: settings.liquidSavings,
-      invested: settings.investedAssets,
-      total: round(settings.liquidSavings + settings.investedAssets),
+      liquid: round(assetEntries.filter(({ bucket }) => bucket === "liquid").reduce((total, asset) => total + asset.amount, 0)),
+      invested: round(assetEntries.filter(({ bucket }) => bucket === "invested").reduce((total, asset) => total + asset.amount, 0)),
+      total: round(assetEntries.reduce((total, asset) => total + asset.amount, 0)),
+      entries: assetEntries,
     };
-    const revolutTransactions = allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth) && normalized(transaction.account).includes("revolut"));
-    const revolutFunded = round(revolutTransactions.filter((transaction) => transaction.amount > 0 && classifications.get(transaction.id) === "transfert-interne").reduce((total, transaction) => total + transaction.amount, 0));
-    const revolutSpent = round(Math.max(0, -revolutTransactions.filter((transaction) => !classifications.has(transaction.id)).reduce((total, transaction) => total + transaction.amount, 0)));
-    const spendingEnvelope = revolutFunded || revolutSpent ? {
-      account: "Revolut",
-      funded: revolutFunded,
-      spent: revolutSpent,
-      remaining: round(revolutFunded - revolutSpent),
-      exceeded: round(Math.max(0, revolutSpent - revolutFunded)),
-    } : null;
+    const spendingEnvelopes = modules
+      .filter(({ moduleType, enabled }) => moduleType === "envelope" && enabled !== false)
+      .map((module) => {
+        const matcher = normalized(module.accountMatch);
+        const envelopeTransactions = allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth) && normalized(transaction.account).includes(matcher));
+        const funded = round(envelopeTransactions.filter((transaction) => transaction.amount > 0 && classifications.get(transaction.id) === "transfert-interne").reduce((total, transaction) => total + transaction.amount, 0));
+        const spent = round(Math.max(0, -envelopeTransactions.filter((transaction) => !classifications.has(transaction.id)).reduce((total, transaction) => total + transaction.amount, 0)));
+        return { id: module.id, name: module.name, accountMatch: module.accountMatch, funded, spent, remaining: round(funded - spent), exceeded: round(Math.max(0, spent - funded)) };
+      });
     const warnings = [];
     if (!income) warnings.push({ id: "income", tone: "info", title: "Salaire historique introuvable", detail: "Importe anciens relevés; salaire sera détecté automatiquement." });
     if (incomeSource === "history") warnings.push({ id: "income-estimate", tone: "info", title: "Salaire estimé", detail: `Base prudente sur ${incomeHistoryMonths} mois: ${inferredIncome.toFixed(2)} €.` });
@@ -567,7 +691,9 @@ export class FinanceService {
     if (income > 0 && expenses > income) warnings.push({ id: "deficit", tone: "danger", title: "Mois déficitaire", detail: `${round(expenses - income).toFixed(2)} € au-dessus revenus.` });
     if (settings.savingsGoal > protectedSavings) warnings.push({ id: "savings", tone: "warning", title: "Objectif épargne trop haut", detail: `${protectedSavings.toFixed(2)} € soutenables selon dépenses et réserve actuelles.` });
     if (income > 0 && safeToSpend === 0) warnings.push({ id: "safe-spend", tone: "danger", title: "Pause dépenses libres", detail: "Revenus restants réservés aux charges, imprévus et épargne soutenable." });
-    if (spendingEnvelope?.exceeded > 0) warnings.push({ id: "revolut-envelope", tone: "danger", title: "Enveloppe Revolut dépassée", detail: `${spendingEnvelope.exceeded.toFixed(2)} € au-dessus des virements reçus ce mois.` });
+    for (const envelope of spendingEnvelopes) {
+      if (envelope.exceeded > 0) warnings.push({ id: `envelope-${envelope.id}`, tone: "danger", title: `${envelope.name} dépassée`, detail: `${envelope.exceeded.toFixed(2)} € au-dessus des virements reçus ce mois.` });
+    }
     for (const category of FINANCE_CATEGORIES) {
       const budget = settings.budgets[category.id];
       const spent = round(spentByCategory[category.id]);
@@ -579,7 +705,7 @@ export class FinanceService {
     const recommendations = [];
     if (protectedSavings > 0) recommendations.push(`Épargne soutenable ce mois: ${protectedSavings.toFixed(2)} €, après charges et réserve.`);
     if (!settings.safetyBuffer && automaticBuffer > 0) recommendations.push(`Réserve imprévus automatique: ${automaticBuffer.toFixed(2)} €. Ajustable dans plan mensuel.`);
-    if (emergencyTarget > 0 && settings.liquidSavings < emergencyTarget) recommendations.push(`Fonds sécurité liquide: encore ${round(emergencyTarget - settings.liquidSavings).toFixed(2)} € pour ${settings.emergencyMonths} mois essentiels. PEA exclu de ce calcul.`);
+    if (emergencyTarget > 0 && assets.liquid < emergencyTarget) recommendations.push(`Fonds sécurité liquide: encore ${round(emergencyTarget - assets.liquid).toFixed(2)} € pour ${settings.emergencyMonths} mois essentiels. Actifs investis exclus de ce calcul.`);
     const largest = FINANCE_CATEGORIES.filter(({ id }) => !ESSENTIAL_CATEGORY_IDS.has(id)).map((category) => ({ ...category, spent: spentByCategory[category.id] })).sort((a, b) => b.spent - a.spent)[0];
     if (largest?.spent > 0) recommendations.push(`Premier levier à vérifier: ${largest.label.toLowerCase()} (${largest.spent.toFixed(2)} €).`);
     return {
@@ -615,7 +741,7 @@ export class FinanceService {
       recurringByCategory,
       emergencyTarget,
       assets,
-      spendingEnvelope,
+      spendingEnvelopes,
       excludedTransactionCount: allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth) && classifications.has(transaction.id)).length,
       warnings,
       recommendations,
@@ -625,8 +751,9 @@ export class FinanceService {
 
   payload(month) {
     const selectedMonth = validMonth(month);
-    const allTransactions = this.transactions();
-    const classifications = classifyTransactions(allTransactions);
+    const modules = this.modules();
+    const allTransactions = applyCategoryModules(this.transactions(), modules);
+    const classifications = classifyTransactions(allTransactions, modules);
     return {
       settings: this.settings(),
       summary: this.summary(selectedMonth),
@@ -634,6 +761,7 @@ export class FinanceService {
         ? { ...transaction, excluded: true, exclusionReason: classifications.get(transaction.id) }
         : transaction),
       categories: FINANCE_CATEGORIES,
+      modules: this.modules(),
       recurring: this.recurring(),
       agent: { history: this.agentHistory() },
       banking: {

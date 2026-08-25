@@ -90,9 +90,12 @@ test("bank transaction import is stable and updates duplicate", async () => {
   assert.equal(service.transactions()[0].description, "Courses corrigées");
 });
 
-test("bank analysis excludes transfers, learns salary, and tracks Revolut envelope", async () => {
+test("bank analysis uses configurable assets, transfers, and spending envelope", async () => {
   const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
-  await service.updateSettings({ liquidSavings: 1800, investedAssets: 6500 });
+  await service.addModule({ moduleType: "asset", name: "Livret test", amount: 1800, bucket: "liquid", institution: "Banque A" });
+  await service.addModule({ moduleType: "asset", name: "Placement test", amount: 6500, bucket: "invested", institution: "Banque B" });
+  await service.addModule({ moduleType: "transfer", name: "Épargne salariale", transactionMatch: "AMUNDI ESR" });
+  await service.addModule({ moduleType: "envelope", name: "Compte dépenses", accountMatch: "Revolut" });
   let entry = 0;
   async function bank({ kind, amount, description, date, account, category = "other" }) {
     entry += 1;
@@ -111,9 +114,55 @@ test("bank analysis excludes transfers, learns salary, and tracks Revolut envelo
   const summary = service.summary("2026-08");
   assert.equal(summary.inferredIncome, 2598.04);
   assert.equal(summary.expenses, 641.24);
-  assert.deepEqual(summary.assets, { liquid: 1800, invested: 6500, total: 8300 });
-  assert.deepEqual(summary.spendingEnvelope, { account: "Revolut", funded: 600, spent: 616.24, remaining: -16.24, exceeded: 16.24 });
+  assert.equal(summary.assets.liquid, 1800);
+  assert.equal(summary.assets.invested, 6500);
+  assert.equal(summary.assets.total, 8300);
+  assert.equal(summary.assets.entries.length, 2);
+  assert.deepEqual(summary.spendingEnvelopes.map(({ name, funded, spent, remaining, exceeded }) => ({ name, funded, spent, remaining, exceeded })), [{ name: "Compte dépenses", funded: 600, spent: 616.24, remaining: -16.24, exceeded: 16.24 }]);
   assert.equal(summary.excludedTransactionCount, 3);
-  assert.equal(summary.warnings.find(({ id }) => id === "revolut-envelope")?.tone, "danger");
+  assert.equal(summary.warnings.find(({ id }) => id.startsWith("envelope-"))?.tone, "danger");
   assert.equal(service.payload("2026-08").transactions.filter(({ excluded }) => excluded).length, 3);
+});
+
+test("legacy values migrate into editable finance modules", async () => {
+  const store = new MemoryStore();
+  await store.set("settings", { liquidSavings: 1800, investedAssets: 6500, savingsGoal: 200 });
+  await store.set("recurring-old", { type: "recurring", description: "Loyer", amount: 900, category: "housing", startDate: "2026-01-01", endDate: null, dayOfMonth: 1, account: "Prévision" });
+  const service = new FinanceService({ store });
+  await service.migrateLegacyModules();
+  assert.equal(service.settings().savingsGoal, 200);
+  assert.equal(service.modules().length, 3);
+  assert.equal(service.recurring()[0].name, "Loyer");
+  assert.equal(service.summary("2026-08").assets.total, 8300);
+  assert.equal(store.get("recurring-old"), null);
+  assert.equal(store.get("settings").liquidSavings, undefined);
+});
+
+test("self transfers and configured asset movements never become income or expense", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  await service.addModule({ moduleType: "asset", name: "Livret", amount: 1000, bucket: "liquid", transactionMatch: "VERSEMENT LIVRET, RETRAIT LIVRET" });
+  const transactions = [
+    { kind: "income", amount: 400, description: "VIR SEPA MR TEST PERSONNE", date: "2026-08-02", account: "Compte A" },
+    { kind: "expense", amount: 400, description: "VIR SEPA MR TEST PERSONNE", date: "2026-08-03", account: "Compte B" },
+    { kind: "expense", amount: 300, description: "VERSEMENT LIVRET", date: "2026-08-04", account: "Compte A" },
+    { kind: "income", amount: 200, description: "RETRAIT LIVRET", date: "2026-08-05", account: "Compte A" },
+  ];
+  let index = 0;
+  for (const transaction of transactions) {
+    index += 1;
+    await service.importTransactions([{ ...transaction, category: "other", source: "enable-banking", sourceAccount: transaction.account, externalId: String(index) }]);
+  }
+  const summary = service.summary("2026-08");
+  assert.equal(summary.recordedIncome, 0);
+  assert.equal(summary.expenses, 0);
+  assert.equal(summary.excludedTransactionCount, 4);
+});
+
+test("recurring module recategorizes matching bank history immediately", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-25T12:00:00Z") });
+  await service.importTransactions([{ kind: "expense", amount: 900, description: "BAILLEUR EXEMPLE", category: "other", date: "2026-08-06", account: "Compte", source: "enable-banking", sourceAccount: "account", externalId: "rent" }]);
+  assert.equal(service.summary("2026-08").spentByCategory.other, 900);
+  await service.addModule({ moduleType: "recurring", name: "Loyer", amount: 900, category: "housing", startDate: "2026-01-06", dayOfMonth: 6, transactionMatch: "BAILLEUR EXEMPLE" });
+  assert.equal(service.summary("2026-08").spentByCategory.housing, 900);
+  assert.equal(service.summary("2026-08").spentByCategory.other, 0);
 });

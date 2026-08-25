@@ -63,7 +63,7 @@ function transactionDescription(transaction, kind) {
 function transactionCategory(transaction, description) {
   const mcc = String(transaction.merchant_category_code || "");
   const normalized = description.toLowerCase();
-  if (/loyer|rent|immobilier|mortgage|vilogia|edf|engie|electric|gaz|eau\b/.test(normalized) || ["4900", "6513"].includes(mcc)) return "housing";
+  if (/loyer|rent|immobilier|mortgage|edf|engie|electric|gaz|eau\b/.test(normalized) || ["4900", "6513"].includes(mcc)) return "housing";
   if (/carrefour|auchan|monoprix|intermarch|lidl|aldi|restaurant|boulanger|uber eats|deliveroo/.test(normalized) || /^(5411|5422|5441|5451|5462|5499|5812|5814)$/.test(mcc)) return "food";
   if (/sncf|ratp|uber|bolt|essence|totalenergies|parking|péage|peage/.test(normalized) || /^(4111|4121|4131|4784|5541|5542|7523)$/.test(mcc)) return "transport";
   if (/netflix|spotify|apple\.com\/bill|google|abonnement|subscription|adobe|canva/.test(normalized)) return "subscriptions";
