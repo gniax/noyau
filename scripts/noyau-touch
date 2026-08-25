@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+app_root=$(dirname -- "$script_dir")
+profile_root="${XDG_DATA_HOME:-${HOME}/.local/share}/noyau-touch/firefox"
+app_url="${NOYAU_TOUCH_URL:-http://127.0.0.1:4242/?touch=1}"
+
+mkdir -p "$profile_root"
+install -m 600 "$app_root/desktop/firefox-user.js" "$profile_root/user.js"
+systemctl --user start noyau.service
+
+attempt=0
+while [ "$attempt" -lt 40 ]; do
+  if curl --fail --silent --output /dev/null http://127.0.0.1:4242/version.json; then
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 0.25
+done
+
+exec /usr/bin/firefox --new-instance --profile "$profile_root" --kiosk "$app_url"

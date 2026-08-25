@@ -46,6 +46,15 @@ function useCountdown() {
 }
 
 const VERSION_KEY = "noyau:version";
+const TOUCH_MODE = new URLSearchParams(location.search).get("touch") === "1";
+
+function appPath(parameters = {}) {
+  const search = new URLSearchParams();
+  if (TOUCH_MODE) search.set("touch", "1");
+  Object.entries(parameters).forEach(([key, value]) => search.set(key, String(value)));
+  const query = search.toString();
+  return query ? `/?${query}` : "/";
+}
 
 async function purgeClient() {
   try {
@@ -63,7 +72,7 @@ async function purgeClient() {
 async function hardReset() {
   await purgeClient();
   try { localStorage.removeItem(VERSION_KEY); } catch { /* ignore */ }
-  location.replace(`/?reset=${Date.now()}`);
+  location.replace(appPath({ reset: Date.now() }));
 }
 
 function Mark() {
@@ -252,6 +261,39 @@ function Header({ title, subtitle, onMenu, actionLabel = "Nouvel agent", onActio
       <button className="icon-button menu-button" onClick={onMenu} aria-label="Menu">☰</button>
       <div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
       {onAction && <div className="top-actions"><button className="primary" onClick={onAction}><span>+</span> {actionLabel}</button></div>}
+    </header>
+  );
+}
+
+function TouchSystemBar({ sessions, onHome, onNew }) {
+  const [now, setNow] = useState(new Date());
+  const [online, setOnline] = useState(navigator.onLine);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    const updateNetwork = () => setOnline(navigator.onLine);
+    window.addEventListener("online", updateNetwork);
+    window.addEventListener("offline", updateNetwork);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", updateNetwork);
+      window.removeEventListener("offline", updateNetwork);
+    };
+  }, []);
+  const working = sessions.filter(({ agentStatus }) => agentStatus?.state === "working").length;
+  const waiting = sessions.filter(({ agentStatus }) => agentStatus?.state === "waiting").length;
+  const time = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(now);
+  const date = new Intl.DateTimeFormat("fr-FR", { weekday: "short", day: "2-digit", month: "short" }).format(now);
+  return (
+    <header className="touch-system-bar">
+      <button className="touch-system-home" onClick={onHome}><Mark /><span><strong>NOYAU</strong><small>DESK OS</small></span></button>
+      <div className="touch-system-stats">
+        <span><i className="available" /><b>{sessions.length}</b> agents</span>
+        <span><i className="working" /><b>{working}</b> travail</span>
+        <span><i className="waiting" /><b>{waiting}</b> attente</span>
+        <span><i className={online ? "available" : "offline"} />{online ? "PC local" : "Hors ligne"}</span>
+      </div>
+      <button className="touch-system-new" onClick={onNew}>＋ Agent</button>
+      <time dateTime={now.toISOString()}><strong>{time}</strong><small>{date}</small></time>
     </header>
   );
 }
@@ -1604,6 +1646,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
           autoCorrect="off"
           autoCapitalize="none"
           spellCheck="false"
+          inputMode="text"
           enterKeyHint="enter"
           autoFocus={new URLSearchParams(location.search).get("reply") === "1"}
         />
@@ -1883,7 +1926,7 @@ function App() {
         if (known && known !== version) {
           localStorage.setItem(VERSION_KEY, version);
           await purgeClient();
-          location.replace(`/?v=${encodeURIComponent(version)}`);
+          location.replace(appPath({ v: version }));
           return;
         }
         if (!known) localStorage.setItem(VERSION_KEY, version);
@@ -1993,7 +2036,7 @@ function App() {
     } catch { /* recharge reseau reste possible */ }
     await purgeClient();
     try { localStorage.setItem(VERSION_KEY, version); } catch { /* stockage optionnel */ }
-    location.replace(`/?view=settings&v=${encodeURIComponent(version)}&refresh=${Date.now()}`);
+    location.replace(appPath({ view: "settings", v: version, refresh: Date.now() }));
   }
 
   async function deleteProject(project) {
@@ -2028,7 +2071,8 @@ function App() {
   const saveModuleSchedule = (id, scheduleId, time) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/schedules/${encodeURIComponent(scheduleId)}`, { method: "PATCH", body: JSON.stringify({ time }) });
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${TOUCH_MODE ? "touch-shell" : ""}`}>
+      {TOUCH_MODE && <TouchSystemBar sessions={orderedSessions} onHome={() => { setActiveId(null); setView("dashboard"); }} onNew={() => setModal(true)} />}
       <Sidebar sessions={orderedSessions} activeId={activeId} view={view} onOpen={setActiveId} onView={setView} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} />
       {menu && <button className="menu-backdrop" onClick={() => setMenu(false)} aria-label="Fermer menu" />}
       <main className="content">

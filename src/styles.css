@@ -373,6 +373,43 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .finance-refresh small { position: absolute; right: -5px; bottom: -5px; min-width: 15px; padding: 2px; border-radius: 8px; background: #8d5f2c; color: #fff; font: 600 6px/1 ui-monospace,monospace; }
 .finance-refresh.updating span { display: block; animation: finance-refresh-spin .8s linear infinite; }
 @keyframes finance-refresh-spin { to { transform: rotate(360deg); } }
+
+.touch-system-bar { position: fixed; z-index: 45; inset: 0 0 auto; height: 48px; display: grid; grid-template-columns: 190px minmax(0,1fr) auto 112px; align-items: center; gap: 14px; padding: 0 17px; border-bottom: 1px solid #29322c; background: #090d0bef; box-shadow: 0 12px 40px #0008; }
+.touch-system-home, .touch-system-new { border: 0; background: transparent; cursor: pointer; }
+.touch-system-home { height: 100%; display: flex; align-items: center; gap: 9px; padding: 0; color: var(--text); text-align: left; }
+.touch-system-home .mark { width: 24px; height: 24px; }
+.touch-system-home .mark i { inset: 7px; }
+.touch-system-home .mark b { left: 10px; height: 29px; }
+.touch-system-home strong, .touch-system-home small, .touch-system-bar time strong, .touch-system-bar time small { display: block; }
+.touch-system-home strong { font: 750 10px/1 ui-monospace,monospace; letter-spacing: 1.5px; }
+.touch-system-home small { margin-top: 3px; color: #657069; font: 650 6px/1 ui-monospace,monospace; letter-spacing: 1.1px; }
+.touch-system-stats { min-width: 0; display: flex; align-items: center; gap: 7px; overflow: hidden; }
+.touch-system-stats > span { min-width: 0; height: 29px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid #27302a; border-radius: 15px; background: #101512; color: #859088; font: 8px/1 ui-monospace,monospace; white-space: nowrap; }
+.touch-system-stats b { color: #dbe4de; }
+.touch-system-stats i { width: 6px; height: 6px; border-radius: 50%; background: #68736c; }
+.touch-system-stats i.available { background: var(--green); box-shadow: 0 0 7px #b8ff5e77; }
+.touch-system-stats i.working { background: var(--blue); box-shadow: 0 0 7px #60a5fa88; }
+.touch-system-stats i.waiting { background: var(--orange); box-shadow: 0 0 7px #f7a65a88; }
+.touch-system-stats i.offline { background: #e37f87; }
+.touch-system-new { min-width: 94px; height: 33px; border: 1px solid #526b3e; border-radius: 7px; background: #182218; color: var(--green); font: 700 9px/1 ui-monospace,monospace; }
+.touch-system-bar time { padding-left: 14px; border-left: 1px solid #27302a; text-align: right; }
+.touch-system-bar time strong { color: #e8eee9; font: 650 15px/1 ui-monospace,monospace; }
+.touch-system-bar time small { margin-top: 4px; color: #6e7972; font: 7px/1 ui-monospace,monospace; text-transform: capitalize; }
+.touch-shell { background: radial-gradient(circle at 75% 8%,#17231a 0,transparent 29%),var(--bg); }
+.touch-shell .sidebar { top: 48px; width: 238px; padding-top: 19px; }
+.touch-shell .content { width: calc(100% - 238px); margin-left: 238px; padding-top: 48px; }
+.touch-shell .topbar { top: 48px; }
+.touch-shell .terminal-page { height: calc(100dvh - 48px); }
+.touch-shell .main-nav button { min-height: 52px; font-size: 14px; }
+.touch-shell .sidebar-title button, .touch-shell .session-list > button, .touch-shell .profile { min-height: 48px; }
+.touch-shell .primary, .touch-shell .ghost, .touch-shell input, .touch-shell select, .touch-shell textarea { min-height: 44px; }
+.touch-shell .agent-card-open, .touch-shell .project-preview-grid > button { min-height: 112px; }
+
+@media (max-width: 900px) {
+  .touch-system-bar { grid-template-columns: 142px minmax(0,1fr) 95px; }
+  .touch-system-bar time { display: none; }
+  .touch-system-stats > span:nth-child(2), .touch-system-stats > span:nth-child(3) { display: none; }
+}
 .finance-more { position: relative; z-index: 8; flex: none; }
 .finance-more > summary { width: 39px; height: 39px; display: grid; place-items: center; list-style: none; border: 1px solid #405534; border-radius: 7px; background: #172018; color: var(--green); font-size: 20px; cursor: pointer; }
 .finance-more > summary::-webkit-details-marker { display: none; }

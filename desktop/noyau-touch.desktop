@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Noyau Desk
+GenericName=Centre de contrôle tactile
+Comment=Piloter agents, projets et budget en plein écran
+Exec=/home/user/projects/noyau/scripts/noyau-touch
+Icon=/home/user/projects/noyau/public/icon.svg
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=firefox
+SingleMainWindow=true
