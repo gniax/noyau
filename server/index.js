@@ -19,6 +19,7 @@ import { UsageService, lastClaudeMessage, parseClaudeRateLimits } from "./usage.
 import { ProjectLogoService } from "./project-logo.js";
 import { agentNotificationTitle, PromptWatcher } from "./prompt-watcher.js";
 import { HandoverService } from "./handover.js";
+import { SessionReaper } from "./session-reaper.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { ModuleService } from "./module-service.js";
 import { FinanceService } from "./finance-service.js";
@@ -208,6 +209,14 @@ async function projectInput(body, current = {}) {
   }
   return { ...current, name, rootPath, updatedAt: new Date().toISOString() };
 }
+
+const sessionReaper = new SessionReaper({
+  tmux,
+  store,
+  isMigrating: (id) => migrations.has(id),
+  onReap: (id) => console.log(`Agent ${id} terminé: entrée supprimée, aucune restauration.`),
+});
+sessionReaper.start();
 
 function schedulePermissionRestart(sessionId, details) {
   setTimeout(async () => {
