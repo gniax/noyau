@@ -747,6 +747,16 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
   );
 }
 
+function settingsForm(settings) {
+  if (!settings) return null;
+  return {
+    ...settings,
+    savingsGoal: String(settings.savingsGoal || ""),
+    safetyBuffer: String(settings.safetyBuffer || ""),
+    budgets: Object.fromEntries(Object.entries(settings.budgets || {}).map(([id, value]) => [id, String(value || "")])),
+  };
+}
+
 function FinanceAdvicePanel({ month }) {
   const [state, setState] = useState(() => cachedView(`insights-${month}`) || { insights: [], headline: "", generatedAt: null, provider: null });
   const [busy, setBusy] = useState(false);
@@ -801,7 +811,7 @@ function FinanceView({ onView }) {
   const today = localIsoDate();
   const [month, setMonth] = useState(today.slice(0, 7));
   const [data, setData] = useState(() => cachedView(`finance-${today.slice(0, 7)}`));
-  const [settings, setSettings] = useState(null);
+  const [settings, setSettings] = useState(() => settingsForm(cachedView(`finance-${today.slice(0, 7)}`)?.settings));
   const [saving, setSaving] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(null);
@@ -812,15 +822,15 @@ function FinanceView({ onView }) {
   const load = useCallback(async () => {
     try {
       setError("");
+      const known = cachedView(`finance-${month}`);
+      if (known) {
+        setData(known);
+        setSettings((current) => current || settingsForm(known.settings));
+      }
       const payload = await api(`/api/finance?month=${encodeURIComponent(month)}`);
       setData(payload);
       storeView(`finance-${month}`, payload);
-      setSettings({
-        ...payload.settings,
-        savingsGoal: String(payload.settings.savingsGoal || ""),
-        safetyBuffer: String(payload.settings.safetyBuffer || ""),
-        budgets: Object.fromEntries(Object.entries(payload.settings.budgets).map(([id, value]) => [id, String(value || "")])),
-      });
+      setSettings(settingsForm(payload.settings));
     } catch (reason) {
       if (reason.status === 429) setSyncCooldown(reason.retryAfter || 60);
       setError(reason.message);
@@ -1023,12 +1033,14 @@ function FinanceView({ onView }) {
 
 function FinanceBankingView({ onView }) {
   const month = localIsoDate().slice(0, 7);
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(() => cachedView(`finance-${month}`));
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
       setError("");
-      setData(await api(`/api/finance?month=${encodeURIComponent(month)}`));
+      const payload = await api(`/api/finance?month=${encodeURIComponent(month)}`);
+      setData(payload);
+      storeView(`finance-${month}`, payload);
     } catch (reason) {
       setError(reason.message);
     }
@@ -1121,13 +1133,15 @@ function FinanceModuleEditor({ module, categories, onSaved, onRemoved }) {
 }
 
 function FinanceModulesView({ onView }) {
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(() => cachedView(`finance-${localIsoDate().slice(0, 7)}`));
   const [draft, setDraft] = useState(() => financeModuleDraft());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
-      setData(await api(`/api/finance?month=${localIsoDate().slice(0, 7)}`));
+      const payload = await api(`/api/finance?month=${localIsoDate().slice(0, 7)}`);
+      setData(payload);
+      storeView(`finance-${localIsoDate().slice(0, 7)}`, payload);
       setError("");
     } catch (reason) {
       setError(reason.message);
@@ -1162,7 +1176,7 @@ function FinanceModulesView({ onView }) {
 function FinanceTransactionsView({ onView }) {
   const today = localIsoDate();
   const [month, setMonth] = useState(today.slice(0, 7));
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(() => cachedView(`finance-${today.slice(0, 7)}`));
   const [transaction, setTransaction] = useState({ kind: "expense", amount: "", description: "", category: "food", date: today, account: "" });
   const [adding, setAdding] = useState(false);
   const [categorizing, setCategorizing] = useState(false);
@@ -1171,7 +1185,9 @@ function FinanceTransactionsView({ onView }) {
   const load = useCallback(async () => {
     try {
       setError("");
-      setData(await api(`/api/finance?month=${encodeURIComponent(month)}`));
+      const payload = await api(`/api/finance?month=${encodeURIComponent(month)}`);
+      setData(payload);
+      storeView(`finance-${month}`, payload);
     } catch (reason) {
       setError(reason.message);
     }
