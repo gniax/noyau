@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "noyau-";
-const SHELL = ["/manifest.webmanifest", "/icon.svg"];
+const SHELL = ["/manifest.webmanifest", "/icon.svg", "/favicon-32.png", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png"];
 const NAVIGATION = "/__noyau-shell";
 
 async function currentVersion() {
@@ -127,8 +127,8 @@ self.addEventListener("push", (event) => {
     Promise.all([
       self.registration.showNotification(payload.title || "Noyau", {
         body: payload.body || "Nouvelle activité.",
-        icon: "/icon.svg",
-        badge: "/icon.svg",
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
         tag: payload.tag || "noyau",
         actions: Array.isArray(payload.actions) ? payload.actions.slice(0, 2) : [],
         data: { url: payload.url || "/", replyUrl: payload.replyUrl || payload.url || "/" },

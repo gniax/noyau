@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { detectCodexApproval, PromptWatcher } from "../server/prompt-watcher.js";
+import { agentNotificationTitle, detectCodexApproval, PromptWatcher } from "../server/prompt-watcher.js";
 
 test("Codex approval prompts are detected in visible pane tail", () => {
   assert.equal(detectCodexApproval("work\nWould you like to run the following command?\n› 1. Yes\n  2. No"), true);
   assert.equal(detectCodexApproval("Do you want to approve network access to api.example.com?"), true);
   assert.equal(detectCodexApproval("Command completed successfully.\nReady for next request."), false);
+});
+
+test("agent notification title includes project source", () => {
+  assert.equal(agentNotificationTitle("Atlas", "Codex a terminé"), "[Atlas] Codex a terminé");
+  assert.equal(agentNotificationTitle(" Atlas\nprod ", "Claude attend"), "[Atlas prod] Claude attend");
 });
 
 test("prompt watcher sends once until prompt disappears", async () => {
@@ -17,6 +22,7 @@ test("prompt watcher sends once until prompt disappears", async () => {
       captureVisible: async () => screen,
     },
     push: { send: async (payload) => payloads.push(payload) },
+    sessionLabel: () => "Atlas",
   });
   await watcher.tick();
   await watcher.tick();
@@ -26,5 +32,6 @@ test("prompt watcher sends once until prompt disappears", async () => {
   screen = "Would you like to grant these permissions?\nYes\nNo";
   await watcher.tick();
   assert.equal(payloads.length, 2);
+  assert.equal(payloads[0].title, "[Atlas] Codex attend validation");
   assert.equal(payloads[0].url, "/?session=noyau-codex-test");
 });

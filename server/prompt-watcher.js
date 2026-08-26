@@ -21,11 +21,17 @@ export function detectCodexApproval(screen) {
   return CODEX_APPROVALS.some((pattern) => pattern.test(visibleTail));
 }
 
+export function agentNotificationTitle(label, text) {
+  const source = String(label || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 48);
+  return `${source ? `[${source}] ` : ""}${text}`;
+}
+
 export class PromptWatcher {
-  constructor({ tmux, push, interval = 2500 }) {
+  constructor({ tmux, push, interval = 2500, sessionLabel = (session) => session.name }) {
     this.tmux = tmux;
     this.push = push;
     this.interval = interval;
+    this.sessionLabel = sessionLabel;
     this.waiting = new Set();
     this.running = false;
     this.timer = null;
@@ -59,7 +65,7 @@ export class PromptWatcher {
         this.waiting.add(session.id);
         try {
           await this.push.send({
-            title: `${session.name} attend validation`,
+            title: agentNotificationTitle(this.sessionLabel(session), "Codex attend validation"),
             body: "Commande ou permission à accepter ou refuser.",
             tag: `approval-${session.id}`,
             url: `/?session=${encodeURIComponent(session.id)}`,

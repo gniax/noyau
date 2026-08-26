@@ -17,7 +17,7 @@ import { TmuxController, validSessionId } from "./tmux.js";
 import { PushService } from "./push-service.js";
 import { UsageService, lastClaudeMessage, parseClaudeRateLimits } from "./usage.js";
 import { ProjectLogoService } from "./project-logo.js";
-import { PromptWatcher } from "./prompt-watcher.js";
+import { agentNotificationTitle, PromptWatcher } from "./prompt-watcher.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { ModuleService } from "./module-service.js";
 import { FinanceService } from "./finance-service.js";
@@ -144,7 +144,11 @@ if (restorePlan.migrated || restoreResult.restored.length || restoreResult.faile
 const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, cwd: root });
 financeService.setAdvisor(({ message, month, action }) => financeAdvisor.answer({ message, month, action, payload: financePayload(month), history: financeService.agentHistory() }));
 financeService.setClassifier((groups, categories) => financeAdvisor.classify(groups, categories));
-const promptWatcher = new PromptWatcher({ tmux, push });
+const promptWatcher = new PromptWatcher({
+  tmux,
+  push,
+  sessionLabel: (session) => (session.projectId ? projects.get(session.projectId)?.name : null) || session.name,
+});
 const fileUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024, files: 1 },
@@ -763,17 +767,18 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     const lastMessage = source === "claude"
       ? event.last_assistant_message || await lastClaudeMessage(event.transcript_path)
       : event["last-assistant-message"] || "";
+    const notificationLabel = (metadata?.projectId ? projects.get(metadata.projectId)?.name : null) || metadata?.name || null;
     let payload = null;
     if (completion) {
       payload = {
-        title: `${source === "codex" ? "Codex" : "Claude"} a terminé`,
+        title: agentNotificationTitle(notificationLabel, `${source === "codex" ? "Codex" : "Claude"} a terminé`),
         body: lastMessage || "Réponse prête.",
         tag: `${source}-${event["thread-id"] || event.session_id || "complete"}`,
       };
     }
     if (attention) {
       payload = {
-        title: event.title || "Claude attend",
+        title: agentNotificationTitle(notificationLabel, event.title || "Claude attend"),
         body: event.message || "Action demandée.",
         tag: `claude-${event.session_id || "attention"}-${event.notification_type || "notification"}`,
       };

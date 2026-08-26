@@ -385,7 +385,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
       </section>
 
       <section className="metrics">
-        <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div><small>AGENTS ACTIFS</small><div className="active-agents-data"><strong className="active-total">{sessions.length}</strong><div className="agent-breakdown"><span><b>{codexCount}</b><em>Codex</em></span><span><b>{claudeCount}</b><em>Claude</em></span><span><b>{shellCount}</b><em>Terminal</em></span></div></div><p>{linkedProjects} projet{linkedProjects > 1 ? "s" : ""} lié{linkedProjects > 1 ? "s" : ""} · {favoriteCount} favori{favoriteCount > 1 ? "s" : ""}</p></div></article>
+        <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div className="active-agents-content"><small>AGENTS ACTIFS</small><div className="active-agents-data"><div className="active-total-block"><strong className="active-total">{sessions.length}</strong><em>en ligne</em></div><div className="agent-breakdown"><span><b>{codexCount}</b><em>Codex</em></span><span><b>{claudeCount}</b><em>Claude</em></span><span><b>{shellCount}</b><em>Terminal</em></span></div></div><p className="active-agents-footer"><span>{linkedProjects} projet{linkedProjects > 1 ? "s" : ""} lié{linkedProjects > 1 ? "s" : ""}</span><span>{favoriteCount} favori{favoriteCount > 1 ? "s" : ""}</span></p></div></article>
         <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small>QUOTAS IA</small><div className="quota-providers"><div className="quota-codex"><span>CODEX {codexPeriod}</span><div className="quota-current"><strong>{Number.isFinite(quotas.codex?.remainingPercent) ? `${quotas.codex.remainingPercent}%` : "—"}</strong><em>{formatReset(quotas.codex?.resetsAt)}</em></div>{Number.isFinite(quotas.codex?.remainingPercent) && <progress max="100" value={quotas.codex.remainingPercent} aria-label={`Quota Codex restant ${quotas.codex.remainingPercent}%`} />}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{formatReset(item.resetsAt).replace("Reset ", "")}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
       </section>
 
@@ -1208,6 +1208,7 @@ function TodosView({ projects }) {
   const [projectId, setProjectId] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [todoPanel, setTodoPanel] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -1286,10 +1287,11 @@ function TodosView({ projects }) {
             <label className="todo-check"><input type="checkbox" checked={todo.completed} onChange={(event) => update(todo, { completed: event.target.checked })} disabled={busy === todo.id} /><span><strong>{todo.text}</strong><small className={todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed ? "overdue" : ""}>{todoDueLabel(todo.dueDate)}</small></span></label>
             <div className="todo-actions">
               <select value={todo.projectId || ""} onChange={(event) => update(todo, { projectId: event.target.value || null })} disabled={busy === todo.id} aria-label="Projet"><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
-              <input type="date" value={todo.dueDate || ""} onChange={(event) => update(todo, { dueDate: event.target.value || null })} disabled={busy === todo.id} aria-label="Date limite" />
-              <button onClick={() => move(todo, "up")} disabled={busy === todo.id || index === 0} aria-label="Monter tâche">↑</button>
-              <button onClick={() => move(todo, "down")} disabled={busy === todo.id || index === todos.length - 1} aria-label="Descendre tâche">↓</button>
+              <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setTodoPanel((current) => current?.id === todo.id && current.type === "date" ? null : { id: todo.id, type: "date" })} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
+              <button className="todo-move-trigger" onClick={() => setTodoPanel((current) => current?.id === todo.id && current.type === "move" ? null : { id: todo.id, type: "move" })} disabled={busy === todo.id} aria-label="Déplacer tâche">↕</button>
             </div>
+            {todoPanel?.id === todo.id && todoPanel.type === "date" && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setTodoPanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setTodoPanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
+            {todoPanel?.id === todo.id && todoPanel.type === "move" && <div className="todo-inline-panel todo-move-panel"><span>Déplacer</span><button onClick={async () => { await move(todo, "up"); setTodoPanel(null); }} disabled={busy === todo.id || index === 0}>↑ Monter</button><button onClick={async () => { await move(todo, "down"); setTodoPanel(null); }} disabled={busy === todo.id || index === todos.length - 1}>↓ Descendre</button></div>}
           </article>
         ))}
         {!todos.length && !error && <p className="finance-empty">Aucune tâche. Liste Obsidian vide.</p>}
@@ -1333,6 +1335,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   const ctrlRef = React.useRef(false);
   const altRef = React.useRef(false);
   const viewportRefreshRef = React.useRef(() => {});
+  const tapRef = React.useRef(null);
+  const tapDoneRef = React.useRef(0);
   const [connected, setConnected] = useState(false);
   const [ctrl, setCtrl] = useState(false);
   const [alt, setAlt] = useState(false);
@@ -1675,6 +1679,30 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     focusKeyboard();
   }
 
+  // iOS avale le click des boutons dans la barre scrollable: on valide le tap au pointerup.
+  function tapKey(action) {
+    return {
+      onPointerDown: (event) => {
+        if (event.pointerType === "mouse") return;
+        tapRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      },
+      onPointerUp: (event) => {
+        if (event.pointerType === "mouse") return;
+        const tap = tapRef.current;
+        tapRef.current = null;
+        if (!tap || tap.id !== event.pointerId) return;
+        if (Math.abs(event.clientX - tap.x) > 12 || Math.abs(event.clientY - tap.y) > 12) return;
+        tapDoneRef.current = Date.now();
+        action();
+      },
+      onPointerCancel: () => { tapRef.current = null; },
+      onClick: () => {
+        if (Date.now() - tapDoneRef.current < 700) return;
+        action();
+      },
+    };
+  }
+
   async function attachFile(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -1789,7 +1817,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       <div className="terminal-toolbar">
         <button className="icon-button" onClick={onBack} aria-label="Retour">‹</button>
         <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small />
-        <div><strong>{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small></div>
+        <div className="terminal-identity"><strong><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /><span>{session.name}</span></strong><small>{session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small></div>
         <div className="terminal-actions">
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
           {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} disabled={migrating}>{migrating ? "Récap…" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
@@ -1821,17 +1849,17 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
             <input type="file" onChange={attachFile} disabled={uploading} />
             <span>{uploading ? "…" : "＋"}</span>
           </label>
-          <button className="copy-key" onClick={copyTerminal}>Copier</button>
-          <button className="paste-key" onClick={pasteClipboard}>Coller</button>
-          <button className={ctrl ? "selected" : ""} onClick={() => toggleModifier("ctrl")}>Ctrl</button>
-          <button className={alt ? "selected" : ""} onClick={() => toggleModifier("alt")}>Alt</button>
-          <button onClick={() => pressSpecial("Escape")}>Esc</button>
-          <button onClick={() => pressSpecial("Tab")}>Tab</button>
-          <button onClick={() => pressSpecial("ArrowLeft")}>←</button>
-          <button onClick={() => pressSpecial("ArrowUp")}>↑</button>
-          <button onClick={() => pressSpecial("ArrowDown")}>↓</button>
-          <button onClick={() => pressSpecial("ArrowRight")}>→</button>
-          <button className="enter-key" onClick={() => pressSpecial("Enter")}>Entrée</button>
+          <button className="copy-key" {...tapKey(copyTerminal)}>Copier</button>
+          <button className="paste-key" {...tapKey(pasteClipboard)}>Coller</button>
+          <button className={ctrl ? "selected" : ""} {...tapKey(() => toggleModifier("ctrl"))}>Ctrl</button>
+          <button className={alt ? "selected" : ""} {...tapKey(() => toggleModifier("alt"))}>Alt</button>
+          <button {...tapKey(() => pressSpecial("Escape"))}>Esc</button>
+          <button {...tapKey(() => pressSpecial("Tab"))}>Tab</button>
+          <button {...tapKey(() => pressSpecial("ArrowLeft"))}>←</button>
+          <button {...tapKey(() => pressSpecial("ArrowUp"))}>↑</button>
+          <button {...tapKey(() => pressSpecial("ArrowDown"))}>↓</button>
+          <button {...tapKey(() => pressSpecial("ArrowRight"))}>→</button>
+          <button className="enter-key" {...tapKey(() => pressSpecial("Enter"))}>Entrée</button>
         </div>
       </div>
     </div>
