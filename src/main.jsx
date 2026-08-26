@@ -362,16 +362,24 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
     agentItems.push({ project: projects.find((project) => project.id === session.projectId) || session.project, sessions: bucket });
   });
   useEffect(() => {
-    if (!navigator.geolocation) return;
     let disposed = false;
-    navigator.geolocation.getCurrentPosition(async ({ coords }) => {
-      try {
-        const nextWeather = await api(`/api/weather?latitude=${encodeURIComponent(coords.latitude)}&longitude=${encodeURIComponent(coords.longitude)}`);
-        if (disposed) return;
-        setWeather(nextWeather);
-        try { localStorage.setItem("noyau-weather", JSON.stringify(nextWeather)); } catch { /* cache optional */ }
-      } catch { /* weather optional */ }
-    }, () => {}, { enableHighAccuracy: false, maximumAge: 30 * 60 * 1000, timeout: 5000 });
+    const apply = (next) => {
+      if (disposed || !next) return;
+      setWeather(next);
+      try { localStorage.setItem("noyau-weather", JSON.stringify(next)); } catch { /* cache optional */ }
+    };
+    // iOS refuse la geolocalisation hors HTTPS de confiance: on demande quand meme la meteo,
+    // le serveur repond avec la derniere position connue.
+    const lastKnown = () => api("/api/weather").then(apply).catch(() => {});
+    if (!navigator.geolocation) {
+      lastKnown();
+      return () => { disposed = true; };
+    }
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => api(`/api/weather?latitude=${encodeURIComponent(coords.latitude)}&longitude=${encodeURIComponent(coords.longitude)}`).then(apply).catch(lastKnown),
+      lastKnown,
+      { enableHighAccuracy: false, maximumAge: 30 * 60 * 1000, timeout: 5000 },
+    );
     return () => { disposed = true; };
   }, []);
   const now = new Date();

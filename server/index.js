@@ -355,11 +355,19 @@ app.post("/api/system/display/sleep", async (request, response, next) => {
 
 app.get("/api/weather", async (request, response, next) => {
   try {
-    const latitude = Number(request.query.latitude);
-    const longitude = Number(request.query.longitude);
-    if (request.query.latitude === undefined || request.query.longitude === undefined || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
-      return response.status(400).json({ error: "Position météo invalide." });
+    const asked = request.query.latitude !== undefined || request.query.longitude !== undefined;
+    // Sans geolocalisation (http en local, permission refusee sur iOS) on repart de la derniere
+    // position connue, sinon de la position configuree au service.
+    const fallback = providerState.get("weather") || {
+      latitude: Number(process.env.NOYAU_WEATHER_LATITUDE),
+      longitude: Number(process.env.NOYAU_WEATHER_LONGITUDE),
+    };
+    const latitude = asked ? Number(request.query.latitude) : Number(fallback.latitude);
+    const longitude = asked ? Number(request.query.longitude) : Number(fallback.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+      return response.status(asked ? 400 : 404).json({ error: "Position météo inconnue." });
     }
+    if (asked) await providerState.set("weather", { latitude, longitude, updatedAt: new Date().toISOString() });
     const key = `${latitude.toFixed(2)},${longitude.toFixed(2)}`;
     const cached = weatherCache.get(key);
     if (cached && Date.now() - cached.cachedAt < 10 * 60 * 1000) return response.json(cached.payload);
