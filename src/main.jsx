@@ -235,7 +235,7 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
       <nav className="main-nav">
         <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span>◫</span>Projets</button>
-        <button><span>↗</span>Veille <em>Bientôt</em></button>
+        <button className={!activeId && view === "todos" ? "active" : ""} onClick={() => { onOpen(null); onView("todos"); onClose(); }}><span>✓</span>Todo</button>
         <button className={!activeId && ["finances", "finance-transactions", "finance-agent", "finance-modules"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
         <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
       </nav>
@@ -1190,6 +1190,114 @@ function FinanceAgentView({ onView }) {
   );
 }
 
+function todoDueLabel(value) {
+  if (!value) return "Sans échéance";
+  const today = localIsoDate();
+  if (value === today) return "Aujourd’hui";
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (value === localIsoDate(tomorrow)) return "Demain";
+  if (value < today) return `En retard · ${value.split("-").reverse().join("/")}`;
+  return `Pour le ${value.split("-").reverse().join("/")}`;
+}
+
+function TodosView({ projects }) {
+  const [todos, setTodos] = useState([]);
+  const [storage, setStorage] = useState("Obsidian · NAS");
+  const [text, setText] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const result = await api("/api/todos");
+      setTodos(result.todos || []);
+      setStorage(result.storage || "Obsidian");
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 15_000);
+    const visible = () => document.visibilityState === "visible" && load();
+    document.addEventListener("visibilitychange", visible);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", visible); };
+  }, [load]);
+
+  async function add(event) {
+    event.preventDefault();
+    if (!text.trim()) return;
+    setBusy("new");
+    try {
+      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text, projectId: projectId || null }) });
+      setTodos((items) => [...items, result.todo]);
+      setText("");
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function update(todo, changes) {
+    setBusy(todo.id);
+    try {
+      const result = await api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify(changes) });
+      setTodos((items) => items.map((item) => item.id === todo.id ? result.todo : item));
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function move(todo, direction) {
+    setBusy(todo.id);
+    try {
+      const result = await api(`/api/todos/${encodeURIComponent(todo.id)}/move`, { method: "POST", body: JSON.stringify({ direction }) });
+      setTodos(result.todos || []);
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const openCount = todos.filter((todo) => !todo.completed).length;
+  return (
+    <div className="page todos-page">
+      <section className="hero-row todos-hero"><div><p className="eyebrow">OBSIDIAN · NAS</p><h1>Todo.</h1><p className="muted">{openCount} tâche{openCount > 1 ? "s" : ""} à faire · synchro directe {storage}</p></div></section>
+      <form className="panel todo-add" onSubmit={add}>
+        <input value={text} onChange={(event) => setText(event.target.value)} placeholder="Ajouter une tâche…" maxLength="300" />
+        <select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
+        <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : "Ajouter"}</button>
+      </form>
+      {error && <p className="finance-error todo-error">{error}</p>}
+      <section className="panel todo-list">
+        {todos.map((todo, index) => (
+          <article className={todo.completed ? "completed" : ""} key={todo.id}>
+            <label className="todo-check"><input type="checkbox" checked={todo.completed} onChange={(event) => update(todo, { completed: event.target.checked })} disabled={busy === todo.id} /><span><strong>{todo.text}</strong><small className={todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed ? "overdue" : ""}>{todoDueLabel(todo.dueDate)}</small></span></label>
+            <div className="todo-actions">
+              <select value={todo.projectId || ""} onChange={(event) => update(todo, { projectId: event.target.value || null })} disabled={busy === todo.id} aria-label="Projet"><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
+              <input type="date" value={todo.dueDate || ""} onChange={(event) => update(todo, { dueDate: event.target.value || null })} disabled={busy === todo.id} aria-label="Date limite" />
+              <button onClick={() => move(todo, "up")} disabled={busy === todo.id || index === 0} aria-label="Monter tâche">↑</button>
+              <button onClick={() => move(todo, "down")} disabled={busy === todo.id || index === todos.length - 1} aria-label="Descendre tâche">↓</button>
+            </div>
+          </article>
+        ))}
+        {!todos.length && !error && <p className="finance-empty">Aucune tâche. Liste Obsidian vide.</p>}
+      </section>
+    </div>
+  );
+}
+
 function SettingsView({ permission, onNotifications, onRefresh }) {
   const [refreshing, setRefreshing] = useState(false);
   const [versionInfo, setVersionInfo] = useState(null);
@@ -1870,7 +1978,7 @@ function App() {
   const [moduleProposals, setModuleProposals] = useState([]);
   const [quotas, setQuotas] = useState({ codex: null, claude: null });
   const [activeId, setActiveId] = useState(() => new URLSearchParams(location.search).get("session"));
-  const [view, setView] = useState(() => ["projects", "finances", "finance-transactions", "finance-agent", "finance-modules", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
+  const [view, setView] = useState(() => ["projects", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
   const [modal, setModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [projectModalId, setProjectModalId] = useState(null);
@@ -2144,6 +2252,7 @@ function App() {
           <>
             {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
             {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} /></>}
+            {view === "todos" && <><Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} /><TodosView projects={projects} /></>}
             {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
             {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
             {view === "finance-agent" && <><Header title="Budget · Agent" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}

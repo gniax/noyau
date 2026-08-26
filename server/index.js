@@ -24,6 +24,7 @@ import { FinanceService } from "./finance-service.js";
 import { FinanceAdvisor } from "./finance-advisor.js";
 import { EnableBankingService } from "./enable-banking.js";
 import { agentStatus } from "./agent-status.js";
+import { TodoService } from "./todo-service.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -94,6 +95,10 @@ await providerState.load();
 const claudeQuota = new ClaudeQuotaService({ store: providerState });
 const push = new PushService({ dataDir });
 await push.load();
+const todoService = new TodoService({
+  file: process.env.NOYAU_TODO_FILE || path.join(dataDir, "TO DO.md"),
+  mountUri: process.env.NOYAU_TODO_MOUNT_URI || null,
+});
 const usage = new UsageService();
 const projectLogos = new ProjectLogoService();
 const migrations = new Map();
@@ -534,6 +539,49 @@ app.post("/api/projects", async (request, response, next) => {
     const project = await projectInput(request.body, { createdAt: new Date().toISOString() });
     await projects.set(id, project);
     response.status(201).json({ project: projectPayload(id, project) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/todos", async (_request, response, next) => {
+  try {
+    response.json({ todos: await todoService.list(), storage: "Obsidian · NAS" });
+  } catch (error) {
+    next(new Error(`Vault Obsidian indisponible: ${error.message}`));
+  }
+});
+
+app.post("/api/todos", async (request, response, next) => {
+  try {
+    const projectId = request.body?.projectId || null;
+    if (projectId && !projects.get(projectId)) throw new Error("Projet introuvable.");
+    const todo = await todoService.add({ text: request.body?.text, dueDate: request.body?.dueDate || null, projectId });
+    response.status(201).json({ todo });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/todos/:id", async (request, response, next) => {
+  try {
+    const changes = {};
+    if (request.body?.text !== undefined) changes.text = request.body.text;
+    if (request.body?.completed !== undefined) changes.completed = request.body.completed === true;
+    if (request.body?.dueDate !== undefined) changes.dueDate = request.body.dueDate || null;
+    if (request.body?.projectId !== undefined) {
+      changes.projectId = request.body.projectId || null;
+      if (changes.projectId && !projects.get(changes.projectId)) throw new Error("Projet introuvable.");
+    }
+    response.json({ todo: await todoService.update(request.params.id, changes) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/todos/:id/move", async (request, response, next) => {
+  try {
+    response.json({ todos: await todoService.move(request.params.id, request.body?.direction) });
   } catch (error) {
     next(error);
   }
@@ -1032,6 +1080,34 @@ sockets.on("connection", (websocket, request) => {
   });
 });
 
+let todoReminderRunning = false;
+let todoReminderError = "";
+async function checkTodoReminders() {
+  if (todoReminderRunning) return;
+  todoReminderRunning = true;
+  try {
+    const reminders = await todoService.reminders();
+    for (const reminder of reminders) {
+      const project = reminder.projectId ? projects.get(reminder.projectId) : null;
+      const title = reminder.kind === "tomorrow" ? "Tâche prévue demain" : reminder.kind === "today" ? "Tâche à faire aujourd’hui" : "Tâche en retard";
+      const devices = await push.send({
+        title,
+        body: `${reminder.text}${project?.name ? ` · ${project.name}` : ""}`,
+        tag: `todo-${reminder.id}-${reminder.reminderKey}`,
+        url: "/?view=todos",
+        actions: [{ action: "open", title: "Ouvrir" }],
+      });
+      if (devices > 0) await todoService.markReminded(reminder.id, reminder.reminderKey);
+    }
+    todoReminderError = "";
+  } catch (error) {
+    if (error.message !== todoReminderError) console.error(`Rappels tâches: ${error.message}`);
+    todoReminderError = error.message;
+  } finally {
+    todoReminderRunning = false;
+  }
+}
+
 server.listen(port, host, () => {
   const addresses = Object.values(os.networkInterfaces())
     .flat()
@@ -1049,3 +1125,6 @@ if (secureServer) {
 
 promptWatcher.start();
 claudeQuota.start();
+const todoReminderTimer = setInterval(checkTodoReminders, 5 * 60_000);
+todoReminderTimer.unref();
+setTimeout(checkTodoReminders, 5_000).unref();

@@ -15,6 +15,10 @@ Environment=NOYAU_TLS_CERT=/home/user/projects/noyau/.data/tls/server-cert.pem
 Environment=NOYAU_TLS_KEY=/home/user/projects/noyau/.data/tls/server-key.pem
 Environment=NOYAU_CA_CERT=/home/user/projects/noyau/.data/tls/ca-cert.cer
 Environment=NOYAU_WORKSPACE_ROOT=/home/user/projects
+Environment="NOYAU_TODO_FILE=/home/user/Obsidian/Noyau/TO DO.md"
+Environment=NOYAU_TODO_MOUNT_URI=smb://nas.lan/data
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 Environment=PATH=/home/user/.nvm/versions/node/v20.20.2/bin:/home/user/.npm-global/bin:/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=3

@@ -489,6 +489,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .finance-module-actions { display: flex; justify-content: flex-end; align-items: center; gap: 7px; padding: 0 16px 16px; }.new-module { margin-top: 10px; overflow: hidden; }.new-module > summary > b { transform: none; }.new-module form > footer { display: flex; justify-content: flex-end; padding: 0 16px 16px; }
 .paste-key { color: var(--green) !important; border-color: #405534 !important; }
 .terminal-controls:focus-within { padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+.todo-add { display: grid; grid-template-columns: minmax(0,1fr) 180px auto; gap: 8px; padding: 12px; }
+.todo-add input, .todo-add select, .todo-actions input, .todo-actions select { min-width: 0; height: 39px; padding: 0 10px; border: 1px solid #303a34; border-radius: 6px; background: #090d0b; color: #dbe3dd; color-scheme: dark; font-size: 11px; }
+.todo-add input { font-size: 16px; }
+.todo-error { margin: 10px 0 0; border-radius: 7px; }
+.todo-list { margin-top: 10px; overflow: hidden; }
+.todo-list article { min-width: 0; display: grid; grid-template-columns: minmax(220px,1fr) auto; gap: 12px; align-items: center; min-height: 64px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.todo-list article:last-child { border-bottom: 0; }
+.todo-list article.completed { opacity: .48; }
+.todo-list article.completed strong { text-decoration: line-through; }
+.todo-check { min-width: 0; display: flex; align-items: center; gap: 11px; cursor: pointer; }
+.todo-check input { flex: none; width: 19px; height: 19px; accent-color: var(--green); }
+.todo-check span { min-width: 0; }
+.todo-check strong, .todo-check small { display: block; }
+.todo-check strong { overflow-wrap: anywhere; color: #dce4df; font-size: 11px; line-height: 1.35; }
+.todo-check small { margin-top: 5px; color: #68756d; font-size: 8px; }
+.todo-check small.overdue { color: #e58a91; }
+.todo-actions { min-width: 0; display: grid; grid-template-columns: 145px 132px 33px 33px; gap: 5px; }
+.todo-actions input, .todo-actions select { width: 100%; height: 33px; padding: 0 7px; font-size: 9px; }
+.todo-actions button { width: 33px; height: 33px; border: 1px solid #354039; border-radius: 6px; background: #171d19; color: var(--green); font-size: 15px; cursor: pointer; }
+.todo-actions button:disabled, .todo-actions input:disabled, .todo-actions select:disabled { opacity: .35; }
 
 @media (max-width: 900px) {
   .operations-layout, .finance-agent-layout { grid-template-columns: 1fr; }
@@ -497,6 +517,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 }
 
 @media (max-width: 720px) {
+  .todo-add { grid-template-columns: minmax(0,1fr) auto; }.todo-add select { grid-column: 1 / -1; grid-row: 2; }.todo-add button { grid-column: 2; grid-row: 1; }
+  .todo-list article { grid-template-columns: 1fr; gap: 9px; padding: 12px; }
+  .todo-actions { grid-template-columns: minmax(0,1fr) minmax(126px,.8fr) 35px 35px; }
+  .todo-actions input, .todo-actions select, .todo-actions button { height: 36px; }
   .terminal-page { inset: var(--terminal-top,0) auto auto 0; }
   .finance-hero-actions { width: 100%; display: grid; grid-template-columns: 39px 31px minmax(0,1fr); }
   .finance-hero-actions > .month-switch { grid-column: 3; }
