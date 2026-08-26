@@ -901,6 +901,12 @@ function FinanceView({ onView }) {
   const { summary } = data;
   const confidenceLabel = { low: "provisoire", medium: "correcte", high: "solide" }[summary.dataConfidence] || "provisoire";
   const plannedCategories = data.categories.map((category) => ({ ...category, ...summary.categoryPlans[category.id] })).filter(({ remaining }) => remaining > 0).sort((a, b) => b.remaining - a.remaining);
+  const monthExpenseTransactions = data.transactions.filter((transaction) => !transaction.excluded && transaction.amount < 0);
+  const spentCategories = data.categories.map((category) => ({
+    category,
+    spent: summary.spentByCategory[category.id] || 0,
+    transactions: monthExpenseTransactions.filter((transaction) => transaction.category === category.id).sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || b.date.localeCompare(a.date)),
+  })).filter(({ spent, transactions }) => spent > 0 || transactions.length).sort((a, b) => b.spent - a.spent);
   return (
     <div className="page finance-page has-finance-dock">
       <section className="hero-row finance-hero">
@@ -918,7 +924,7 @@ function FinanceView({ onView }) {
       <section className="finance-metrics">
         <article className={summary.currentCash >= 0 ? "positive cash-metric" : "negative cash-metric"}><small>SOLDE COMPTES COURANTS</small><strong>{euro(summary.currentCash)}</strong><span>{summary.currentAccounts.length} compte{summary.currentAccounts.length > 1 ? "s" : ""} bancaire{summary.currentAccounts.length > 1 ? "s" : ""}</span></article>
         <button className="planned-metric" onClick={() => setShowPlanned((value) => !value)} aria-expanded={showPlanned}><small>ENCORE PRÉVU</small><strong>{euro(summary.remainingPlannedExpenses)}</strong><span>Détail par catégorie {showPlanned ? "↑" : "↓"}</span></button>
-        <article className={summary.forecastBalance >= 0 ? "positive" : "negative"}><small>SOLDE FIN DE MOIS</small><strong>{euro(summary.forecastBalance)}</strong><span>Avec {euro(summary.expectedIncomeRemaining)} d’entrées attendues</span></article>
+        <button className="budget-month-metric" aria-controls="current-accounts-panel" onClick={() => { const panel = document.getElementById("current-accounts-panel"); if (!panel) return; panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "start" }); }}><small>BUDGET DU MOIS</small><strong>{euro(summary.expenses)}</strong><span>Payés · {euro(summary.projectedExpenses)} prévus ›</span></button>
         <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>ENCORE DÉPENSABLE</small><strong>{euro(summary.safeToSpend)}</strong><span>{euro(summary.dailyAllowance)} / jour sans toucher réserves</span></article>
       </section>
 
@@ -928,9 +934,22 @@ function FinanceView({ onView }) {
         <footer>Total mois probable: {euro(summary.projectedExpenses)} = réel {euro(summary.expenses)} + encore prévu {euro(summary.remainingPlannedExpenses)}.</footer>
       </section>}
 
-      <details className="panel current-accounts foldable">
+      <details className="panel current-accounts foldable" id="current-accounts-panel">
         <summary className="panel-head"><div><h3>Comptes courants</h3><p>Soldes bancaires réels · placements exclus</p></div><b>{euro(summary.currentCash)}</b><i>›</i></summary>
-        <div>{summary.currentAccounts.map((account) => <article key={`${account.bank}-${account.name}`}><span><strong>{account.bank}</strong><small>{account.name} · actualisé {account.balanceAt ? new Date(account.balanceAt).toLocaleDateString("fr-FR") : "date inconnue"}</small></span><b className={account.balance >= 0 ? "positive" : "negative"}>{euro(account.balance)}</b></article>)}{!summary.currentAccounts.length && <p className="finance-empty">Aucun solde bancaire disponible.</p>}</div>
+        <div className="current-account-grid">{summary.currentAccounts.map((account) => <article key={`${account.bank}-${account.name}`}><span><strong>{account.bank}</strong><small>{account.name} · actualisé {account.balanceAt ? new Date(account.balanceAt).toLocaleDateString("fr-FR") : "date inconnue"}</small></span><b className={account.balance >= 0 ? "positive" : "negative"}>{euro(account.balance)}</b></article>)}{!summary.currentAccounts.length && <p className="finance-empty">Aucun solde bancaire disponible.</p>}</div>
+        <section className="account-month-budget">
+          <header><span><strong>Budget du mois</strong><small>{monthExpenseTransactions.length} paiement{monthExpenseTransactions.length > 1 ? "s" : ""} · transferts exclus</small></span><div><b>{euro(summary.expenses)} payés</b><button className="ghost" onClick={useRealisticBudgets}>Limites réalistes</button></div></header>
+          <div className="budget-list">
+            {spentCategories.map(({ category, spent, transactions: categoryTransactions }) => {
+              const budget = Number(settings.budgets[category.id] || 0);
+              const plan = summary.categoryPlans[category.id];
+              const limit = budget || summary.monthlyPlan.categoryLimits[category.id];
+              const ratio = limit ? Math.round((spent / limit) * 100) : 0;
+              return <details className="budget-category" key={category.id}><summary className="budget-row"><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} payé · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "sans limite"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{categoryTransactions.length} ›</b></summary><div className="category-transactions">{categoryTransactions.map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account}</small></span><b>− {euro(Math.abs(transaction.amount))}</b></article>)}</div></details>;
+            })}
+            {!spentCategories.length && <p className="finance-empty">Aucune dépense payée ce mois.</p>}
+          </div>
+        </section>
       </details>
 
       <details className="panel monthly-targets foldable">
@@ -979,22 +998,6 @@ function FinanceView({ onView }) {
       </details>
 
       <section className="finance-layout">
-        <details className="panel finance-budgets foldable">
-          <summary className="panel-head"><div><h3>Budgets du mois</h3><p>Réel, prévision, limite</p></div><b>{euro(summary.budgetTotal)}</b><i>›</i></summary>
-          <div className="budget-head-actions budget-head-inline"><button className="ghost" onClick={useRealisticBudgets}>Préremplir réaliste</button></div>
-          <div className="budget-list">
-            {data.categories.map((category) => {
-              const spent = summary.spentByCategory[category.id] || 0;
-              const budget = Number(settings.budgets[category.id] || 0);
-              const plan = summary.categoryPlans[category.id];
-              const limit = budget || summary.monthlyPlan.categoryLimits[category.id];
-              const ratio = limit ? Math.round((spent / limit) * 100) : 0;
-              const categoryTransactions = data.transactions.filter((transaction) => !transaction.excluded && transaction.amount < 0 && transaction.category === category.id).sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount) || b.date.localeCompare(a.date));
-              return <details className="budget-category" key={category.id}><summary className="budget-row"><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} réel · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "à définir"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{categoryTransactions.length} ›</b></summary><div className="category-transactions">{categoryTransactions.map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account}</small></span><b>− {euro(Math.abs(transaction.amount))}</b></article>)}{!categoryTransactions.length && <p className="finance-empty">Aucune opération dans cette catégorie.</p>}</div></details>;
-            })}
-          </div>
-        </details>
-
         <FinanceAdvicePanel month={month} />
 
         <details className="panel finance-insights foldable">

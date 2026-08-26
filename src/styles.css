@@ -183,6 +183,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .finance-metrics span { color: #667069; font-size: 8px; }
 .finance-metrics .positive strong { color: var(--green); }
 .finance-metrics .negative strong { color: #e37f87; }
+.finance-metrics .budget-month-metric strong { color: var(--orange); }
 .finance-metrics .safe-metric, .finance-metrics .cash-metric { border-color: #3d5931; background: linear-gradient(145deg,#152017,#101411 70%); }
 .spending-plan { overflow: hidden; }
 .spending-plan .confidence { padding: 6px 8px; border: 1px solid #38423c; border-radius: 5px; color: #78847c; font: 700 7px/1 ui-monospace,monospace; }
@@ -214,16 +215,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .finance-assets article:last-child { border-right: 0; }.finance-assets article span { min-width: 0; }.finance-assets strong, .finance-assets small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }.finance-assets strong { font-size: 9px; }.finance-assets small { margin-top: 4px; color: #68736c; font-size: 7px; }.finance-assets article > b { flex: none; color: var(--green); font: 600 10px/1 ui-monospace,monospace; }
 .current-accounts { margin-bottom: 10px; overflow: hidden; }
 .current-accounts .panel-head > b { color: var(--green); font: 600 13px/1 ui-monospace,monospace; }
-.current-accounts > div:last-child { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
-.current-accounts article { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 17px; border-right: 1px solid var(--line); }
-.current-accounts article:last-child { border-right: 0; }
-.current-accounts article > span { min-width: 0; }
-.current-accounts strong, .current-accounts small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.current-accounts strong { font-size: 9px; }
-.current-accounts small { margin-top: 4px; color: #68736c; font-size: 7px; }
-.current-accounts article > b { flex: none; font: 600 10px/1 ui-monospace,monospace; }
-.current-accounts article > b.positive { color: var(--green); }
-.current-accounts article > b.negative { color: #e37f87; }
+.current-account-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); }
+.current-account-grid article { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 17px; border-right: 1px solid var(--line); }
+.current-account-grid article:last-child { border-right: 0; }
+.current-account-grid article > span { min-width: 0; }
+.current-account-grid strong, .current-account-grid small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.current-account-grid strong { font-size: 9px; }
+.current-account-grid small { margin-top: 4px; color: #68736c; font-size: 7px; }
+.current-account-grid article > b { flex: none; font: 600 10px/1 ui-monospace,monospace; }
+.current-account-grid article > b.positive { color: var(--green); }
+.current-account-grid article > b.negative { color: #e37f87; }
+.account-month-budget { border-top: 1px solid var(--line); }
+.account-month-budget > header { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 17px 10px; }
+.account-month-budget > header > span { min-width: 0; }.account-month-budget > header strong, .account-month-budget > header small { display: block; }.account-month-budget > header strong { font-size: 11px; }.account-month-budget > header small { margin-top: 5px; color: #68736c; font-size: 8px; }.account-month-budget > header > div { flex: none; display: flex; align-items: center; gap: 8px; }.account-month-budget > header b { color: var(--orange); font: 650 11px/1 ui-monospace,monospace; }.account-month-budget > header button { min-height: 29px; font-size: 8px; }
+.account-month-budget .budget-list { padding-top: 0; }
 .monthly-targets { margin-bottom: 10px; overflow: hidden; }
 .monthly-targets .panel-head > b { padding: 7px 9px; border: 1px solid #405534; border-radius: 6px; color: var(--green); font: 700 8px/1 ui-monospace,monospace; }
 .monthly-target-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); }
@@ -346,8 +351,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .month-forecast { border-top: 1px solid var(--line); }
   .finance-form-grid, .budget-inputs { grid-template-columns: repeat(2,minmax(0,1fr)); padding-left: 14px; padding-right: 14px; }
   .bank-list { grid-template-columns: 1fr; }
-  .current-accounts > div:last-child { grid-template-columns: 1fr; }
-  .current-accounts article { border-right: 0; border-bottom: 1px solid var(--line); }
+  .current-account-grid { grid-template-columns: 1fr; }
+  .current-account-grid article { border-right: 0; border-bottom: 1px solid var(--line); }
   .monthly-target-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .monthly-limit-list { grid-template-columns: 1fr; }
   .monthly-targets .panel-head { align-items: flex-start; gap: 10px; }
@@ -395,8 +400,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .plan-equation { margin: 0 0 14px; padding: 0 22px; overflow-wrap: anywhere; color: #86928b; font-size: 9px; line-height: 1.6; }.finance-advice .advice-headline { margin: 15px 17px 12px; padding: 12px 13px; border: 1px solid #2a352e; border-left: 3px solid var(--green); border-radius: 8px; background: #0d1210; overflow-wrap: anywhere; color: #b9c6bf; font-size: 10px; line-height: 1.65; }.advice-list { display: grid; gap: 8px; padding: 0 17px 17px; }.advice-list article { padding: 12px 13px; border: 1px solid #262e29; border-left-width: 3px; border-radius: 8px; background: #0c100e; }.advice-list article.advice-haut { border-left-color: #e58a91; }.advice-list article.advice-moyen { border-left-color: var(--orange); }.advice-list article.advice-bas { border-left-color: var(--green); }.finance-advice .panel-head { gap: 12px; }.finance-advice .panel-head > div { min-width: 0; }.advice-list article { min-width: 0; overflow: hidden; }.advice-list header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }.advice-list header strong { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: #dce4de; font-size: 11px; line-height: 1.4; }.advice-list header b { margin-left: auto; flex: none; color: var(--green); font: 650 10px/1 ui-monospace,monospace; }.advice-list p { margin: 7px 0 0; overflow-wrap: anywhere; color: #93a099; font-size: 9px; line-height: 1.6; }.advice-list small { display: block; margin-top: 8px; overflow-wrap: anywhere; color: #7f8d85; font-size: 8px; line-height: 1.5; }
 .finance-advice > .finance-error { margin: 12px 17px 0; }
 @media (min-width: 1051px) {
-  .finance-layout { grid-template-areas: "advice advice" "budgets alerts"; }
-  .finance-budgets { grid-area: budgets; }.finance-advice { grid-area: advice; }.finance-insights { grid-area: alerts; }
+  .finance-layout { grid-template-areas: "advice advice" "alerts alerts"; }
+  .finance-advice { grid-area: advice; }.finance-insights { grid-area: alerts; }
   .finance-advice .advice-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .finance-advice .advice-headline { font-size: 11px; }
 }
@@ -406,6 +411,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .finance-advice .advice-list { grid-template-columns: 1fr; padding: 0 14px 14px; }
   .advice-list header b { margin-left: 0; }
   .finance-advice > .finance-error { margin: 10px 14px 0; }
+  .account-month-budget > header { align-items: flex-start; flex-direction: column; }
+  .account-month-budget > header > div { width: 100%; justify-content: space-between; }
 }
 .finance-refresh { position: relative; flex: none; width: 39px; height: 39px; padding: 0; border: 1px solid #405534; border-radius: 7px; background: #172018; color: var(--green); font: 500 18px/1 ui-monospace,monospace; }
 .finance-refresh:disabled { color: #788579; cursor: wait; }
