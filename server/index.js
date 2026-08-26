@@ -864,11 +864,23 @@ app.get("/api/sessions", async (_request, response, next) => {
       const project = session.projectId ? projects.get(session.projectId) : null;
       return { ...session, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id)), usage: await usage.get({ ...session, ...metadata }, await tmux.capture(session.id)) };
     }));
-    const codexUsage = enriched.find((session) => session.assistant === "codex" && Number.isFinite(session.usage?.rateRemainingPercent))?.usage;
+    // Les quotas sont ceux du compte: chaque agent Codex n'en voit qu'une partie selon sa conversation.
+    const codexWindows = new Map();
+    for (const session of enriched) {
+      if (session.assistant !== "codex") continue;
+      for (const window of session.usage?.rateWindows || []) {
+        const current = codexWindows.get(window.windowMinutes);
+        const fresher = !current
+          || String(window.resetsAt) > String(current.resetsAt)
+          || (window.resetsAt === current.resetsAt && window.remainingPercent < current.remainingPercent);
+        if (fresher) codexWindows.set(window.windowMinutes, window);
+      }
+    }
+    const codexQuota = [...codexWindows.values()].sort((left, right) => (left.windowMinutes || 0) - (right.windowMinutes || 0));
     response.json({
       sessions: enriched,
       quotas: {
-        codex: codexUsage ? { remainingPercent: codexUsage.rateRemainingPercent, resetsAt: codexUsage.rateResetsAt, windowMinutes: codexUsage.rateWindowMinutes, windows: codexUsage.rateWindows || [] } : null,
+        codex: codexQuota.length ? { remainingPercent: codexQuota[0].remainingPercent, resetsAt: codexQuota[0].resetsAt, windowMinutes: codexQuota[0].windowMinutes, windows: codexQuota } : null,
         claude: providerState.get("claude") || null,
       },
     });

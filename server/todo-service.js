@@ -108,6 +108,19 @@ export class TodoService {
       return parseDocument(await fs.readFile(this.file, "utf8"));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
+      // Un montage NAS fatigue repond ENOENT alors que le fichier existe: on remonte et on relit
+      // avant de conclure a une liste vide, sinon les taches disparaissent de l'interface.
+      if (this.mountUri) {
+        await this.mount(this.mountUri).catch(() => {});
+        try {
+          return parseDocument(await fs.readFile(this.file, "utf8"));
+        } catch (retry) {
+          if (retry.code !== "ENOENT") throw retry;
+        }
+      }
+      const siblings = await fs.readdir(path.dirname(this.file)).catch(() => null);
+      if (siblings === null) throw new Error("dossier du vault illisible");
+      if (siblings.includes(path.basename(this.file))) throw new Error("fichier présent mais illisible");
       return parseDocument("");
     }
   }

@@ -1382,6 +1382,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   const altRef = React.useRef(false);
   const viewportRefreshRef = React.useRef(() => {});
   const tapRef = React.useRef(null);
+  const pasteRef = React.useRef(() => {});
   const tapDoneRef = React.useRef(0);
   const [connected, setConnected] = useState(false);
   const [ctrl, setCtrl] = useState(false);
@@ -1520,7 +1521,15 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     });
     const beginTouchScroll = (x, y, pointerId = null) => {
       terminal.clearSelection();
-      touchRef.current = { x, y, latestY: y, pointerId, scrollTimer: null, moved: false, scrolling: false };
+      const gesture = { x, y, latestY: y, pointerId, scrollTimer: null, moved: false, scrolling: false, longPressTimer: null, longPressed: false };
+      // iOS n'affiche aucun menu natif sur un terminal non editable: l'appui long declenche le collage.
+      gesture.longPressTimer = setTimeout(() => {
+        if (touchRef.current !== gesture || gesture.moved) return;
+        gesture.longPressed = true;
+        if (navigator.vibrate) navigator.vibrate(12);
+        pasteRef.current();
+      }, 550);
+      touchRef.current = gesture;
     };
     const sendTouchScroll = (gesture) => {
       const delta = gesture.latestY - gesture.y;
@@ -1539,6 +1548,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       const deltaY = y - touchRef.current.y;
       if (!touchRef.current.moved && Math.hypot(deltaX, deltaY) > 8) {
         touchRef.current.moved = true;
+        clearTimeout(touchRef.current.longPressTimer);
         touchRef.current.scrolling = Math.abs(deltaY) > Math.abs(deltaX);
       }
       if (touchRef.current.scrolling && xtermViewport) {
@@ -1551,6 +1561,11 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     };
     const finishTouchScroll = (y) => {
       const gesture = touchRef.current;
+      clearTimeout(gesture?.longPressTimer);
+      if (gesture?.longPressed) {
+        touchRef.current = null;
+        return;
+      }
       if (gesture?.scrolling) {
         clearTimeout(gesture.scrollTimer);
         gesture.latestY = y ?? gesture.latestY;
@@ -1561,6 +1576,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     };
     const cancelTouchScroll = () => {
       clearTimeout(touchRef.current?.scrollTimer);
+      clearTimeout(touchRef.current?.longPressTimer);
       touchRef.current = null;
     };
     const stopPointerEvent = (event) => {
@@ -1798,6 +1814,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     sendKeyboardData(data);
     event.currentTarget.value = "";
   }
+
+  pasteRef.current = () => pasteClipboard();
 
   async function pasteClipboard() {
     try {
