@@ -326,11 +326,8 @@ function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
 function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile }) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
-      <div className="brand">
-        <Mark /><span>Noyau</span>
-        <ProfileSwitcher profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onLogout={onLogout} />
-        <button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button>
-      </div>
+      <div className="brand"><Mark /><span>Noyau</span><button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button></div>
+      <ProfileSwitcher profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onLogout={onLogout} />
       <nav className="main-nav">
         <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span>◫</span>Projets</button>
