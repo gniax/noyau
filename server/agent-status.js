@@ -4,15 +4,17 @@ const STATES = {
   waiting: { state: "waiting", label: "Attend réponse" },
 };
 
-const INTERRUPT_HINT = /(esc|échap|ctrl-c)[^\n]{0,30}(interrupt|interrompre|stop)/i;
-const IDLE_HINT = /(ask codex to do anything|\? for shortcuts|bypass permissions on|shift\+tab to cycle|worked for \d|\b(gpt|claude|o\d)[\w.-]*\s+(minimal|low|medium|high|xhigh)\s*·)/i;
+// Marqueurs de travail: compteur de duree du TUI, sortie d'outil en cours, rappel d'interruption.
+const WORKING_HINT = /((esc|échap|ctrl-c)[^\n]{0,24}(to )?(interrupt|interrompre)|⎿\s*(running|exécution)|\(\s*\d+\s*(h|m|s)[^)\n]{0,24}·|^[✻✽✢✳✶*⠋⠙⠹]\s+\S+…)/im;
+// Marqueurs de repos: composer vide, fin de tour, pied de page inactif.
+const IDLE_HINT = /(ask codex to do anything|worked for \d|\b(gpt|claude|o\d)[\w.-]*\s+(minimal|low|medium|high|xhigh)\s*·|\? for shortcuts)/i;
 
-// Le pane dit la verite: les TUI affichent "Esc to interrupt" tant qu'une reponse tourne.
+// Le pane dit la verite: l'etat memorise reste faux si le hook de fin n'a jamais tire.
 export function paneAgentState(screen) {
   const clean = String(screen || "").replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
-  const tail = clean.split("\n").slice(-14).join("\n");
+  const tail = clean.split("\n").slice(-18).join("\n");
   if (!tail.trim()) return null;
-  if (INTERRUPT_HINT.test(tail)) return "working";
+  if (WORKING_HINT.test(tail)) return "working";
   if (IDLE_HINT.test(tail)) return "available";
   return null;
 }
@@ -25,7 +27,10 @@ export function agentStatus(session, metadata = {}, promptWaiting = false, now =
   const storedState = STATES[metadata.agentState] ? metadata.agentState : null;
   const activityAt = Date.parse(session.activityAt || "");
   const stateAt = Date.parse(metadata.agentStateUpdatedAt || "");
-  if (storedState && Number.isFinite(activityAt) && Number.isFinite(stateAt) && activityAt > stateAt + 1000) return STATES.working;
-  if (storedState) return STATES[storedState];
+  // L'etat memorise ne vaut que frais: un hook de fin manque et l'agent reste "Travail" pour toujours.
+  if (storedState && Number.isFinite(stateAt) && now - stateAt < 90_000) {
+    if (storedState === "working" && Number.isFinite(activityAt) && now - activityAt > 30_000) return STATES.available;
+    return STATES[storedState];
+  }
   return Number.isFinite(activityAt) && now - activityAt < 15_000 ? STATES.working : STATES.available;
 }

@@ -143,11 +143,28 @@ const restoreResult = await tmux.restorePersisted();
 if (restorePlan.migrated || restoreResult.restored.length || restoreResult.failed.length) {
   console.log(`Restauration agents: ${restoreResult.restored.length} repris, ${restoreResult.failed.length} échecs, ${restorePlan.migrated} états initialisés.`);
 }
-const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, cwd: root });
+// Quota du compte: on envoie l'agent finances vers le fournisseur qui peut encore repondre.
+function providerRemaining(quota) {
+  const values = [quota?.fiveHour?.remainingPercent, quota?.sevenDay?.remainingPercent, ...(quota?.windows || []).map(({ remainingPercent }) => remainingPercent)]
+    .filter((value) => Number.isFinite(value));
+  return values.length ? Math.min(...values) : null;
+}
+
+function preferredAiProvider() {
+  const codex = providerRemaining(providerState.get("codex"));
+  const claude = providerRemaining(providerState.get("claude"));
+  if (Number.isFinite(codex) && codex <= 2) return "claude";
+  if (Number.isFinite(claude) && claude <= 2) return "codex";
+  if (Number.isFinite(codex) && Number.isFinite(claude)) return claude > codex ? "claude" : "codex";
+  return "codex";
+}
+
+const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, claudeBinary, cwd: root, pickProvider: () => preferredAiProvider() });
 financeService.setAdvisor(({ message, month, action }) => financeAdvisor.answer({ message, month, action, payload: financePayload(month), history: financeService.agentHistory() }));
 financeService.setClassifier((groups, categories) => financeAdvisor.classify(groups, categories));
 const handover = new HandoverService();
-const MIGRATION_FALLBACK_MS = 3 * 60 * 1000;
+const MIGRATION_FALLBACK_MS = 90 * 1000;
+const QUOTA_EXHAUSTED_PERCENT = 5;
 const promptWatcher = new PromptWatcher({
   tmux,
   push,
@@ -208,6 +225,11 @@ async function projectInput(body, current = {}) {
     if (!stat.isDirectory()) throw new Error("Dossier projet invalide.");
   }
   return { ...current, name, rootPath, updatedAt: new Date().toISOString() };
+}
+
+// Une bascule interrompue par un redemarrage ne doit pas laisser l'agent bloque sur "Récap en cours".
+for (const [id, entry] of Object.entries(store.all())) {
+  if (entry.migrationState === "summarizing") await store.set(id, { ...entry, migrationState: null, migrationTarget: null });
 }
 
 const sessionReaper = new SessionReaper({
@@ -517,6 +539,24 @@ app.delete("/api/finance/banking/connections/:bankId", async (request, response,
   try {
     await enableBanking.disconnect(request.params.bankId);
     response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/finance/insights", (request, response) => {
+  const month = request.query.month || currentMonthParis();
+  const cached = providerState.get("finance-insights");
+  response.json(cached?.month === month ? cached : { month, insights: [], headline: "", generatedAt: null, provider: null });
+});
+
+app.post("/api/finance/insights", async (request, response, next) => {
+  try {
+    const month = request.body?.month || currentMonthParis();
+    const result = await financeAdvisor.insights({ month, payload: financePayload(month) });
+    const payload = { ...result, month, provider: financeAdvisor.lastProvider, generatedAt: new Date().toISOString() };
+    await providerState.set("finance-insights", payload);
+    response.json(payload);
   } catch (error) {
     next(error);
   }
@@ -888,6 +928,7 @@ app.get("/api/sessions", async (_request, response, next) => {
       }
     }
     const codexQuota = [...codexWindows.values()].sort((left, right) => (left.windowMinutes || 0) - (right.windowMinutes || 0));
+    if (codexQuota.length) await providerState.set("codex", { windows: codexQuota, updatedAt: new Date().toISOString() });
     response.json({
       sessions: enriched,
       quotas: {
@@ -1015,14 +1056,19 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
     if (!session || !["codex", "claude"].includes(session.assistant)) throw new Error("Migration réservée aux agents Codex/Claude.");
     const target = request.body?.target || (session.assistant === "codex" ? "claude" : "codex");
     if (!["codex", "claude"].includes(target) || target === session.assistant) throw new Error("Agent cible invalide.");
-    if (migrations.has(session.id)) throw new Error("Migration déjà en cours.");
     const metadata = store.get(session.id) || {};
     const mode = ["auto", "agent", "transcript"].includes(request.body?.mode) ? request.body.mode : "auto";
+    const pending = migrations.get(session.id);
     const remaining = mode === "agent" ? null : await sourceQuotaRemaining(session, metadata);
-    // Quota epuise: l'agent source ne peut plus rediger de recap, on repart de sa derniere conversation.
-    if (mode === "transcript" || (mode === "auto" && Number.isFinite(remaining) && remaining <= 0)) {
+    // Quota epuise ou recap deja demande sans reponse: on reprend la derniere conversation
+    // et l'agent change de type sur place, sans attendre l'agent source.
+    if (mode === "transcript" || pending || (mode === "auto" && Number.isFinite(remaining) && remaining <= QUOTA_EXHAUSTED_PERCENT)) {
+      if (pending) {
+        clearTimeout(pending.timer);
+        migrations.delete(session.id);
+      }
       const { prompt, history } = await handoverPrompt({ session, metadata, target });
-      const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt });
+      const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt, replace: true });
       return response.status(201).json({ ok: true, state: "complete", mode: "transcript", history, target, session: { ...created, logoUrl: logoUrl(created) } });
     }
     // Si l'agent source ne rend jamais son recap (quota atteint en cours de route, agent bloque),
@@ -1032,7 +1078,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
       migrations.delete(session.id);
       try {
         const { prompt } = await handoverPrompt({ session, metadata, target });
-        const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt });
+        const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt, replace: true });
         await push.send({
           title: agentNotificationTitle(metadata.projectId ? projects.get(metadata.projectId)?.name : metadata.name, `Contexte repris par ${target === "codex" ? "Codex" : "Claude"}`),
           body: "Passation faite depuis la dernière conversation.",

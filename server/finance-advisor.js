@@ -18,14 +18,69 @@ function compactPayload(payload) {
   };
 }
 
+function extractJson(text) {
+  const fenced = String(text).match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = (fenced ? fenced[1] : String(text)).trim();
+  const start = raw.search(/[[{]/);
+  return start > 0 ? raw.slice(start) : raw;
+}
+
 export class FinanceAdvisor {
-  constructor({ binary = "codex", cwd, timeout = 120_000 } = {}) {
+  constructor({ binary = "codex", claudeBinary = "claude", cwd, timeout = 120_000, pickProvider = async () => "codex" } = {}) {
     this.binary = binary;
+    this.claudeBinary = claudeBinary;
     this.cwd = cwd;
     this.timeout = timeout;
+    this.pickProvider = pickProvider;
+    this.lastProvider = null;
   }
 
+  // Un fournisseur peut etre a sec: on prend celui qui a du quota, et on bascule si l'appel echoue.
   async run(prompt, schema = null) {
+    const preferred = await Promise.resolve(this.pickProvider()).catch(() => "codex");
+    const order = preferred === "claude" ? ["claude", "codex"] : ["codex", "claude"];
+    let lastError = null;
+    for (const provider of order) {
+      if (provider === "claude" && !this.claudeBinary) continue;
+      if (provider === "codex" && !this.binary) continue;
+      try {
+        const reply = provider === "claude" ? await this.runClaude(prompt, schema) : await this.runCodex(prompt, schema);
+        this.lastProvider = provider;
+        return reply;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("Aucun agent finances disponible.");
+  }
+
+  async runClaude(prompt, schema = null) {
+    const full = schema
+      ? `${prompt}\n\nRéponds uniquement avec un JSON valide conforme à ce schéma, sans texte autour:\n${JSON.stringify(schema)}`
+      : prompt;
+    const reply = await new Promise((resolve, reject) => {
+      const child = spawn(this.claudeBinary, ["-p", "--output-format", "text"], { cwd: this.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+      let output = "";
+      let errorOutput = "";
+      child.stdout.on("data", (chunk) => { output = `${output}${chunk}`.slice(0, 200_000); });
+      child.stderr.on("data", (chunk) => { errorOutput = `${errorOutput}${chunk}`.slice(-4000); });
+      child.on("error", reject);
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        reject(new Error("Claude finance: délai dépassé."));
+      }, this.timeout);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) return reject(new Error(`Claude finance (${code}): ${errorOutput.trim() || "échec sans détail"}`));
+        resolve(output.trim());
+      });
+      child.stdin.end(full);
+    });
+    if (!reply) throw new Error("Claude finance: réponse vide.");
+    return schema ? extractJson(reply) : reply.slice(0, 5000);
+  }
+
+  async runCodex(prompt, schema = null) {
     const output = path.join(os.tmpdir(), `noyau-finance-${crypto.randomBytes(8).toString("hex")}.txt`);
     const schemaFile = schema ? path.join(os.tmpdir(), `noyau-finance-schema-${crypto.randomBytes(8).toString("hex")}.json`) : null;
     if (schemaFile) await fs.writeFile(schemaFile, JSON.stringify(schema), { mode: 0o600 });
@@ -73,6 +128,52 @@ export class FinanceAdvisor {
       `Message utilisateur: ${message}`,
     ].join("\n\n");
     return this.run(prompt);
+  }
+
+  async insights({ month, payload }) {
+    const schema = {
+      type: "object",
+      properties: {
+        headline: { type: "string" },
+        insights: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              detail: { type: "string" },
+              impact: { type: "string", enum: ["haut", "moyen", "bas"] },
+              action: { type: "string" },
+              amount: { type: "number" },
+            },
+            required: ["title", "detail", "impact", "action", "amount"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["headline", "insights"],
+      additionalProperties: false,
+    };
+    const prompt = [
+      "Tu es analyste budget personnel. Tu reçois un snapshot financier réel et tu produis des conseils concrets, chiffrés et actionnables.",
+      "Interdits: généralités ('surveille tes dépenses'), conseils d'investissement, promesses de rendement, jugements moraux.",
+      "Chaque conseil cite un montant réel du snapshot, la catégorie ou le contrat concerné, et une action précise réalisable ce mois.",
+      "Compare le mois courant à l'historique fourni. Signale dérives, contrats redondants, charges en hausse, marges de manœuvre.",
+      "Classe par impact décroissant, 3 à 6 conseils, en français, texte brut sans Markdown. amount = euros concernés par le conseil.",
+      `Mois analysé: ${month}`,
+      `Snapshot financier local: ${JSON.stringify(compactPayload(payload))}`,
+    ].join("\n\n");
+    const parsed = JSON.parse(await this.run(prompt, schema));
+    return {
+      headline: String(parsed.headline || "").slice(0, 300),
+      insights: (parsed.insights || []).slice(0, 6).map((item) => ({
+        title: String(item.title || "").slice(0, 120),
+        detail: String(item.detail || "").slice(0, 600),
+        impact: ["haut", "moyen", "bas"].includes(item.impact) ? item.impact : "moyen",
+        action: String(item.action || "").slice(0, 300),
+        amount: Number.isFinite(Number(item.amount)) ? Math.round(Number(item.amount) * 100) / 100 : null,
+      })),
+    };
   }
 
   async classify(groups, categories) {

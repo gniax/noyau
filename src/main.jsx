@@ -724,6 +724,51 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
   );
 }
 
+function FinanceAdvicePanel({ month }) {
+  const [state, setState] = useState({ insights: [], headline: "", generatedAt: null, provider: null });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api(`/api/finance/insights?month=${encodeURIComponent(month)}`).then(setState).catch(() => {});
+  }, [month]);
+
+  async function refresh() {
+    setBusy(true);
+    setError("");
+    try {
+      setState(await api("/api/finance/insights", { method: "POST", body: JSON.stringify({ month }) }));
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const providerLabel = state.provider === "claude" ? "Claude" : state.provider === "codex" ? "Codex" : null;
+  return (
+    <section className="panel finance-advice">
+      <div className="panel-head">
+        <div><h3>Conseils IA</h3><p>{state.generatedAt ? `${providerLabel} · ${new Date(state.generatedAt).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "Analyse à la demande, agent selon quota disponible"}</p></div>
+        <button className="ghost" onClick={refresh} disabled={busy}>{busy ? "Analyse…" : state.generatedAt ? "Actualiser" : "Analyser"}</button>
+      </div>
+      {error && <p className="finance-error">{error}</p>}
+      {state.headline && <p className="advice-headline">{state.headline}</p>}
+      <div className="advice-list">
+        {state.insights.map((item) => (
+          <article className={`advice-${item.impact}`} key={item.title}>
+            <header><strong>{item.title}</strong>{Number.isFinite(item.amount) && item.amount !== null && <b>{euro(item.amount)}</b>}</header>
+            <p>{item.detail}</p>
+            <small>→ {item.action}</small>
+          </article>
+        ))}
+        {!state.insights.length && !busy && <p className="finance-empty">Aucune analyse encore. Lance-la quand tu veux un vrai avis chiffré.</p>}
+        {busy && <p className="finance-empty">L'agent lit le mois complet, compte 30 à 60 secondes.</p>}
+      </div>
+    </section>
+  );
+}
+
 function FinanceView({ onView }) {
   const today = localIsoDate();
   const [month, setMonth] = useState(today.slice(0, 7));
@@ -844,18 +889,19 @@ function FinanceView({ onView }) {
         <footer>Total mois probable: {euro(summary.projectedExpenses)} = réel {euro(summary.expenses)} + encore prévu {euro(summary.remainingPlannedExpenses)}.</footer>
       </section>}
 
-      <section className="panel current-accounts">
-        <div className="panel-head"><div><h3>Comptes courants</h3><p>Soldes bancaires réels · placements exclus</p></div><b>{euro(summary.currentCash)}</b></div>
+      <details className="panel current-accounts foldable">
+        <summary className="panel-head"><div><h3>Comptes courants</h3><p>Soldes bancaires réels · placements exclus</p></div><b>{euro(summary.currentCash)}</b><i>›</i></summary>
         <div>{summary.currentAccounts.map((account) => <article key={`${account.bank}-${account.name}`}><span><strong>{account.bank}</strong><small>{account.name} · actualisé {account.balanceAt ? new Date(account.balanceAt).toLocaleDateString("fr-FR") : "date inconnue"}</small></span><b className={account.balance >= 0 ? "positive" : "negative"}>{euro(account.balance)}</b></article>)}{!summary.currentAccounts.length && <p className="finance-empty">Aucun solde bancaire disponible.</p>}</div>
-      </section>
+      </details>
 
-      <section className="panel monthly-targets">
-        <div className="panel-head"><div><h3>Plan mensuel conseillé</h3><p>Limites calculées depuis salaire et historique réel</p></div><b>ÉPARGNER {euro(summary.monthlyPlan.recommendedSavings)}</b></div>
+      <details className="panel monthly-targets foldable">
+        <summary className="panel-head"><div><h3>Plan mensuel conseillé</h3><p>Répartition du salaire {euro(summary.monthlyPlan.income)}</p></div><b>ÉPARGNER {euro(summary.monthlyPlan.recommendedSavings)}</b><i>›</i></summary>
+        <p className="plan-equation">{euro(summary.monthlyPlan.fixedCosts)} charges + {euro(summary.monthlyPlan.flexibleLimit)} dépenses courantes + {euro(summary.monthlyPlan.recommendedSavings)} épargne + {euro(summary.monthlyPlan.unallocated)} libre = {euro(summary.monthlyPlan.income)} de salaire. Le coussin de {euro(summary.monthlyPlan.safetyBuffer)} est un stock déjà en banque, il ne se prélève pas chaque mois.</p>
         <div className="monthly-target-grid">
-          <article><small>VIREMENT {summary.monthlyPlan.flexibleAccount.toUpperCase()}</small><strong>{euro(summary.monthlyPlan.flexibleLimit)}</strong><span>Plafond dépenses courantes</span></article>
           <article><small>CHARGES FIXES</small><strong>{euro(summary.monthlyPlan.fixedCosts)}</strong><span>Logement, contrats, taxes</span></article>
-          <article><small>COUSSIN DE SÉCURITÉ</small><strong>{euro(summary.monthlyPlan.safetyBuffer)}</strong><span>Stock à conserver, pas charge mensuelle</span></article>
+          <article><small>VIREMENT {summary.monthlyPlan.flexibleAccount.toUpperCase()}</small><strong>{euro(summary.monthlyPlan.flexibleLimit)}</strong><span>Plafond dépenses courantes</span></article>
           <article className="positive"><small>ÉPARGNE AUTOMATIQUE</small><strong>{euro(summary.monthlyPlan.recommendedSavings)}</strong><span>Objectif soutenable calculé</span></article>
+          <article><small>NON ALLOUÉ</small><strong>{euro(summary.monthlyPlan.unallocated)}</strong><span>Marge restante du salaire</span></article>
         </div>
         <details><summary>Charges fixes retenues · {euro(summary.monthlyPlan.fixedCosts)} <b>›</b></summary><div className="monthly-limit-list fixed-charge-list">{summary.monthlyPlan.fixedChargeBreakdown.map((item) => {
           const category = data.categories.find(({ id }) => id === item.category);
@@ -865,10 +911,10 @@ function FinanceView({ onView }) {
         <details><summary>Voir limites fixes + enveloppe <b>›</b></summary><div className="monthly-limit-list">{data.categories.filter(({ id }) => summary.monthlyPlan.categoryLimits[id] > 0).map((category) => <article key={category.id}><span>{category.label}</span><b>{euro(summary.monthlyPlan.categoryLimits[category.id])}</b></article>)}</div></details>
         <details><summary>Récurrents détectés · {summary.detectedRecurring.length} <b>›</b></summary><div className="monthly-limit-list">{summary.detectedRecurring.map((item) => <article key={item.id}><span>{item.name}<small>{data.categories.find(({ id }) => id === item.category)?.label || "Autres"} · {item.months} mois</small></span><b>{euro(item.monthlyNet)} / mois</b></article>)}</div></details>
         {summary.spendingEnvelopes[0] && <footer>{summary.spendingEnvelopes[0].name}: médiane historique {euro(summary.spendingEnvelopes[0].historicalMedian)} · plafond conseillé −10% {euro(summary.spendingEnvelopes[0].recommendedFunding)} · toutes dépenses variables passent ici; achat ailleurs s’ajoute au plafond.</footer>}
-      </section>
+      </details>
 
-      <section className="panel spending-plan">
-        <div className="panel-head"><div><h3>Calcul réaliste</h3><p>Chaque euro protégé avant dépenses libres</p></div><span className={`confidence ${summary.dataConfidence}`}>FIABILITÉ {confidenceLabel.toUpperCase()}</span></div>
+      <details className="panel spending-plan foldable">
+        <summary className="panel-head"><div><h3>Calcul réaliste</h3><p>Chaque euro protégé avant dépenses libres</p></div><span className={`confidence ${summary.dataConfidence}`}>FIABILITÉ {confidenceLabel.toUpperCase()}</span><i>›</i></summary>
         <div className="spending-plan-body">
           <div className="money-equation">
             <span><small>{summary.incomeSource === "history" ? `Salaire estimé · ${summary.incomeHistoryMonths} mois` : "Revenus reçus"}</small><b>{euro(summary.income)}</b></span>
@@ -885,12 +931,13 @@ function FinanceView({ onView }) {
             <p>{summary.historyMonths} mois historique · {summary.transactionCount} opérations utiles · {summary.excludedTransactionCount} transferts ignorés</p>
           </div>
         </div>
-      </section>
+      </details>
 
-      <section className="panel finance-assets">
-        <div className="panel-head"><div><h3>Actifs suivis</h3><p>Valeurs manuelles configurables</p></div><button className="ghost" onClick={() => onView("finance-modules")}>Gérer modules</button></div>
+      <details className="panel finance-assets foldable">
+        <summary className="panel-head"><div><h3>Actifs suivis</h3><p>Valeurs manuelles configurables</p></div><b>{euro(summary.assets.total)}</b><i>›</i></summary>
         <div>{summary.assets.entries.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{asset.institution || (asset.bucket === "liquid" ? "Actif liquide" : "Actif investi")}</small></span><b>{euro(asset.amount)}</b></article>)}{!summary.assets.entries.length && <p className="finance-empty">Aucun actif configuré.</p>}</div>
-      </section>
+        <footer><button className="ghost" onClick={() => onView("finance-modules")}>Gérer modules</button></footer>
+      </details>
 
       <section className="finance-layout">
         <section className="panel finance-budgets">
@@ -907,6 +954,8 @@ function FinanceView({ onView }) {
             })}
           </div>
         </section>
+
+        <FinanceAdvicePanel month={month} />
 
         <section className="panel finance-insights">
           <div className="panel-head"><div><h3>Alertes & leviers</h3><p>Repères automatiques, pas conseil financier</p></div></div>
@@ -1346,7 +1395,7 @@ function TodosView({ projects }) {
   );
 }
 
-function SettingsView({ permission, onNotifications, onRefresh }) {
+function SettingsView({ permission, onNotifications, onRefresh, onView }) {
   const [refreshing, setRefreshing] = useState(false);
   const [versionInfo, setVersionInfo] = useState(null);
   const notificationLabel = { active: "Tester notification", insecure: "HTTPS requis", denied: "Alertes bloquées" }[permission] || "Activer alertes";
@@ -1364,6 +1413,7 @@ function SettingsView({ permission, onNotifications, onRefresh }) {
       <section className="panel settings-list">
         <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>Fin réponse, attente validation, migration terminée.</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
         <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
+        <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexion privée</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : "Ouvre version HTTPS via VPN"}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
       </section>
     </div>
@@ -1873,7 +1923,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         <div className="terminal-identity"><strong><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /><span>{session.name}</span></strong><small>{session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small></div>
         <div className="terminal-actions">
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
-          {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} disabled={migrating}>{migrating ? "Récap…" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
+          {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} title={migrating ? "Appuie à nouveau pour basculer sans attendre le récap" : "Basculer d'agent en gardant le contexte"}>{migrating ? "Récap… ↻" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
           {session.managed && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
         </div>
       </div>
@@ -2350,7 +2400,7 @@ function App() {
             {view === "finance-agent" && <><Header title="Budget · Agent" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}
             {view === "finance-modules" && <><Header title="Budget · Modules" subtitle="Actifs et règles" onMenu={() => setMenu(true)} /><FinanceModulesView onView={setView} /></>}
             {view === "finance-banking" && <><Header title="Budget · Banques" subtitle="Connexions et synchronisation" onMenu={() => setMenu(true)} /><FinanceBankingView onView={setView} /></>}
-            {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} /></>}
+            {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} /></>}
           </>
         ) : (
           <TerminalView session={active} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { setActiveId(id); refresh(); }} onRefresh={refresh} />
