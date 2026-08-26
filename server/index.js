@@ -676,14 +676,24 @@ app.delete("/api/projects/:id", async (request, response, next) => {
   }
 });
 
+// Les projets n'ont pas toujours de dossier propre: on prend le premier logo trouve
+// dans le dossier du projet ou dans ceux de ses agents, pour que toute l'equipe partage l'icone.
+async function projectLogoFile(projectId) {
+  const project = projects.get(projectId);
+  if (!project) return null;
+  const roots = [project.rootPath, ...Object.values(store.all()).filter((session) => session.projectId === projectId).map((session) => session.cwd)];
+  for (const root of roots.filter(Boolean)) {
+    const file = await projectLogos.find(root).catch(() => null);
+    if (file) return file;
+  }
+  return null;
+}
+
 app.get("/api/projects/:id/logo", async (request, response, next) => {
   try {
     const project = projects.get(request.params.id);
     if (!project) return response.status(404).end();
-    const linkedSession = Object.values(store.all()).find((session) => session.projectId === request.params.id);
-    const logoRoot = project.rootPath || linkedSession?.cwd;
-    if (!logoRoot) return response.status(404).end();
-    const file = await projectLogos.find(logoRoot);
+    const file = await projectLogoFile(request.params.id);
     if (!file) return response.status(404).end();
     response.setHeader("Cache-Control", "private, max-age=60");
     response.sendFile(file);
@@ -862,7 +872,8 @@ app.get("/api/sessions", async (_request, response, next) => {
         }
       }
       const project = session.projectId ? projects.get(session.projectId) : null;
-      return { ...session, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id)), usage: await usage.get({ ...session, ...metadata }, await tmux.capture(session.id)) };
+      const pane = await tmux.capture(session.id);
+      return { ...session, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane), usage: await usage.get({ ...session, ...metadata }, pane) };
     }));
     // Les quotas sont ceux du compte: chaque agent Codex n'en voit qu'une partie selon sa conversation.
     const codexWindows = new Map();
@@ -902,8 +913,7 @@ app.get("/api/sessions/:id/logo", async (request, response, next) => {
   try {
     const session = store.get(request.params.id);
     if (!session?.projectLogo) return response.status(404).end();
-    const project = session.projectId ? projects.get(session.projectId) : null;
-    const file = await projectLogos.find(project?.rootPath || session.cwd);
+    const file = (session.projectId ? await projectLogoFile(session.projectId) : null) || await projectLogos.find(session.cwd).catch(() => null);
     if (!file) return response.status(404).end();
     response.setHeader("Cache-Control", "private, max-age=60");
     response.sendFile(file);
