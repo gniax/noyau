@@ -1533,7 +1533,7 @@ function TodosView() {
       {sections.map(({ folder, items }) => (
         <section className="panel todo-list" key={folder.id}>
           <header className="todo-folder-head">
-            <div><strong>{folder.name}</strong>{folder.projectId && <b className="todo-folder-tag">PROJET</b>}</div>
+            <div><strong>{folder.name}</strong>{folder.projectId && <b className="todo-folder-tag">PROJET</b>}{folder.ownerProfileId && <b className="shared-chip" title={`Liste partagée par ${folder.ownerName}`}>⇄ {folder.ownerName}</b>}</div>
             <div className="todo-folder-actions">
               <small>{items.filter((todo) => !todo.completed).length}/{items.length}</small>
               {!folder.projectId && folder.id !== ROOT_FOLDER && <>

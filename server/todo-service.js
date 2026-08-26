@@ -230,6 +230,23 @@ export class TodoService {
     return this.payload(document).todos.find((task) => task.id === id) || null;
   }
 
+  // Localisation d'une tache ou d'un dossier: sert a router une action vers le bon profil.
+  find(id) {
+    return this.enqueue(async () => {
+      const document = await this.readDocument();
+      const task = document.tasks.find((item) => item.id === id);
+      if (!task) return null;
+      return { id, folderId: task.folderId, projectId: document.folders.find((item) => item.id === task.folderId)?.projectId || null };
+    });
+  }
+
+  folder(id) {
+    return this.enqueue(async () => {
+      const folder = (await this.readDocument()).folders.find((item) => item.id === id);
+      return folder ? { id, projectId: folder.projectId || null } : null;
+    });
+  }
+
   list() {
     return this.enqueue(async () => {
       const document = await this.readDocument();
@@ -383,6 +400,18 @@ export class TodoService {
       const lines = this.relocate(document, task, this.dropLine(document, targetFolder));
       const next = await this.saveAndRead(lines);
       return { ...this.payload(next), todo: this.taskPayload(next, id) };
+    });
+  }
+
+  remove(id) {
+    return this.enqueue(async () => {
+      if (!TODO_ID.test(id)) throw new Error("Tâche invalide.");
+      const document = await this.readDocument();
+      const task = document.tasks.find((item) => item.id === id);
+      if (!task) throw new Error("Tâche introuvable.");
+      const lines = this.renderLines(document);
+      lines.splice(task.lineIndex, 1);
+      return this.payload(await this.saveAndRead(lines));
     });
   }
 

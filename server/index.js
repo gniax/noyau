@@ -27,7 +27,7 @@ import { FinanceService } from "./finance-service.js";
 import { FinanceAdvisor } from "./finance-advisor.js";
 import { EnableBankingService } from "./enable-banking.js";
 import { agentStatus } from "./agent-status.js";
-import { TodoService } from "./todo-service.js";
+import { ROOT_FOLDER, TodoService } from "./todo-service.js";
 import { ProfileService } from "./profile-service.js";
 
 const execFileAsync = promisify(execFile);
@@ -308,6 +308,51 @@ function projectOwned(profileId, projectId) {
 
 function scopedProjects(profileId) {
   return Object.fromEntries(Object.entries(projects.all()).filter(([, project]) => project.profileId === profileId || project.shared));
+}
+
+function ownedProjects(profileId) {
+  return Object.entries(projects.all()).filter(([, project]) => (project.profileId || primaryProfileId) === profileId);
+}
+
+// Un projet partage garde sa liste Todo chez son proprietaire: les deux profils travaillent au meme endroit.
+function foreignSharedProjects(profileId) {
+  const byOwner = new Map();
+  for (const [id, project] of Object.entries(projects.all())) {
+    const owner = project.profileId || primaryProfileId;
+    if (owner === profileId || !project.shared) continue;
+    if (!byOwner.has(owner)) byOwner.set(owner, new Map());
+    byOwner.get(owner).set(id, project);
+  }
+  return byOwner;
+}
+
+async function todosView(profile) {
+  const runtime = await ensureProfileRuntime(profile.id);
+  const mine = ownedProjects(profile.id).map(([id, project]) => ({ id, name: project.name }));
+  const view = await runtime.todoService.syncProjectFolders(mine);
+  const merged = { todos: [...view.todos], folders: [...view.folders] };
+  for (const [ownerId, owned] of foreignSharedProjects(profile.id)) {
+    const ownerRuntime = await ensureProfileRuntime(ownerId);
+    const owner = profileService.resolve(ownerId);
+    const remote = await ownerRuntime.todoService.syncProjectFolders([...owned].map(([id, project]) => ({ id, name: project.name })));
+    const shared = remote.folders.filter((folder) => folder.projectId && owned.has(folder.projectId));
+    const folderIds = new Set(shared.map((folder) => folder.id));
+    merged.folders.push(...shared.map((folder) => ({ ...folder, ownerProfileId: ownerId, ownerName: owner.name })));
+    merged.todos.push(...remote.todos.filter((todo) => folderIds.has(todo.folderId)));
+  }
+  return merged;
+}
+
+async function todoRuntime(profile, { todoId = null, folderId = null }) {
+  const own = await ensureProfileRuntime(profile.id);
+  if (todoId && await own.todoService.find(todoId)) return own;
+  if (!todoId && (!folderId || folderId === "root" || await own.todoService.folder(folderId))) return own;
+  for (const [ownerId, owned] of foreignSharedProjects(profile.id)) {
+    const runtime = await ensureProfileRuntime(ownerId);
+    const found = todoId ? await runtime.todoService.find(todoId) : await runtime.todoService.folder(folderId);
+    if (found?.projectId && owned.has(found.projectId)) return runtime;
+  }
+  return own;
 }
 
 // Un projet partage reste modifiable par son seul proprietaire, mais utilisable par tous.
@@ -796,9 +841,8 @@ app.post("/api/projects", async (request, response, next) => {
 
 app.get("/api/todos", async (request, response, next) => {
   try {
-    const owned = Object.entries(scopedProjects(request.profile.id)).map(([id, project]) => ({ id, name: project.name }));
-    const { todos, folders } = await request.profileRuntime.todoService.syncProjectFolders(owned);
-    response.json({ todos, folders, storage: request.profile.todoMountUri ? "Obsidian · NAS" : "Obsidian · profil local" });
+    const view = await todosView(request.profile);
+    response.json({ ...view, storage: request.profile.todoMountUri ? "Obsidian · NAS" : "Obsidian · profil local" });
   } catch (error) {
     next(new Error(`Vault Obsidian indisponible: ${error.message}`));
   }
@@ -808,8 +852,10 @@ app.post("/api/todos", async (request, response, next) => {
   try {
     const projectId = request.body?.projectId || null;
     if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
-    const result = await request.profileRuntime.todoService.add({ text: request.body?.text, dueDate: request.body?.dueDate || null, projectId, folderId: request.body?.folderId || null });
-    response.status(201).json(result);
+    const folderId = request.body?.folderId || null;
+    const runtime = await todoRuntime(request.profile, { folderId });
+    const { todo } = await runtime.todoService.add({ text: request.body?.text, dueDate: request.body?.dueDate || null, projectId, folderId });
+    response.status(201).json({ todo, ...(await todosView(request.profile)) });
   } catch (error) {
     next(error);
   }
@@ -825,8 +871,23 @@ app.patch("/api/todos/:id", async (request, response, next) => {
       changes.projectId = request.body.projectId || null;
       if (changes.projectId && !projectVisible(request.profile.id, changes.projectId)) throw new Error("Projet introuvable.");
     }
-    if (request.body?.folderId !== undefined) changes.folderId = request.body.folderId || null;
-    response.json(await request.profileRuntime.todoService.update(request.params.id, changes));
+    if (request.body?.folderId !== undefined) changes.folderId = request.body.folderId || ROOT_FOLDER;
+    const source = await todoRuntime(request.profile, { todoId: request.params.id });
+    const target = changes.folderId === undefined ? source : await todoRuntime(request.profile, { folderId: changes.folderId });
+    if (target === source) {
+      const { todo } = await source.todoService.update(request.params.id, changes);
+      return response.json({ todo, ...(await todosView(request.profile)) });
+    }
+    // Changement de profil proprietaire: la tache est recreee dans le dossier cible puis retiree de l'ancien.
+    const current = (await source.todoService.list()).todos.find((item) => item.id === request.params.id);
+    if (!current) throw new Error("Tâche introuvable.");
+    const { todo } = await target.todoService.add({
+      text: changes.text ?? current.text,
+      dueDate: changes.dueDate === undefined ? current.dueDate : changes.dueDate,
+      folderId: changes.folderId,
+    });
+    await source.todoService.remove(request.params.id);
+    response.json({ todo, ...(await todosView(request.profile)) });
   } catch (error) {
     next(error);
   }
@@ -834,7 +895,9 @@ app.patch("/api/todos/:id", async (request, response, next) => {
 
 app.post("/api/todos/:id/move", async (request, response, next) => {
   try {
-    response.json(await request.profileRuntime.todoService.move(request.params.id, request.body?.direction));
+    const runtime = await todoRuntime(request.profile, { todoId: request.params.id });
+    await runtime.todoService.move(request.params.id, request.body?.direction);
+    response.json(await todosView(request.profile));
   } catch (error) {
     next(error);
   }
@@ -842,7 +905,8 @@ app.post("/api/todos/:id/move", async (request, response, next) => {
 
 app.post("/api/todos/folders", async (request, response, next) => {
   try {
-    response.status(201).json(await request.profileRuntime.todoService.addFolder({ name: request.body?.name }));
+    await request.profileRuntime.todoService.addFolder({ name: request.body?.name });
+    response.status(201).json(await todosView(request.profile));
   } catch (error) {
     next(error);
   }
@@ -850,7 +914,9 @@ app.post("/api/todos/folders", async (request, response, next) => {
 
 app.patch("/api/todos/folders/:id", async (request, response, next) => {
   try {
-    response.json(await request.profileRuntime.todoService.renameFolder(request.params.id, request.body?.name));
+    const runtime = await todoRuntime(request.profile, { folderId: request.params.id });
+    await runtime.todoService.renameFolder(request.params.id, request.body?.name);
+    response.json(await todosView(request.profile));
   } catch (error) {
     next(error);
   }
@@ -858,7 +924,9 @@ app.patch("/api/todos/folders/:id", async (request, response, next) => {
 
 app.delete("/api/todos/folders/:id", async (request, response, next) => {
   try {
-    response.json(await request.profileRuntime.todoService.removeFolder(request.params.id));
+    const runtime = await todoRuntime(request.profile, { folderId: request.params.id });
+    await runtime.todoService.removeFolder(request.params.id);
+    response.json(await todosView(request.profile));
   } catch (error) {
     next(error);
   }
@@ -911,8 +979,14 @@ app.post("/api/modules/:id/actions/:actionId", (request, response, next) => {
 app.patch("/api/projects/:id", async (request, response, next) => {
   try {
     if (!PROJECT_PATTERN.test(request.params.id) || !projectOwned(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
-    const project = await projectInput(request.body, projects.get(request.params.id));
+    const previous = projects.get(request.params.id);
+    const project = await projectInput(request.body, previous);
     await projects.set(request.params.id, project);
+    // Partager un projet partage tout ce qu'il contient: ses agents suivent l'etat du projet.
+    if (Boolean(previous.shared) !== Boolean(project.shared)) {
+      const agents = Object.entries(store.all()).filter(([, session]) => session.projectId === request.params.id && (session.profileId || primaryProfileId) === request.profile.id);
+      if (agents.length) await store.setMany(agents.map(([id, session]) => [id, { ...session, shared: Boolean(project.shared) }]));
+    }
     response.json({ project: projectPayload(request.params.id, project, request.profile.id) });
   } catch (error) {
     next(error);
@@ -1169,7 +1243,9 @@ app.get("/api/sessions", async (request, response, next) => {
 app.post("/api/sessions", async (request, response, next) => {
   try {
     if (request.body?.projectId && !projectVisible(request.profile.id, request.body.projectId)) throw new Error("Projet introuvable.");
-    response.status(201).json({ session: await tmux.create({ ...(request.body || {}), profileId: request.profile.id, shared: false }) });
+    const project = request.body?.projectId ? projects.get(request.body.projectId) : null;
+    const shared = request.body?.shared === undefined ? Boolean(project?.shared) : Boolean(request.body.shared);
+    response.status(201).json({ session: await tmux.create({ ...(request.body || {}), profileId: request.profile.id, shared }) });
   } catch (error) {
     next(error);
   }
