@@ -1908,6 +1908,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       terminalNode.current.addEventListener("touchend", touchEnd, { capture: true, passive: false });
       terminalNode.current.addEventListener("touchcancel", cancelTouchScroll, { capture: true, passive: true });
     }
+    const openKeyboard = () => focusKeyboard();
+    terminalNode.current.addEventListener("click", openKeyboard);
     const handleMessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "output") {
@@ -1963,6 +1965,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       terminalNode.current?.removeEventListener("touchmove", touchMove, true);
       terminalNode.current?.removeEventListener("touchend", touchEnd, true);
       terminalNode.current?.removeEventListener("touchcancel", cancelTouchScroll, true);
+      terminalNode.current?.removeEventListener("click", openKeyboard);
       inputDisposable.dispose();
       socket?.close();
       socketRef.current = null;
@@ -2192,6 +2195,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
           autoFocus={new URLSearchParams(location.search).get("reply") === "1"}
         />
         <div className="key-row">
+          <button className="keyboard-key" {...tapKey(focusKeyboard)} aria-label="Afficher le clavier">⌨</button>
           <label className={`upload-key ${uploading ? "disabled" : ""}`} aria-label="Joindre photo ou fichier">
             <input type="file" onChange={attachFile} disabled={uploading} />
             <span>{uploading ? "…" : "＋"}</span>

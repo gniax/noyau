@@ -1220,3 +1220,4 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .todo-move:disabled { opacity: .35; cursor: default; }
 .touch-shell .todo-move { min-width: 44px; height: 44px; }
 .core-chip { padding: 3px 7px; border: 1px solid var(--c-405534); border-radius: 20px; color: var(--green); font-size: 8px; font-weight: 700; letter-spacing: .6px; }
+.terminal-controls .keyboard-key { color: var(--green); font-size: 15px; }
