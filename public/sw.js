@@ -146,8 +146,12 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
       const existing = windows.find((client) => client.url === target || client.url.startsWith(self.location.origin));
-      if (existing) return existing.focus().then(() => existing.navigate(target));
-      return clients.openWindow(target);
+      if (!existing) return clients.openWindow(target);
+      // iOS ignore client.navigate en mode application: on passe la destination a l'app elle-meme.
+      return existing.focus().then((client) => {
+        (client || existing).postMessage({ type: "NOYAU_NAVIGATE", url: target });
+        return (client || existing).navigate?.(target)?.catch?.(() => {});
+      });
     }),
   );
 });

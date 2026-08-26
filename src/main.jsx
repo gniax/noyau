@@ -12,6 +12,29 @@ const assistantMeta = {
   shell: { label: "Terminal", glyph: ">_", color: "blue" },
 };
 
+// Cache leger par vue: on repeint la derniere donnee connue puis on rafraichit en fond.
+const viewCache = new Map();
+
+function cachedView(key) {
+  if (viewCache.has(key)) return viewCache.get(key);
+  try {
+    const raw = localStorage.getItem(`noyau-cache-${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    viewCache.set(key, parsed.value);
+    return parsed.value;
+  } catch {
+    return null;
+  }
+}
+
+function storeView(key, value) {
+  viewCache.set(key, value);
+  try {
+    localStorage.setItem(`noyau-cache-${key}`, JSON.stringify({ value, at: Date.now() }));
+  } catch { /* stockage optionnel */ }
+}
+
 function applicationServerKey(value) {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const raw = atob((value + padding).replace(/-/g, "+").replace(/_/g, "/"));
@@ -489,16 +512,15 @@ function ProjectModule({ module, onToggle, onAction, onSchedule }) {
 }
 
 function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onOpenTodos }) {
-  const [todos, setTodos] = useState([]);
+  const [todos, setTodos] = useState(() => cachedView("todos") || []);
   const [todoBusy, setTodoBusy] = useState("");
 
   const loadTodos = useCallback(async () => {
     try {
       const result = await api("/api/todos");
       setTodos(result.todos || []);
-    } catch {
-      setTodos([]);
-    }
+      storeView("todos", result.todos || []);
+    } catch { /* on garde la derniere liste connue */ }
   }, []);
 
   useEffect(() => { loadTodos(); }, [loadTodos]);
@@ -725,19 +747,24 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
 }
 
 function FinanceAdvicePanel({ month }) {
-  const [state, setState] = useState({ insights: [], headline: "", generatedAt: null, provider: null });
+  const [state, setState] = useState(() => cachedView(`insights-${month}`) || { insights: [], headline: "", generatedAt: null, provider: null });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api(`/api/finance/insights?month=${encodeURIComponent(month)}`).then(setState).catch(() => {});
+    api(`/api/finance/insights?month=${encodeURIComponent(month)}`).then((next) => {
+      setState(next);
+      storeView(`insights-${month}`, next);
+    }).catch(() => {});
   }, [month]);
 
   async function refresh() {
     setBusy(true);
     setError("");
     try {
-      setState(await api("/api/finance/insights", { method: "POST", body: JSON.stringify({ month }) }));
+      const next = await api("/api/finance/insights", { method: "POST", body: JSON.stringify({ month }) });
+      setState(next);
+      storeView(`insights-${month}`, next);
     } catch (reason) {
       setError(reason.message);
     } finally {
@@ -772,7 +799,7 @@ function FinanceAdvicePanel({ month }) {
 function FinanceView({ onView }) {
   const today = localIsoDate();
   const [month, setMonth] = useState(today.slice(0, 7));
-  const [data, setData] = useState(null);
+  const [data, setData] = useState(() => cachedView(`finance-${today.slice(0, 7)}`));
   const [settings, setSettings] = useState(null);
   const [saving, setSaving] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -786,6 +813,7 @@ function FinanceView({ onView }) {
       setError("");
       const payload = await api(`/api/finance?month=${encodeURIComponent(month)}`);
       setData(payload);
+      storeView(`finance-${month}`, payload);
       setSettings({
         ...payload.settings,
         savingsGoal: String(payload.settings.savingsGoal || ""),
@@ -1301,7 +1329,7 @@ function todoDueLabel(value) {
 }
 
 function TodosView({ projects }) {
-  const [todos, setTodos] = useState([]);
+  const [todos, setTodos] = useState(() => cachedView("todos") || []);
   const [storage, setStorage] = useState("Obsidian · NAS");
   const [text, setText] = useState("");
   const [projectId, setProjectId] = useState("");
@@ -1313,6 +1341,7 @@ function TodosView({ projects }) {
     try {
       const result = await api("/api/todos");
       setTodos(result.todos || []);
+      storeView("todos", result.todos || []);
       setStorage(result.storage || "Obsidian");
       setError("");
     } catch (reason) {
@@ -2262,7 +2291,24 @@ function App() {
       reloading = true;
       location.reload();
     };
-    const receiveUpdate = (event) => event.data?.type === "NOYAU_UPDATE" && refresh();
+    // Notification ouverte alors que l'app tourne deja: iOS ne navigue pas, on route en interne.
+    const receiveNavigation = (url) => {
+      const target = new URL(url, location.origin);
+      const session = target.searchParams.get("session");
+      const nextView = target.searchParams.get("view");
+      history.replaceState({}, "", `${target.pathname}${target.search}`);
+      if (session) {
+        setActiveId(session);
+        setMenu(false);
+        return;
+      }
+      setActiveId(null);
+      if (nextView) setView(nextView);
+    };
+    const receiveUpdate = (event) => {
+      if (event.data?.type === "NOYAU_UPDATE") return refresh();
+      if (event.data?.type === "NOYAU_NAVIGATE" && event.data.url) receiveNavigation(event.data.url);
+    };
     navigator.serviceWorker.addEventListener("controllerchange", refresh);
     navigator.serviceWorker.addEventListener("message", receiveUpdate);
     navigator.serviceWorker.register("/sw.js").then((registration) => registration.update()).catch(() => {});
