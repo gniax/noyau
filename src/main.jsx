@@ -5,6 +5,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
+import "./theme-castle.css";
 
 const assistantMeta = {
   codex: { label: "Codex", glyph: "C", color: "green" },

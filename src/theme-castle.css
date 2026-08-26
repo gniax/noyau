@@ -1,0 +1,99 @@
+/* Chateau ambulant: typographie, decor et emojis propres au profil. Le theme Noyau reste intact. */
+@font-face { font-family: "Cormorant Garamond"; src: url("/fonts/cormorant-garamond-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "Cormorant Garamond"; src: url("/fonts/cormorant-garamond-600-italic.woff2") format("woff2"); font-weight: 600; font-style: italic; font-display: swap; }
+@font-face { font-family: "Caveat"; src: url("/fonts/caveat-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "Quicksand"; src: url("/fonts/quicksand.woff2") format("woff2"); font-weight: 300 700; font-style: normal; font-display: swap; }
+
+:root[data-theme="aurora"] {
+  --castle-display: "Cormorant Garamond", "Iowan Old Style", Georgia, serif;
+  --castle-hand: "Caveat", "Snell Roundhand", "Bradley Hand", cursive;
+  --castle-body: "Quicksand", Inter, ui-rounded, "SF Pro Rounded", sans-serif;
+  --castle-brass: #e1b047;
+  --castle-rose: #e8a0b4;
+  font-family: var(--castle-body);
+}
+
+:root[data-theme="aurora"] body {
+  font-family: var(--castle-body);
+  /* Ciel de nuit du chateau: lueur de foyer en bas, etoiles en haut, brume au centre. */
+  background:
+    radial-gradient(1.5px 1.5px at 12% 14%, #f4e6c355 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 71% 8%, #f4e6c344 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 38% 26%, #f4e6c333 50%, transparent 51%),
+    radial-gradient(2px 2px at 86% 31%, #f4e6c33a 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 55% 47%, #f4e6c32e 50%, transparent 51%),
+    radial-gradient(circle at 78% 108%, #e1b04726 0, transparent 46%),
+    radial-gradient(circle at 8% -8%, #6f9fc41f 0, transparent 42%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+:root[data-theme="aurora"] h1,
+:root[data-theme="aurora"] h2,
+:root[data-theme="aurora"] .brand span,
+:root[data-theme="aurora"] .modal-head h2,
+:root[data-theme="aurora"] .hero-row h1 {
+  font-family: var(--castle-display);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+:root[data-theme="aurora"] .hero-row h1 { font-size: 41px; }
+:root[data-theme="aurora"] .hero-row h1::after { content: " ✧"; color: var(--castle-brass); font-size: .55em; vertical-align: super; }
+:root[data-theme="aurora"] .brand span { font-size: 21px; }
+:root[data-theme="aurora"] .brand span::after { content: " 🏰"; font-size: 14px; }
+
+:root[data-theme="aurora"] .eyebrow,
+:root[data-theme="aurora"] .sidebar-title span,
+:root[data-theme="aurora"] .panel-head small,
+:root[data-theme="aurora"] .muted {
+  font-family: var(--castle-hand);
+  letter-spacing: .4px;
+  text-transform: none;
+}
+:root[data-theme="aurora"] .eyebrow { font-size: 15px; color: var(--castle-brass); }
+:root[data-theme="aurora"] .muted { font-size: 15px; }
+:root[data-theme="aurora"] .sidebar-title span { font-size: 14px; color: var(--castle-brass); }
+:root[data-theme="aurora"] .sidebar-title span::after { content: " ✿"; }
+
+/* Chaque entree du menu porte son petit symbole. */
+:root[data-theme="aurora"] .main-nav button > span:first-child { font-size: 0; }
+:root[data-theme="aurora"] .main-nav button > span:first-child::before { font-size: 15px; }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(1) > span::before { content: "🏡"; }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(2) > span::before { content: "📜"; }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(3) > span::before { content: "🌿"; }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(4) > span::before { content: "💛"; }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(5) > span::before { content: "✨"; }
+:root[data-theme="aurora"] .main-nav .nav-settings-icon svg { display: none; }
+:root[data-theme="aurora"] .main-nav button { border-radius: 12px; font-size: 14px; }
+
+:root[data-theme="aurora"] .profile-chip { border-radius: 22px; border-color: #e1b04755; }
+:root[data-theme="aurora"] .profile-chip strong::before { content: "🎀 "; }
+:root[data-theme="aurora"] .profile-chip > span { background: linear-gradient(140deg, #e1b047, #c98b6e); color: #241c10; }
+
+:root[data-theme="aurora"] .panel,
+:root[data-theme="aurora"] .modal,
+:root[data-theme="aurora"] .agent-card,
+:root[data-theme="aurora"] .projects-grid > article {
+  border-radius: 16px;
+  border-color: #e1b04726;
+  box-shadow: 0 18px 44px #05060c66, inset 0 1px 0 #ffffff08;
+}
+:root[data-theme="aurora"] .sidebar { border-right-color: #e1b04722; background: linear-gradient(180deg, #161a26 0, #10131c 100%); }
+:root[data-theme="aurora"] button.primary { border-radius: 20px; background: linear-gradient(140deg, #e6bb59, #c98b4a); color: #241c10; border-color: #e1b04766; font-weight: 700; }
+:root[data-theme="aurora"] button.ghost { border-radius: 20px; }
+
+:root[data-theme="aurora"] .mark { animation: castle-float 5.5s ease-in-out infinite; box-shadow: 0 0 22px #e1b04744; }
+@keyframes castle-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+
+:root[data-theme="aurora"] .finance-empty::before,
+:root[data-theme="aurora"] .empty-small::before { content: "🌙 "; }
+:root[data-theme="aurora"] .todo-folder-head strong::before { content: "🌸 "; }
+:root[data-theme="aurora"] .todo-list article.completed .todo-check strong::after { content: " 🕊️"; text-decoration: none; }
+:root[data-theme="aurora"] .todo-check strong { font-size: 14px; }
+:root[data-theme="aurora"] .favorite-star { color: var(--castle-brass); }
+:root[data-theme="aurora"] .agent-card .agent-name::after { content: " ✦"; color: #e1b04788; font-size: .7em; }
+:root[data-theme="aurora"] .shared-chip.own, :root[data-theme="aurora"] .todo-folder-tag { border-color: #e8a0b455; color: var(--castle-rose); }
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="aurora"] .mark { animation: none; }
+}
