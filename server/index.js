@@ -18,6 +18,7 @@ import { PushService } from "./push-service.js";
 import { UsageService, lastClaudeMessage, parseClaudeRateLimits } from "./usage.js";
 import { ProjectLogoService } from "./project-logo.js";
 import { agentNotificationTitle, PromptWatcher } from "./prompt-watcher.js";
+import { HandoverService } from "./handover.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { ModuleService } from "./module-service.js";
 import { FinanceService } from "./finance-service.js";
@@ -144,6 +145,8 @@ if (restorePlan.migrated || restoreResult.restored.length || restoreResult.faile
 const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, cwd: root });
 financeService.setAdvisor(({ message, month, action }) => financeAdvisor.answer({ message, month, action, payload: financePayload(month), history: financeService.agentHistory() }));
 financeService.setClassifier((groups, categories) => financeAdvisor.classify(groups, categories));
+const handover = new HandoverService();
+const MIGRATION_FALLBACK_MS = 3 * 60 * 1000;
 const promptWatcher = new PromptWatcher({
   tmux,
   push,
@@ -786,6 +789,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     if (!payload) return response.status(202).json({ sent: false });
     if (completion && sessionId && migrations.has(sessionId)) {
       const migration = migrations.get(sessionId);
+      clearTimeout(migration.timer);
       const sourceSession = store.get(sessionId);
       if (sourceSession && lastMessage) {
         try {
@@ -847,7 +851,7 @@ app.get("/api/sessions", async (_request, response, next) => {
     response.json({
       sessions: enriched,
       quotas: {
-        codex: codexUsage ? { remainingPercent: codexUsage.rateRemainingPercent, resetsAt: codexUsage.rateResetsAt, windowMinutes: codexUsage.rateWindowMinutes } : null,
+        codex: codexUsage ? { remainingPercent: codexUsage.rateRemainingPercent, resetsAt: codexUsage.rateResetsAt, windowMinutes: codexUsage.rateWindowMinutes, windows: codexUsage.rateWindows || [] } : null,
         claude: providerState.get("claude") || null,
       },
     });
@@ -893,6 +897,14 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     const projectId = request.body?.projectId === undefined ? current.projectId || null : request.body.projectId || null;
     const favorite = request.body?.favorite === undefined ? Boolean(current.favorite) : Boolean(request.body.favorite);
     if (projectId && !projects.get(projectId)) throw new Error("Projet introuvable.");
+    const assistant = request.body?.assistant;
+    if (assistant && assistant !== session.assistant) {
+      if (!["codex", "claude"].includes(assistant) || !["codex", "claude"].includes(session.assistant)) throw new Error("Bascule réservée aux agents Codex/Claude.");
+      const metadata = { ...current, name, yolo, projectLogo, projectId, favorite };
+      const { prompt, history } = await handoverPrompt({ session, metadata, target: assistant });
+      const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target: assistant, prompt, replace: true });
+      return response.json({ session: { ...created, logoUrl: logoUrl(created) }, switched: true, history, restarted: true, pending: false });
+    }
     let next = { ...current, name, yolo, projectLogo, projectId, favorite };
     const permissionChanged = ["codex", "claude"].includes(session.assistant) && yolo !== Boolean(current.runningYolo);
     let restarted = false;
@@ -915,6 +927,49 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
   }
 });
 
+async function sourceQuotaRemaining(session, metadata) {
+  if (session.assistant === "codex") {
+    const info = await usage.get({ ...session, ...metadata }, await tmux.capture(session.id));
+    return Number.isFinite(info?.rateRemainingPercent) ? info.rateRemainingPercent : null;
+  }
+  const claude = providerState.get("claude");
+  const values = [claude?.fiveHour?.remainingPercent, claude?.sevenDay?.remainingPercent].filter((value) => Number.isFinite(value));
+  return values.length ? Math.min(...values) : null;
+}
+
+async function handoverPrompt({ session, metadata, target }) {
+  const transcript = await handover.prompt({
+    assistant: session.assistant,
+    target,
+    threadId: metadata.threadId,
+    agentSessionId: metadata.agentSessionId,
+    cwd: session.cwd,
+  });
+  if (transcript) return { prompt: transcript, history: true };
+  return {
+    prompt: `Tu reprends le travail d'un agent ${session.assistant === "codex" ? "Codex" : "Claude"} dans ${session.cwd}. Aucun historique lisible n'a été retrouvé: inspecte le dépôt, le git log et les fichiers modifiés pour comprendre l'état, puis attends la prochaine demande de l'utilisateur.`,
+    history: false,
+  };
+}
+
+async function spawnHandoverSession({ sessionId, session, metadata, target, prompt, replace = false }) {
+  const created = await tmux.create({
+    name: replace ? metadata.name || session.name : `${metadata.name || session.name} · ${target === "codex" ? "Codex" : "Claude"}`,
+    assistant: target,
+    cwd: session.cwd,
+    migratedFrom: sessionId,
+    yolo: Boolean(metadata.yolo),
+    projectLogo: Boolean(metadata.projectLogo),
+    projectId: metadata.projectId || null,
+    favorite: Boolean(metadata.favorite),
+    prompt,
+  });
+  await store.set(created.id, { ...store.get(created.id), switchedFrom: session.assistant, switchedAt: new Date().toISOString() });
+  await store.set(sessionId, { ...store.get(sessionId), migrationState: "complete", migrationTarget: target, migratedTo: created.id });
+  if (replace) await tmux.kill(sessionId).catch(() => {});
+  return { ...store.get(created.id), id: created.id, managed: true };
+}
+
 app.post("/api/sessions/:id/migrate", async (request, response, next) => {
   try {
     const session = (await tmux.list()).find((item) => item.id === request.params.id);
@@ -922,7 +977,35 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
     const target = request.body?.target || (session.assistant === "codex" ? "claude" : "codex");
     if (!["codex", "claude"].includes(target) || target === session.assistant) throw new Error("Agent cible invalide.");
     if (migrations.has(session.id)) throw new Error("Migration déjà en cours.");
-    migrations.set(session.id, { target, startedAt: new Date().toISOString() });
+    const metadata = store.get(session.id) || {};
+    const mode = ["auto", "agent", "transcript"].includes(request.body?.mode) ? request.body.mode : "auto";
+    const remaining = mode === "agent" ? null : await sourceQuotaRemaining(session, metadata);
+    // Quota epuise: l'agent source ne peut plus rediger de recap, on repart de sa derniere conversation.
+    if (mode === "transcript" || (mode === "auto" && Number.isFinite(remaining) && remaining <= 0)) {
+      const { prompt, history } = await handoverPrompt({ session, metadata, target });
+      const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt });
+      return response.status(201).json({ ok: true, state: "complete", mode: "transcript", history, target, session: { ...created, logoUrl: logoUrl(created) } });
+    }
+    // Si l'agent source ne rend jamais son recap (quota atteint en cours de route, agent bloque),
+    // on bascule automatiquement sur l'historique de sa derniere conversation.
+    const fallbackTimer = setTimeout(async () => {
+      if (!migrations.has(session.id)) return;
+      migrations.delete(session.id);
+      try {
+        const { prompt } = await handoverPrompt({ session, metadata, target });
+        const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt });
+        await push.send({
+          title: agentNotificationTitle(metadata.projectId ? projects.get(metadata.projectId)?.name : metadata.name, `Contexte repris par ${target === "codex" ? "Codex" : "Claude"}`),
+          body: "Passation faite depuis la dernière conversation.",
+          tag: `migration-${created.id}`,
+          url: `/?session=${encodeURIComponent(created.id)}`,
+        });
+      } catch (error) {
+        await store.set(session.id, { ...store.get(session.id), migrationState: "failed", migrationError: error.message });
+      }
+    }, MIGRATION_FALLBACK_MS);
+    fallbackTimer.unref?.();
+    migrations.set(session.id, { target, startedAt: new Date().toISOString(), timer: fallbackTimer });
     await store.set(session.id, { ...store.get(session.id), migrationState: "summarizing", migrationTarget: target, migratedTo: null, agentState: "working", agentStateUpdatedAt: new Date().toISOString() });
     await tmux.submit(session.id, `Prépare passation vers ${target === "codex" ? "Codex" : "Claude"}. Réponds uniquement avec récapitulatif autonome et compact: objectif, décisions, fichiers modifiés, état actuel, tests, commandes utiles, blocages, prochaines étapes. N'effectue aucune autre action.`);
     response.status(202).json({ ok: true, state: "summarizing", target });

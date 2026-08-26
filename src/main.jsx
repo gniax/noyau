@@ -315,7 +315,7 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite }) {
     <article className="agent-card">
       <button className="agent-card-open" onClick={() => onOpen(session.id)}>
         <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} />
-        <span className="agent-info"><strong>{session.name}</strong><small>{session.project?.name || "Sans projet"} · {session.cwd || session.id}</small><em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {session.usage?.contextPercent ?? "—"}% contexte · <RelativeTime date={session.activityAt} /></em></span>
+        <span className="agent-info"><strong><b className={`assistant-chip ${session.assistant}`} title={`${assistantMeta[session.assistant]?.label || session.assistant}${session.switchedFrom ? ` · basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}` : ""}`}>{assistantMeta[session.assistant]?.glyph || "?"}{session.switchedFrom && <i>↔</i>}</b><span className="agent-name">{session.name}</span></strong><small>{session.project?.name || "Sans projet"} · {session.cwd || session.id}</small><em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {session.usage?.contextPercent ?? "—"}% contexte · <RelativeTime date={session.activityAt} /></em></span>
         <span className="open-arrow">›</span>
       </button>
       {session.managed && <div className="agent-card-actions"><button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button><button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`}>Éditer</button></div>}
@@ -337,7 +337,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
   const shellCount = sessions.filter((session) => session.assistant === "shell").length;
   const linkedProjects = new Set(sessions.map((session) => session.projectId).filter(Boolean)).size;
   const favoriteCount = sessions.filter((session) => session.favorite).length;
-  const codexPeriod = quotas.codex?.windowMinutes ? (quotas.codex.windowMinutes >= 10_080 ? "7 j" : `${Math.round(quotas.codex.windowMinutes / 60)} h`) : "";
+  const codexWindows = (quotas.codex?.windows || []).map((item) => ({ ...item, label: item.windowMinutes >= 10_080 ? "7 j" : item.label }));
   const claudeWindows = [
     quotas.claude?.fiveHour && { label: "5 h", ...quotas.claude.fiveHour },
     quotas.claude?.sevenDay && { label: "7 j", ...quotas.claude.sevenDay },
@@ -386,7 +386,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
 
       <section className="metrics">
         <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div className="active-agents-content"><small>AGENTS ACTIFS</small><div className="active-agents-data"><div className="active-total-block"><strong className="active-total">{sessions.length}</strong><em>en ligne</em></div><div className="agent-breakdown"><span><b>{codexCount}</b><em>Codex</em></span><span><b>{claudeCount}</b><em>Claude</em></span><span><b>{shellCount}</b><em>Terminal</em></span></div></div><p className="active-agents-footer"><span>{linkedProjects} projet{linkedProjects > 1 ? "s" : ""} lié{linkedProjects > 1 ? "s" : ""}</span><span>{favoriteCount} favori{favoriteCount > 1 ? "s" : ""}</span></p></div></article>
-        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small>QUOTAS IA</small><div className="quota-providers"><div className="quota-codex"><span>CODEX {codexPeriod}</span><div className="quota-current"><strong>{Number.isFinite(quotas.codex?.remainingPercent) ? `${quotas.codex.remainingPercent}%` : "—"}</strong><em>{formatReset(quotas.codex?.resetsAt)}</em></div>{Number.isFinite(quotas.codex?.remainingPercent) && <progress max="100" value={quotas.codex.remainingPercent} aria-label={`Quota Codex restant ${quotas.codex.remainingPercent}%`} />}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{formatReset(item.resetsAt).replace("Reset ", "")}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
+        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small>QUOTAS IA</small><div className="quota-providers"><div className="quota-codex"><span>CODEX</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{formatReset(item.resetsAt).replace("Reset ", "")}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Aucun agent Codex actif</em></div>}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{formatReset(item.resetsAt).replace("Reset ", "")}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
       </section>
 
       <section className="panel agents-panel">
@@ -480,7 +480,33 @@ function ProjectModule({ module, onToggle, onAction, onSchedule }) {
   );
 }
 
-function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule }) {
+function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onOpenTodos }) {
+  const [todos, setTodos] = useState([]);
+  const [todoBusy, setTodoBusy] = useState("");
+
+  const loadTodos = useCallback(async () => {
+    try {
+      const result = await api("/api/todos");
+      setTodos(result.todos || []);
+    } catch {
+      setTodos([]);
+    }
+  }, []);
+
+  useEffect(() => { loadTodos(); }, [loadTodos]);
+
+  async function toggleTodo(todo) {
+    setTodoBusy(todo.id);
+    try {
+      await api(`/api/todos/${todo.id}`, { method: "PATCH", body: JSON.stringify({ completed: !todo.completed }) });
+      await loadTodos();
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      setTodoBusy("");
+    }
+  }
+
   return (
     <div className="page projects-page">
       <section className="hero-row"><div><p className="eyebrow">ORGANISATION</p><h1>Projets.</h1><p className="muted">Regroupe agents liés au même travail, sans imposer dossier.</p></div></section>
@@ -489,6 +515,8 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
           const agents = sessions.filter((session) => session.projectId === project.id);
           const projectModules = modules.filter((module) => module.projectId === project.id);
           const proposals = moduleProposals.filter((module) => module.projectId === project.id);
+          const projectTodos = todos.filter((todo) => todo.projectId === project.id);
+          const openTodos = projectTodos.filter((todo) => !todo.completed);
           return (
             <article className="panel project-card" key={project.id}>
               <header><ProjectIcon project={project} /><span><strong>{project.name}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span><div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div></header>
@@ -497,6 +525,16 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
                 {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {session.agentStatus?.label || "Disponible"}</small></span><b>›</b></button>)}
                 {!agents.length && <span className="project-empty">Aucun agent rattaché.</span>}
               </div>
+              <details className="project-todos"><summary><span>Todo</span><small>{openTodos.length} en cours · {projectTodos.length - openTodos.length} faite{projectTodos.length - openTodos.length > 1 ? "s" : ""}</small><b>›</b></summary><div className="project-todo-list">
+                {projectTodos.map((todo) => (
+                  <label className={todo.completed ? "project-todo done" : "project-todo"} key={todo.id}>
+                    <input type="checkbox" checked={todo.completed} disabled={todoBusy === todo.id} onChange={() => toggleTodo(todo)} />
+                    <span><strong>{todo.text}</strong><small className={todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed ? "overdue" : ""}>{todoDueLabel(todo.dueDate)}</small></span>
+                  </label>
+                ))}
+                {!projectTodos.length && <span className="project-empty">Aucune tâche liée.</span>}
+                <button className="project-todo-link" onClick={onOpenTodos}>Ouvrir la liste complète ›</button>
+              </div></details>
               {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
             </article>
           );
@@ -1803,7 +1841,14 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const target = session.assistant === "codex" ? "claude" : "codex";
     setMigrating(true);
     try {
-      await api(`/api/sessions/${session.id}/migrate`, { method: "POST", body: JSON.stringify({ target }) });
+      const result = await api(`/api/sessions/${session.id}/migrate`, { method: "POST", body: JSON.stringify({ target }) });
+      if (result?.mode === "transcript" && result.session?.id) {
+        migrationRef.current = false;
+        setMigrating(false);
+        if (!result.history) window.alert("Aucun historique lisible: le nouvel agent repart de l'état du dépôt.");
+        onMigrated(result.session.id);
+        return;
+      }
       migrationRef.current = true;
       onRefresh();
     } catch (error) {
@@ -1921,6 +1966,7 @@ function NewSessionModal({ projects, sessions, onClose, onCreated }) {
 
 function EditSessionModal({ session, projects, onClose, onSaved }) {
   const [name, setName] = useState(session.name);
+  const [assistant, setAssistant] = useState(session.assistant);
   const [yolo, setYolo] = useState(Boolean(session.yolo));
   const [projectLogo, setProjectLogo] = useState(Boolean(session.projectLogo));
   const [projectId, setProjectId] = useState(session.projectId || "");
@@ -1933,8 +1979,13 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
     setLoading(true);
     setError("");
     try {
-      const result = await api(`/api/sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ name, yolo, projectLogo, projectId: projectId || null, favorite }) });
-      onSaved(result.session);
+      if (assistant !== session.assistant && !window.confirm(`Basculer « ${name} » vers ${assistantMeta[assistant]?.label} ? L'agent actuel est arrêté et le nouveau reprend la dernière conversation.`)) {
+        setLoading(false);
+        return;
+      }
+      const result = await api(`/api/sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ name, assistant, yolo, projectLogo, projectId: projectId || null, favorite }) });
+      onSaved(result.session, { switched: Boolean(result.switched) });
+      if (result.switched && !result.history) window.alert("Aucun historique lisible: le nouvel agent repart de l'état du dépôt.");
       if (result.pending) window.alert("Mode permissions appliqué après prochaine réponse agent.");
     } catch (reason) {
       setError(reason.message);
@@ -1950,6 +2001,11 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
         <form onSubmit={submit}>
           <label htmlFor="edit-name">Nom</label>
           <input id="edit-name" value={name} onChange={(event) => setName(event.target.value)} />
+          {["codex", "claude"].includes(session.assistant) && <>
+            <label htmlFor="edit-assistant">Agent</label>
+            <select id="edit-assistant" value={assistant} onChange={(event) => setAssistant(event.target.value)}><option value="codex">Codex</option><option value="claude">Claude</option></select>
+            {assistant !== session.assistant && <p className="form-hint">Bascule immédiate: historique de la dernière conversation transmis au nouvel agent.</p>}
+          </>}
           <label htmlFor="edit-project">Projet</label>
           <select id="edit-project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
           {session.assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{session.assistant === "codex" ? "Codex --yolo" : "Claude --dangerously-skip-permissions"}</small></span></label>}
@@ -2279,7 +2335,7 @@ function App() {
         {!active ? (
           <>
             {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
-            {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} /></>}
+            {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onOpenTodos={() => setView("todos")} /></>}
             {view === "todos" && <><Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} /><TodosView projects={projects} /></>}
             {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
             {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
@@ -2293,7 +2349,7 @@ function App() {
         )}
       </main>
       {modal && <NewSessionModal projects={projects} sessions={orderedSessions} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); setActiveId(session.id); refresh(); }} />}
-      {editingSession && <EditSessionModal session={editingSession} projects={projects} onClose={() => setEditingId(null)} onSaved={() => { setEditingId(null); refresh(); }} />}
+      {editingSession && <EditSessionModal session={editingSession} projects={projects} onClose={() => setEditingId(null)} onSaved={(next, meta) => { setEditingId(null); if (meta?.switched && next?.id) { if (activeId === editingSession.id) setActiveId(next.id); } refresh(); }} />}
       {projectModalId && <ProjectModal project={editingProject} onClose={() => setProjectModalId(null)} onSaved={() => { setProjectModalId(null); refresh(); }} />}
     </div>
   );

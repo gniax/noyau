@@ -26,16 +26,40 @@ function jsonLines(text) {
   });
 }
 
+export function codexWindowLabel(minutes) {
+  const value = Number(minutes);
+  if (!Number.isFinite(value) || value <= 0) return "Fenêtre";
+  if (value >= 8640) return "Semaine";
+  if (value >= 1380) return `${Math.round(value / 1440)}j`;
+  return `${Math.round(value / 60)}h`;
+}
+
+export function codexRateWindows(rateLimits) {
+  return [rateLimits?.primary, rateLimits?.secondary]
+    .filter((item) => item && Number.isFinite(Number(item.used_percent)))
+    .map((item) => ({
+      label: codexWindowLabel(item.window_minutes),
+      remainingPercent: Math.max(0, Math.round(100 - Number(item.used_percent))),
+      resetsAt: item.resets_at ? new Date(Number(item.resets_at) * 1000).toISOString() : null,
+      windowMinutes: Number(item.window_minutes) || null,
+    }));
+}
+
 export function parseCodexUsage(text) {
-  const event = jsonLines(text).find((item) => item.type === "event_msg" && item.payload?.type === "token_count" && item.payload.info);
+  const events = jsonLines(text).filter((item) => item.type === "event_msg" && item.payload?.type === "token_count" && item.payload.info);
+  const event = events[0];
   if (!event) return null;
+  // Codex emet aussi des token_count sans quotas (limit_id premium): on garde le dernier porteur de limites.
+  const limits = events.find((item) => item.payload.rate_limits?.primary)?.payload.rate_limits || event.payload.rate_limits;
   const info = event.payload.info;
   const latest = info.last_token_usage || info.total_token_usage || {};
   const usedTokens = Number(latest.input_tokens || 0) + Number(latest.output_tokens || 0);
   const contextWindow = Number(info.model_context_window || 0);
   const remainingTokens = contextWindow ? Math.max(0, contextWindow - usedTokens) : null;
-  const primary = event.payload.rate_limits?.primary;
+  const primary = limits?.primary;
+  const rateWindows = codexRateWindows(limits);
   return {
+    rateWindows,
     usedTokens,
     remainingTokens,
     contextWindow: contextWindow || null,

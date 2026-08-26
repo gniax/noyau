@@ -72,6 +72,8 @@ export class TmuxController {
           projectLogo: Boolean(stored?.projectLogo),
           projectId: stored?.projectId || null,
           favorite: Boolean(stored?.favorite),
+          switchedFrom: stored?.switchedFrom || null,
+          switchedAt: stored?.switchedAt || null,
           managed: id.startsWith("noyau-"),
         };
       })

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseClaudeRateLimits, parseClaudeUsage, parseCodexUsage, parsePaneUsage } from "../server/usage.js";
+import { codexRateWindows, parseClaudeRateLimits, parseClaudeUsage, parseCodexUsage, parsePaneUsage } from "../server/usage.js";
 
 test("Codex usage exposes remaining context and rate limit", () => {
   const usage = parseCodexUsage(JSON.stringify({
@@ -15,6 +15,16 @@ test("Codex usage exposes remaining context and rate limit", () => {
   assert.equal(usage.contextPercent, 80);
   assert.equal(usage.rateRemainingPercent, 75);
   assert.equal(usage.rateWindowMinutes, 10_080);
+});
+
+test("Codex rate windows cover the five-hour and weekly limits", () => {
+  const windows = codexRateWindows({
+    primary: { used_percent: 94, resets_at: 1_800_000_000, window_minutes: 300 },
+    secondary: { used_percent: 40, resets_at: 1_800_500_000, window_minutes: 10_080 },
+  });
+  assert.deepEqual(windows.map((item) => [item.label, item.remainingPercent]), [["5h", 6], ["Semaine", 60]]);
+  assert.equal(windows[0].resetsAt, new Date(1_800_000_000 * 1000).toISOString());
+  assert.deepEqual(codexRateWindows(undefined), []);
 });
 
 test("Claude statusline rate limits expose five-hour and weekly quota", () => {
