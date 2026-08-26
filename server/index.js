@@ -169,6 +169,7 @@ const promptWatcher = new PromptWatcher({
   tmux,
   push,
   sessionLabel: (session) => (session.projectId ? projects.get(session.projectId)?.name : null) || session.name,
+  sessionIcon: (sessionId) => notificationIcon(sessionId),
 });
 const fileUpload = multer({
   storage: multer.memoryStorage(),
@@ -909,6 +910,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
       }
     }
     payload.body = String(payload.body).replace(/\s+/g, " ").trim().slice(0, 220);
+    payload.icon ||= await notificationIcon(sessionId);
     payload.url ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}` : "/";
     payload.replyUrl ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&reply=1` : payload.url;
     payload.actions = [{ action: "reply", title: "Répondre" }];
@@ -1031,6 +1033,15 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     next(error);
   }
 });
+
+// Logo de l'agent pour la notification: le navigateur le charge en same-origin avec le cookie.
+async function notificationIcon(sessionId) {
+  if (!sessionId || !validSessionId(sessionId)) return null;
+  const entry = store.get(sessionId);
+  if (!entry?.projectLogo) return null;
+  const file = (entry.projectId ? await projectLogoFile(entry.projectId) : null) || await projectLogos.find(entry.cwd).catch(() => null);
+  return file ? `/api/sessions/${encodeURIComponent(sessionId)}/logo` : null;
+}
 
 async function sourceQuotaRemaining(session, metadata) {
   if (session.assistant === "codex") {

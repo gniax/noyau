@@ -27,11 +27,12 @@ export function agentNotificationTitle(label, text) {
 }
 
 export class PromptWatcher {
-  constructor({ tmux, push, interval = 2500, sessionLabel = (session) => session.name }) {
+  constructor({ tmux, push, interval = 2500, sessionLabel = (session) => session.name, sessionIcon = async () => null }) {
     this.tmux = tmux;
     this.push = push;
     this.interval = interval;
     this.sessionLabel = sessionLabel;
+    this.sessionIcon = sessionIcon;
     this.waiting = new Set();
     this.running = false;
     this.timer = null;
@@ -70,6 +71,7 @@ export class PromptWatcher {
             tag: `approval-${session.id}`,
             url: `/?session=${encodeURIComponent(session.id)}`,
             replyUrl: `/?session=${encodeURIComponent(session.id)}&reply=1`,
+            icon: await this.sessionIcon(session.id),
             actions: [{ action: "reply", title: "Ouvrir" }],
           });
         } catch (error) {

@@ -127,7 +127,7 @@ self.addEventListener("push", (event) => {
     Promise.all([
       self.registration.showNotification(payload.title || "Noyau", {
         body: payload.body || "Nouvelle activité.",
-        icon: "/icon-192.png",
+        icon: payload.icon || "/icon-192.png",
         badge: "/icon-192.png",
         tag: payload.tag || "noyau",
         actions: Array.isArray(payload.actions) ? payload.actions.slice(0, 2) : [],
