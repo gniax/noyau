@@ -27,6 +27,7 @@ import { FinanceAdvisor } from "./finance-advisor.js";
 import { EnableBankingService } from "./enable-banking.js";
 import { agentStatus } from "./agent-status.js";
 import { TodoService } from "./todo-service.js";
+import { ProfileService } from "./profile-service.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -94,6 +95,21 @@ const bankingStore = new SessionStore(path.join(dataDir, "enable-banking.json"))
 await bankingStore.load();
 const providerState = new SessionStore(path.join(dataDir, "provider-state.json"));
 await providerState.load();
+const profileStore = new SessionStore(path.join(dataDir, "profiles.json"));
+await profileStore.load();
+const profileService = new ProfileService({
+  store: profileStore,
+  dataDir,
+  primaryTodoFile: process.env.NOYAU_TODO_FILE || path.join(dataDir, "TO DO.md"),
+  primaryTodoMountUri: process.env.NOYAU_TODO_MOUNT_URI || null,
+  primaryName: os.userInfo().username,
+});
+await profileService.initialize();
+const primaryProfileId = profileService.primaryId();
+const legacySessions = Object.entries(store.all()).filter(([, session]) => !session.profileId).map(([id, session]) => [id, { ...session, profileId: primaryProfileId, shared: false }]);
+if (legacySessions.length) await store.setMany(legacySessions);
+const legacyProjects = Object.entries(projects.all()).filter(([, project]) => !project.profileId).map(([id, project]) => [id, { ...project, profileId: primaryProfileId }]);
+if (legacyProjects.length) await projects.setMany(legacyProjects);
 const claudeQuota = new ClaudeQuotaService({ store: providerState });
 const push = new PushService({ dataDir });
 await push.load();
@@ -109,11 +125,12 @@ const moduleService = new ModuleService({
   workspaceRoot,
   store: moduleStore,
   onActionComplete: async ({ module, action, result }) => {
+    const profileId = projects.get(module.projectId)?.profileId || primaryProfileId;
     await push.send({
       title: `${module.name} · ${result.state === "success" ? "Terminé" : "Erreur"}`,
       body: result.state === "success" ? `${action.label} terminé.` : `${action.label}: ${result.output || "échec"}`,
       tag: `module-${module.id}-${action.id}`,
-      url: "/?view=projects",
+      url: `/?view=projects&profile=${encodeURIComponent(profileId)}`,
     });
   },
 });
@@ -160,8 +177,47 @@ function preferredAiProvider() {
 }
 
 const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, claudeBinary, cwd: root, pickProvider: () => preferredAiProvider() });
-financeService.setAdvisor(({ message, month, action }) => financeAdvisor.answer({ message, month, action, payload: financePayload(month), history: financeService.agentHistory() }));
-financeService.setClassifier((groups, categories) => financeAdvisor.classify(groups, categories));
+const profileRuntimes = new Map();
+
+function configureFinanceRuntime(profileId, runtime) {
+  runtime.financeService.setAdvisor(({ message, month, action }) => financeAdvisor.answer({ message, month, action, payload: financePayload(profileId, month), history: runtime.financeService.agentHistory() }));
+  runtime.financeService.setClassifier((groups, categories) => financeAdvisor.classify(groups, categories));
+}
+
+const primaryRuntime = { profileId: primaryProfileId, financeService, enableBanking, todoService };
+profileRuntimes.set(primaryProfileId, primaryRuntime);
+configureFinanceRuntime(primaryProfileId, primaryRuntime);
+
+async function ensureProfileRuntime(profileId) {
+  const known = profileRuntimes.get(profileId);
+  if (known) return known;
+  const profile = profileService.get(profileId);
+  if (!profile) throw new Error("Profil introuvable.");
+  const profileDir = path.join(dataDir, "profiles", profileId);
+  await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
+  const scopedFinanceStore = new SessionStore(path.join(profileDir, "finance.json"));
+  const scopedBankingStore = new SessionStore(path.join(profileDir, "enable-banking.json"));
+  await Promise.all([scopedFinanceStore.load(), scopedBankingStore.load()]);
+  const scopedFinance = new FinanceService({ store: scopedFinanceStore });
+  await scopedFinance.migrateLegacyModules();
+  const scopedBanking = new EnableBankingService({ store: scopedBankingStore, finance: scopedFinance });
+  scopedFinance.setAggregatorConfigured(scopedBanking.configured());
+  const runtime = {
+    profileId,
+    financeService: scopedFinance,
+    enableBanking: scopedBanking,
+    todoService: new TodoService({ file: profile.todoFile, mountUri: profile.todoMountUri }),
+  };
+  profileRuntimes.set(profileId, runtime);
+  configureFinanceRuntime(profileId, runtime);
+  return runtime;
+}
+
+function resetProfileTodo(profileId) {
+  const runtime = profileRuntimes.get(profileId);
+  const profile = profileService.get(profileId);
+  if (runtime && profile) runtime.todoService = new TodoService({ file: profile.todoFile, mountUri: profile.todoMountUri });
+}
 const handover = new HandoverService();
 const MIGRATION_FALLBACK_MS = 90 * 1000;
 const QUOTA_EXHAUSTED_PERCENT = 5;
@@ -181,9 +237,11 @@ function currentMonthParis() {
   return `${parts.year}-${parts.month}`;
 }
 
-function financePayload(month = currentMonthParis()) {
-  const payload = financeService.payload(month);
-  const status = enableBanking.status();
+function financePayload(profileId, month = currentMonthParis()) {
+  const runtime = profileRuntimes.get(profileId);
+  if (!runtime) throw new Error("Profil finances indisponible.");
+  const payload = runtime.financeService.payload(month);
+  const status = runtime.enableBanking.status();
   const currentAccounts = status.connections.flatMap((connection) => connection.accounts
     .filter((account) => Number.isFinite(account.balance) && account.balanceType !== "OTHR" && !/carte|livret|\blep\b|\bpea\b|epargne|assurance vie|compte titres/i.test(account.name))
     .map((account) => ({ bank: connection.bankName, name: account.name, balance: account.balance, currency: account.currency, balanceAt: account.balanceAt })));
@@ -202,8 +260,8 @@ function financePayload(month = currentMonthParis()) {
   };
 }
 
-function logoUrl(session) {
-  return session.projectLogo ? `/api/sessions/${encodeURIComponent(session.id)}/logo` : null;
+function logoUrl(session, profileId = session.profileId || primaryProfileId) {
+  return session.projectLogo ? `/api/sessions/${encodeURIComponent(session.id)}/logo?profile=${encodeURIComponent(profileId)}` : null;
 }
 
 async function setAgentState(sessionId, agentState) {
@@ -213,7 +271,7 @@ async function setAgentState(sessionId, agentState) {
 }
 
 function projectPayload(id, project) {
-  return { id, ...project, logoUrl: `/api/projects/${encodeURIComponent(id)}/logo` };
+  return { id, ...project, logoUrl: `/api/projects/${encodeURIComponent(id)}/logo?profile=${encodeURIComponent(project.profileId || primaryProfileId)}` };
 }
 
 async function projectInput(body, current = {}) {
@@ -226,6 +284,28 @@ async function projectInput(body, current = {}) {
     if (!stat.isDirectory()) throw new Error("Dossier projet invalide.");
   }
   return { ...current, name, rootPath, updatedAt: new Date().toISOString() };
+}
+
+function projectOwned(profileId, projectId) {
+  return Boolean(projects.get(projectId)?.profileId === profileId);
+}
+
+function scopedProjects(profileId) {
+  return Object.fromEntries(Object.entries(projects.all()).filter(([, project]) => project.profileId === profileId));
+}
+
+function sessionVisible(profileId, sessionId) {
+  const session = store.get(sessionId);
+  return Boolean(session && (session.profileId === profileId || session.shared));
+}
+
+function sessionOwned(profileId, sessionId) {
+  return Boolean(store.get(sessionId)?.profileId === profileId);
+}
+
+function moduleOwned(profileId, moduleId) {
+  const module = moduleStore.get(moduleId);
+  return Boolean(module && projectOwned(profileId, module.projectId));
 }
 
 // Une bascule interrompue par un redemarrage ne doit pas laisser l'agent bloque sur "Récap en cours".
@@ -347,24 +427,58 @@ app.get("/version.json", async (_request, response, next) => {
 
 app.get("/api/finance/banking/callback", async (request, response) => {
   try {
-    await enableBanking.complete({
+    const pendingId = `pending-${String(request.query.state || "").slice(0, 80)}`;
+    const runtime = [...profileRuntimes.values()].find((item) => item.enableBanking.store.get(pendingId));
+    if (!runtime) throw new Error("Retour bancaire expiré ou invalide.");
+    await runtime.enableBanking.complete({
       code: request.query.code,
       state: request.query.state,
       error: request.query.error,
       errorDescription: request.query.error_description,
     });
-    response.redirect(303, "/?view=finances&bank=connected");
+    response.redirect(303, `/?view=finances&bank=connected&profile=${encodeURIComponent(runtime.profileId)}`);
   } catch (error) {
     response.redirect(303, `/?view=finances&bankError=${encodeURIComponent(error.message)}`);
   }
 });
 
-app.use("/api", (request, response, next) => {
+app.use("/api", async (request, response, next) => {
   if (!authenticated(request)) return response.status(401).json({ error: "Non autorisé." });
-  next();
+  try {
+    request.profile = profileService.resolve(request.headers["x-noyau-profile"] || request.query.profile);
+    request.profileRuntime = await ensureProfileRuntime(request.profile.id);
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/config", (_request, response) => response.json({ workspaceRoot }));
+
+app.get("/api/profiles", (request, response) => {
+  response.json({ profiles: profileService.list(), activeProfileId: request.profile.id, primaryProfileId });
+});
+
+app.post("/api/profiles", async (request, response, next) => {
+  try {
+    const profile = await profileService.create(request.body);
+    await ensureProfileRuntime(profile.id);
+    response.status(201).json({ profile });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/profiles/:id", async (request, response, next) => {
+  try {
+    if (request.profile.id !== request.params.id) throw new Error("Bascule sur profil avant modification.");
+    const profile = await profileService.update(request.params.id, request.body);
+    resetProfileTodo(profile.id);
+    response.json({ profile });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.post("/api/system/display/sleep", async (request, response, next) => {
   if (!loopbackRequest(request)) return response.status(403).json({ error: "Commande écran disponible uniquement depuis ce PC." });
@@ -420,7 +534,7 @@ app.get("/api/weather", async (request, response, next) => {
 
 app.get("/api/finance", (request, response, next) => {
   try {
-    response.json(financePayload(request.query.month || currentMonthParis()));
+    response.json(financePayload(request.profile.id, request.query.month || currentMonthParis()));
   } catch (error) {
     next(error);
   }
@@ -428,8 +542,8 @@ app.get("/api/finance", (request, response, next) => {
 
 app.patch("/api/finance/settings", async (request, response, next) => {
   try {
-    await financeService.updateSettings(request.body);
-    response.json(financePayload(request.body?.month || currentMonthParis()));
+    await request.profileRuntime.financeService.updateSettings(request.body);
+    response.json(financePayload(request.profile.id, request.body?.month || currentMonthParis()));
   } catch (error) {
     next(error);
   }
@@ -437,7 +551,7 @@ app.patch("/api/finance/settings", async (request, response, next) => {
 
 app.post("/api/finance/modules", async (request, response, next) => {
   try {
-    const module = await financeService.addModule(request.body);
+    const module = await request.profileRuntime.financeService.addModule(request.body);
     response.status(201).json({ module });
   } catch (error) {
     next(error);
@@ -446,7 +560,7 @@ app.post("/api/finance/modules", async (request, response, next) => {
 
 app.patch("/api/finance/modules/:id", async (request, response, next) => {
   try {
-    response.json({ module: await financeService.updateModule(request.params.id, request.body) });
+    response.json({ module: await request.profileRuntime.financeService.updateModule(request.params.id, request.body) });
   } catch (error) {
     next(error);
   }
@@ -454,7 +568,7 @@ app.patch("/api/finance/modules/:id", async (request, response, next) => {
 
 app.delete("/api/finance/modules/:id", async (request, response, next) => {
   try {
-    await financeService.removeModule(request.params.id);
+    await request.profileRuntime.financeService.removeModule(request.params.id);
     response.status(204).end();
   } catch (error) {
     next(error);
@@ -463,7 +577,7 @@ app.delete("/api/finance/modules/:id", async (request, response, next) => {
 
 app.post("/api/finance/transactions", async (request, response, next) => {
   try {
-    const transaction = await financeService.addTransaction(request.body);
+    const transaction = await request.profileRuntime.financeService.addTransaction(request.body);
     response.status(201).json({ transaction });
   } catch (error) {
     next(error);
@@ -473,8 +587,8 @@ app.post("/api/finance/transactions", async (request, response, next) => {
 app.post("/api/finance/transactions/categorize", async (request, response, next) => {
   try {
     const month = request.body?.all ? null : request.body?.month || currentMonthParis();
-    const result = await financeService.categorizeTransactions({ force: Boolean(request.body?.force), month });
-    response.json({ result, finance: financePayload(request.body?.month || currentMonthParis()) });
+    const result = await request.profileRuntime.financeService.categorizeTransactions({ force: Boolean(request.body?.force), month });
+    response.json({ result, finance: financePayload(request.profile.id, request.body?.month || currentMonthParis()) });
   } catch (error) {
     next(error);
   }
@@ -482,31 +596,31 @@ app.post("/api/finance/transactions/categorize", async (request, response, next)
 
 app.delete("/api/finance/transactions/:id", async (request, response, next) => {
   try {
-    await financeService.removeTransaction(request.params.id);
+    await request.profileRuntime.financeService.removeTransaction(request.params.id);
     response.status(204).end();
   } catch (error) {
     next(error);
   }
 });
 
-app.get("/api/finance/banking/status", (_request, response) => {
-  response.json(enableBanking.status());
+app.get("/api/finance/banking/status", (request, response) => {
+  response.json(request.profileRuntime.enableBanking.status());
 });
 
 app.patch("/api/finance/banking/config", async (request, response, next) => {
   try {
-    const status = await enableBanking.saveConfig(request.body);
-    financeService.setAggregatorConfigured(true);
-    const application = await enableBanking.verify();
+    const status = await request.profileRuntime.enableBanking.saveConfig(request.body);
+    request.profileRuntime.financeService.setAggregatorConfigured(true);
+    const application = await request.profileRuntime.enableBanking.verify();
     response.json({ status, application });
   } catch (error) {
     next(error);
   }
 });
 
-app.get("/api/finance/banking/institutions", async (_request, response, next) => {
+app.get("/api/finance/banking/institutions", async (request, response, next) => {
   try {
-    response.json({ institutions: await enableBanking.institutions() });
+    response.json({ institutions: await request.profileRuntime.enableBanking.institutions() });
   } catch (error) {
     next(error);
   }
@@ -514,7 +628,7 @@ app.get("/api/finance/banking/institutions", async (_request, response, next) =>
 
 app.post("/api/finance/banking/connect", async (request, response, next) => {
   try {
-    response.json(await enableBanking.begin(request.body));
+    response.json(await request.profileRuntime.enableBanking.begin(request.body));
   } catch (error) {
     next(error);
   }
@@ -522,15 +636,15 @@ app.post("/api/finance/banking/connect", async (request, response, next) => {
 
 app.post("/api/finance/banking/sync", async (request, response, next) => {
   try {
-    const result = await enableBanking.sync(request.body?.bankId || null);
+    const result = await request.profileRuntime.enableBanking.sync(request.body?.bankId || null);
     const month = request.body?.month || currentMonthParis();
     let categorization;
     try {
-      categorization = await financeService.categorizeTransactions({ month });
+      categorization = await request.profileRuntime.financeService.categorizeTransactions({ month });
     } catch (error) {
       categorization = { error: error.message };
     }
-    response.json({ result, categorization, finance: financePayload(month), banking: enableBanking.status() });
+    response.json({ result, categorization, finance: financePayload(request.profile.id, month), banking: request.profileRuntime.enableBanking.status() });
   } catch (error) {
     next(error);
   }
@@ -538,7 +652,7 @@ app.post("/api/finance/banking/sync", async (request, response, next) => {
 
 app.delete("/api/finance/banking/connections/:bankId", async (request, response, next) => {
   try {
-    await enableBanking.disconnect(request.params.bankId);
+    await request.profileRuntime.enableBanking.disconnect(request.params.bankId);
     response.status(204).end();
   } catch (error) {
     next(error);
@@ -568,16 +682,16 @@ app.post("/api/quotas/refresh", async (_request, response, next) => {
 
 app.get("/api/finance/insights", (request, response) => {
   const month = request.query.month || currentMonthParis();
-  const cached = providerState.get("finance-insights");
+  const cached = providerState.get(request.profile.primary ? "finance-insights" : `finance-insights:${request.profile.id}`);
   response.json(cached?.month === month ? cached : { month, insights: [], headline: "", generatedAt: null, provider: null });
 });
 
 app.post("/api/finance/insights", async (request, response, next) => {
   try {
     const month = request.body?.month || currentMonthParis();
-    const result = await financeAdvisor.insights({ month, payload: financePayload(month) });
+    const result = await financeAdvisor.insights({ month, payload: financePayload(request.profile.id, month) });
     const payload = { ...result, month, provider: financeAdvisor.lastProvider, generatedAt: new Date().toISOString() };
-    await providerState.set("finance-insights", payload);
+    await providerState.set(request.profile.primary ? "finance-insights" : `finance-insights:${request.profile.id}`, payload);
     response.json(payload);
   } catch (error) {
     next(error);
@@ -587,9 +701,9 @@ app.post("/api/finance/insights", async (request, response, next) => {
 app.post("/api/finance/agent/message", async (request, response, next) => {
   try {
     const month = request.body?.month || currentMonthParis();
-    const result = await financeService.financeAgent(request.body?.message, month);
+    const result = await request.profileRuntime.financeService.financeAgent(request.body?.message, month);
     response.json(result);
-    void push.send({ title: "Agent finances · Réponse prête", body: result.reply.slice(0, 180), tag: "finance-agent", url: "/?view=finance-agent" }).catch((error) => console.error(`Notification finances: ${error.message}`));
+    void push.send({ title: "Agent finances · Réponse prête", body: result.reply.slice(0, 180), tag: `finance-agent-${request.profile.id}`, url: `/?view=finance-agent&profile=${encodeURIComponent(request.profile.id)}` }).catch((error) => console.error(`Notification finances: ${error.message}`));
   } catch (error) {
     next(error);
   }
@@ -597,7 +711,7 @@ app.post("/api/finance/agent/message", async (request, response, next) => {
 
 app.delete("/api/finance/recurring/:id", async (request, response, next) => {
   try {
-    await financeService.removeRecurring(request.params.id);
+    await request.profileRuntime.financeService.removeRecurring(request.params.id);
     response.status(204).end();
   } catch (error) {
     next(error);
@@ -614,15 +728,15 @@ app.post("/api/hooks/claude-statusline", async (request, response, next) => {
   }
 });
 
-app.get("/api/projects", (_request, response) => {
-  const list = Object.entries(projects.all()).map(([id, project]) => projectPayload(id, project)).sort((a, b) => a.name.localeCompare(b.name));
+app.get("/api/projects", (request, response) => {
+  const list = Object.entries(scopedProjects(request.profile.id)).map(([id, project]) => projectPayload(id, project)).sort((a, b) => a.name.localeCompare(b.name));
   response.json({ projects: list });
 });
 
 app.post("/api/projects", async (request, response, next) => {
   try {
     const id = `project-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
-    const project = await projectInput(request.body, { createdAt: new Date().toISOString() });
+    const project = await projectInput(request.body, { profileId: request.profile.id, createdAt: new Date().toISOString() });
     await projects.set(id, project);
     response.status(201).json({ project: projectPayload(id, project) });
   } catch (error) {
@@ -630,9 +744,11 @@ app.post("/api/projects", async (request, response, next) => {
   }
 });
 
-app.get("/api/todos", async (_request, response, next) => {
+app.get("/api/todos", async (request, response, next) => {
   try {
-    response.json({ todos: await todoService.list(), storage: "Obsidian · NAS" });
+    const owned = Object.entries(scopedProjects(request.profile.id)).map(([id, project]) => ({ id, name: project.name }));
+    const { todos, folders } = await request.profileRuntime.todoService.syncProjectFolders(owned);
+    response.json({ todos, folders, storage: request.profile.todoMountUri ? "Obsidian · NAS" : "Obsidian · profil local" });
   } catch (error) {
     next(new Error(`Vault Obsidian indisponible: ${error.message}`));
   }
@@ -641,9 +757,9 @@ app.get("/api/todos", async (_request, response, next) => {
 app.post("/api/todos", async (request, response, next) => {
   try {
     const projectId = request.body?.projectId || null;
-    if (projectId && !projects.get(projectId)) throw new Error("Projet introuvable.");
-    const todo = await todoService.add({ text: request.body?.text, dueDate: request.body?.dueDate || null, projectId });
-    response.status(201).json({ todo });
+    if (projectId && !projectOwned(request.profile.id, projectId)) throw new Error("Projet introuvable.");
+    const result = await request.profileRuntime.todoService.add({ text: request.body?.text, dueDate: request.body?.dueDate || null, projectId, folderId: request.body?.folderId || null });
+    response.status(201).json(result);
   } catch (error) {
     next(error);
   }
@@ -657,9 +773,10 @@ app.patch("/api/todos/:id", async (request, response, next) => {
     if (request.body?.dueDate !== undefined) changes.dueDate = request.body.dueDate || null;
     if (request.body?.projectId !== undefined) {
       changes.projectId = request.body.projectId || null;
-      if (changes.projectId && !projects.get(changes.projectId)) throw new Error("Projet introuvable.");
+      if (changes.projectId && !projectOwned(request.profile.id, changes.projectId)) throw new Error("Projet introuvable.");
     }
-    response.json({ todo: await todoService.update(request.params.id, changes) });
+    if (request.body?.folderId !== undefined) changes.folderId = request.body.folderId || null;
+    response.json(await request.profileRuntime.todoService.update(request.params.id, changes));
   } catch (error) {
     next(error);
   }
@@ -667,15 +784,39 @@ app.patch("/api/todos/:id", async (request, response, next) => {
 
 app.post("/api/todos/:id/move", async (request, response, next) => {
   try {
-    response.json({ todos: await todoService.move(request.params.id, request.body?.direction) });
+    response.json(await request.profileRuntime.todoService.move(request.params.id, request.body?.direction));
   } catch (error) {
     next(error);
   }
 });
 
-app.get("/api/modules", async (_request, response, next) => {
+app.post("/api/todos/folders", async (request, response, next) => {
   try {
-    response.json(await moduleService.list(projects.all()));
+    response.status(201).json(await request.profileRuntime.todoService.addFolder({ name: request.body?.name }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/todos/folders/:id", async (request, response, next) => {
+  try {
+    response.json(await request.profileRuntime.todoService.renameFolder(request.params.id, request.body?.name));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/todos/folders/:id", async (request, response, next) => {
+  try {
+    response.json(await request.profileRuntime.todoService.removeFolder(request.params.id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/modules", async (request, response, next) => {
+  try {
+    response.json(await moduleService.list(scopedProjects(request.profile.id)));
   } catch (error) {
     next(error);
   }
@@ -683,7 +824,7 @@ app.get("/api/modules", async (_request, response, next) => {
 
 app.post("/api/modules/:id/install", async (request, response, next) => {
   try {
-    const module = await moduleService.install(request.params.id, projects.all());
+    const module = await moduleService.install(request.params.id, scopedProjects(request.profile.id));
     response.status(201).json({ module: await moduleService.payload(module) });
   } catch (error) {
     next(error);
@@ -692,6 +833,7 @@ app.post("/api/modules/:id/install", async (request, response, next) => {
 
 app.patch("/api/modules/:id/toggle", async (request, response, next) => {
   try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
     response.json({ module: await moduleService.setEnabled(request.params.id, request.body?.enabled === true) });
   } catch (error) {
     next(error);
@@ -700,6 +842,7 @@ app.patch("/api/modules/:id/toggle", async (request, response, next) => {
 
 app.patch("/api/modules/:id/schedules/:scheduleId", async (request, response, next) => {
   try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
     response.json({ module: await moduleService.setSchedule(request.params.id, request.params.scheduleId, request.body?.time) });
   } catch (error) {
     next(error);
@@ -708,6 +851,7 @@ app.patch("/api/modules/:id/schedules/:scheduleId", async (request, response, ne
 
 app.post("/api/modules/:id/actions/:actionId", (request, response, next) => {
   try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
     response.status(202).json({ run: moduleService.runAction(request.params.id, request.params.actionId) });
   } catch (error) {
     next(error);
@@ -716,7 +860,7 @@ app.post("/api/modules/:id/actions/:actionId", (request, response, next) => {
 
 app.patch("/api/projects/:id", async (request, response, next) => {
   try {
-    if (!PROJECT_PATTERN.test(request.params.id) || !projects.get(request.params.id)) throw new Error("Projet introuvable.");
+    if (!PROJECT_PATTERN.test(request.params.id) || !projectOwned(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
     const project = await projectInput(request.body, projects.get(request.params.id));
     await projects.set(request.params.id, project);
     response.json({ project: projectPayload(request.params.id, project) });
@@ -727,7 +871,7 @@ app.patch("/api/projects/:id", async (request, response, next) => {
 
 app.delete("/api/projects/:id", async (request, response, next) => {
   try {
-    if (!PROJECT_PATTERN.test(request.params.id) || !projects.get(request.params.id)) throw new Error("Projet introuvable.");
+    if (!PROJECT_PATTERN.test(request.params.id) || !projectOwned(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
     for (const [sessionId, session] of Object.entries(store.all())) {
       if (session.projectId === request.params.id) await store.set(sessionId, { ...session, projectId: null });
     }
@@ -754,7 +898,7 @@ async function projectLogoFile(projectId) {
 app.get("/api/projects/:id/logo", async (request, response, next) => {
   try {
     const project = projects.get(request.params.id);
-    if (!project) return response.status(404).end();
+    if (!project || project.profileId !== request.profile.id) return response.status(404).end();
     const file = await projectLogoFile(request.params.id);
     if (!file) return response.status(404).end();
     response.setHeader("Cache-Control", "private, max-age=60");
@@ -767,7 +911,7 @@ app.get("/api/projects/:id/logo", async (request, response, next) => {
 async function saveUpload(request, response, next) {
   try {
     if (!request.file) throw new Error("Fichier manquant.");
-    if (!validSessionId(request.body?.sessionId) || !(await tmux.exists(request.body.sessionId))) throw new Error("Session invalide.");
+    if (!validSessionId(request.body?.sessionId) || !sessionVisible(request.profile.id, request.body.sessionId) || !(await tmux.exists(request.body.sessionId))) throw new Error("Session invalide.");
     const base = `${request.body.sessionId}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
     const image = /^image\//.test(request.file.mimetype);
     const originalExtension = path.extname(request.file.originalname).toLowerCase();
@@ -890,6 +1034,8 @@ app.post("/api/hooks/notify", async (request, response, next) => {
             yolo: Boolean(sourceSession.yolo),
             projectLogo: Boolean(sourceSession.projectLogo),
             projectId: sourceSession.projectId || null,
+            profileId: sourceSession.profileId || primaryProfileId,
+            shared: Boolean(sourceSession.shared),
             favorite: Boolean(sourceSession.favorite),
             prompt: `Tu reprends travail d'un autre agent. Utilise ce récapitulatif comme contexte fiable, vérifie état réel du dépôt avant modification, puis attends prochaine demande utilisateur.\n\nRÉCAPITULATIF DE PASSATION:\n${lastMessage}`,
           });
@@ -899,8 +1045,8 @@ app.post("/api/hooks/notify", async (request, response, next) => {
             title: `Contexte passé à ${migration.target === "codex" ? "Codex" : "Claude"}`,
             body: `${sourceSession.name} prêt dans nouvel agent.`,
             tag: `migration-${target.id}`,
-            url: `/?session=${encodeURIComponent(target.id)}`,
-            replyUrl: `/?session=${encodeURIComponent(target.id)}&reply=1`,
+            url: `/?session=${encodeURIComponent(target.id)}&profile=${encodeURIComponent(sourceSession.profileId || primaryProfileId)}`,
+            replyUrl: `/?session=${encodeURIComponent(target.id)}&reply=1&profile=${encodeURIComponent(sourceSession.profileId || primaryProfileId)}`,
           };
         } catch (error) {
           migrations.delete(sessionId);
@@ -911,8 +1057,9 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     }
     payload.body = String(payload.body).replace(/\s+/g, " ").trim().slice(0, 220);
     payload.icon ||= await notificationIcon(sessionId);
-    payload.url ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}` : "/";
-    payload.replyUrl ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&reply=1` : payload.url;
+    const notificationProfileId = metadata?.profileId || primaryProfileId;
+    payload.url ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&profile=${encodeURIComponent(notificationProfileId)}` : "/";
+    payload.replyUrl ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&reply=1&profile=${encodeURIComponent(notificationProfileId)}` : payload.url;
     payload.actions = [{ action: "reply", title: "Répondre" }];
     const devices = await push.send(payload);
     response.json({ sent: true, devices });
@@ -922,9 +1069,9 @@ app.post("/api/hooks/notify", async (request, response, next) => {
   }
 });
 
-app.get("/api/sessions", async (_request, response, next) => {
+app.get("/api/sessions", async (request, response, next) => {
   try {
-    const sessions = await tmux.list();
+    const sessions = (await tmux.list()).filter((session) => sessionVisible(request.profile.id, session.id));
     const enriched = await Promise.all(sessions.map(async (session) => {
       let metadata = store.get(session.id) || {};
       if (session.assistant === "codex" && !metadata.threadId) {
@@ -935,8 +1082,9 @@ app.get("/api/sessions", async (_request, response, next) => {
         }
       }
       const project = session.projectId ? projects.get(session.projectId) : null;
+      const owner = profileService.resolve(session.profileId);
       const pane = await tmux.capture(session.id);
-      return { ...session, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane), usage: await usage.get({ ...session, ...metadata }, pane) };
+      return { ...session, canEdit: session.profileId === request.profile.id, owner: { id: owner.id, name: owner.name }, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session, request.profile.id), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane), usage: await usage.get({ ...session, ...metadata }, pane) };
     }));
     // Les quotas sont ceux du compte: chaque agent Codex n'en voit qu'une partie selon sa conversation.
     const codexWindows = new Map();
@@ -970,8 +1118,8 @@ app.get("/api/sessions", async (_request, response, next) => {
 
 app.post("/api/sessions", async (request, response, next) => {
   try {
-    if (request.body?.projectId && !projects.get(request.body.projectId)) throw new Error("Projet introuvable.");
-    response.status(201).json({ session: await tmux.create(request.body || {}) });
+    if (request.body?.projectId && !projectOwned(request.profile.id, request.body.projectId)) throw new Error("Projet introuvable.");
+    response.status(201).json({ session: await tmux.create({ ...(request.body || {}), profileId: request.profile.id, shared: false }) });
   } catch (error) {
     next(error);
   }
@@ -980,7 +1128,7 @@ app.post("/api/sessions", async (request, response, next) => {
 app.get("/api/sessions/:id/logo", async (request, response, next) => {
   try {
     const session = store.get(request.params.id);
-    if (!session?.projectLogo) return response.status(404).end();
+    if (!session?.projectLogo || !sessionVisible(request.profile.id, request.params.id)) return response.status(404).end();
     const file = (session.projectId ? await projectLogoFile(session.projectId) : null) || await projectLogos.find(session.cwd).catch(() => null);
     if (!file) return response.status(404).end();
     response.setHeader("Cache-Control", "private, max-age=60");
@@ -992,6 +1140,7 @@ app.get("/api/sessions/:id/logo", async (request, response, next) => {
 
 app.patch("/api/sessions/:id", async (request, response, next) => {
   try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
     const session = (await tmux.list()).find((item) => item.id === request.params.id);
     const current = store.get(request.params.id);
     if (!session?.managed || !current) throw new Error("Session Noyau introuvable.");
@@ -1003,16 +1152,17 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     const projectLogo = request.body?.projectLogo === undefined ? Boolean(current.projectLogo) : Boolean(request.body.projectLogo);
     const projectId = request.body?.projectId === undefined ? current.projectId || null : request.body.projectId || null;
     const favorite = request.body?.favorite === undefined ? Boolean(current.favorite) : Boolean(request.body.favorite);
-    if (projectId && !projects.get(projectId)) throw new Error("Projet introuvable.");
+    const shared = request.body?.shared === undefined ? Boolean(current.shared) : Boolean(request.body.shared);
+    if (projectId && !projectOwned(request.profile.id, projectId)) throw new Error("Projet introuvable.");
     const assistant = request.body?.assistant;
     if (assistant && assistant !== session.assistant) {
       if (!["codex", "claude"].includes(assistant) || !["codex", "claude"].includes(session.assistant)) throw new Error("Bascule réservée aux agents Codex/Claude.");
-      const metadata = { ...current, name, yolo, projectLogo, projectId, favorite };
+      const metadata = { ...current, name, yolo, projectLogo, projectId, favorite, shared };
       const { prompt, history } = await handoverPrompt({ session, metadata, target: assistant });
       const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target: assistant, prompt, replace: true });
       return response.json({ session: { ...created, logoUrl: logoUrl(created) }, switched: true, history, restarted: true, pending: false });
     }
-    let next = { ...current, name, yolo, projectLogo, projectId, favorite };
+    let next = { ...current, name, yolo, projectLogo, projectId, favorite, shared };
     const permissionChanged = ["codex", "claude"].includes(session.assistant) && yolo !== Boolean(current.runningYolo);
     let restarted = false;
     if (permissionChanged) {
@@ -1040,7 +1190,7 @@ async function notificationIcon(sessionId) {
   const entry = store.get(sessionId);
   if (!entry?.projectLogo) return null;
   const file = (entry.projectId ? await projectLogoFile(entry.projectId) : null) || await projectLogos.find(entry.cwd).catch(() => null);
-  return file ? `/api/sessions/${encodeURIComponent(sessionId)}/logo` : null;
+  return file ? `/api/sessions/${encodeURIComponent(sessionId)}/logo?profile=${encodeURIComponent(entry.profileId || primaryProfileId)}` : null;
 }
 
 async function sourceQuotaRemaining(session, metadata) {
@@ -1077,6 +1227,8 @@ async function spawnHandoverSession({ sessionId, session, metadata, target, prom
     yolo: Boolean(metadata.yolo),
     projectLogo: Boolean(metadata.projectLogo),
     projectId: metadata.projectId || null,
+    profileId: metadata.profileId || primaryProfileId,
+    shared: Boolean(metadata.shared),
     favorite: Boolean(metadata.favorite),
     prompt,
   });
@@ -1088,6 +1240,7 @@ async function spawnHandoverSession({ sessionId, session, metadata, target, prom
 
 app.post("/api/sessions/:id/migrate", async (request, response, next) => {
   try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
     const session = (await tmux.list()).find((item) => item.id === request.params.id);
     if (!session || !["codex", "claude"].includes(session.assistant)) throw new Error("Migration réservée aux agents Codex/Claude.");
     const target = request.body?.target || (session.assistant === "codex" ? "claude" : "codex");
@@ -1119,7 +1272,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
           title: agentNotificationTitle(metadata.projectId ? projects.get(metadata.projectId)?.name : metadata.name, `Contexte repris par ${target === "codex" ? "Codex" : "Claude"}`),
           body: "Passation faite depuis la dernière conversation.",
           tag: `migration-${created.id}`,
-          url: `/?session=${encodeURIComponent(created.id)}`,
+          url: `/?session=${encodeURIComponent(created.id)}&profile=${encodeURIComponent(metadata.profileId || primaryProfileId)}`,
         });
       } catch (error) {
         await store.set(session.id, { ...store.get(session.id), migrationState: "failed", migrationError: error.message });
@@ -1140,6 +1293,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
 
 app.delete("/api/sessions/:id", async (request, response, next) => {
   try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
     await tmux.kill(request.params.id);
     response.status(204).end();
   } catch (error) {
@@ -1179,12 +1333,14 @@ const sockets = new WebSocketServer({ noServer: true });
 async function upgradeTerminal(request, socket, head) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const match = url.pathname.match(/^\/ws\/terminal\/([a-zA-Z0-9_-]+)$/);
-  if (!match || !authenticated(request) || !(await tmux.exists(match[1]))) {
+  const profile = profileService.resolve(url.searchParams.get("profile"));
+  if (!match || !authenticated(request) || !sessionVisible(profile.id, match[1]) || !(await tmux.exists(match[1]))) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }
   request.sessionId = match[1];
+  request.profileId = profile.id;
   sockets.handleUpgrade(request, socket, head, (websocket) => sockets.emit("connection", websocket, request));
 }
 
@@ -1290,28 +1446,33 @@ sockets.on("connection", (websocket, request) => {
 });
 
 let todoReminderRunning = false;
-let todoReminderError = "";
+const todoReminderErrors = new Map();
 async function checkTodoReminders() {
   if (todoReminderRunning) return;
   todoReminderRunning = true;
   try {
-    const reminders = await todoService.reminders();
-    for (const reminder of reminders) {
-      const project = reminder.projectId ? projects.get(reminder.projectId) : null;
-      const title = reminder.kind === "tomorrow" ? "Tâche prévue demain" : reminder.kind === "today" ? "Tâche à faire aujourd’hui" : "Tâche en retard";
-      const devices = await push.send({
-        title,
-        body: `${reminder.text}${project?.name ? ` · ${project.name}` : ""}`,
-        tag: `todo-${reminder.id}-${reminder.reminderKey}`,
-        url: "/?view=todos",
-        actions: [{ action: "open", title: "Ouvrir" }],
-      });
-      if (devices > 0) await todoService.markReminded(reminder.id, reminder.reminderKey);
+    for (const profile of profileService.list()) {
+      try {
+        const runtime = await ensureProfileRuntime(profile.id);
+        const reminders = await runtime.todoService.reminders();
+        for (const reminder of reminders) {
+          const project = reminder.projectId && projectOwned(profile.id, reminder.projectId) ? projects.get(reminder.projectId) : null;
+          const title = reminder.kind === "tomorrow" ? "Tâche prévue demain" : reminder.kind === "today" ? "Tâche à faire aujourd’hui" : "Tâche en retard";
+          const devices = await push.send({
+            title: `${profile.name} · ${title}`,
+            body: `${reminder.text}${project?.name ? ` · ${project.name}` : ""}`,
+            tag: `todo-${profile.id}-${reminder.id}-${reminder.reminderKey}`,
+            url: `/?view=todos&profile=${encodeURIComponent(profile.id)}`,
+            actions: [{ action: "open", title: "Ouvrir" }],
+          });
+          if (devices > 0) await runtime.todoService.markReminded(reminder.id, reminder.reminderKey);
+        }
+        todoReminderErrors.delete(profile.id);
+      } catch (error) {
+        if (error.message !== todoReminderErrors.get(profile.id)) console.error(`Rappels tâches ${profile.name}: ${error.message}`);
+        todoReminderErrors.set(profile.id, error.message);
+      }
     }
-    todoReminderError = "";
-  } catch (error) {
-    if (error.message !== todoReminderError) console.error(`Rappels tâches: ${error.message}`);
-    todoReminderError = error.message;
   } finally {
     todoReminderRunning = false;
   }

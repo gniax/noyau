@@ -71,6 +71,8 @@ export class TmuxController {
           permissionRestartPending: Boolean(stored?.permissionRestartPending),
           projectLogo: Boolean(stored?.projectLogo),
           projectId: stored?.projectId || null,
+          profileId: stored?.profileId || null,
+          shared: Boolean(stored?.shared),
           favorite: Boolean(stored?.favorite),
           switchedFrom: stored?.switchedFrom || null,
           switchedAt: stored?.switchedAt || null,
@@ -133,7 +135,7 @@ export class TmuxController {
     return { restored, failed };
   }
 
-  async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, favorite = false }) {
+  async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, profileId = null, shared = false, favorite = false }) {
     if (!["codex", "claude", "shell"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
     let stat;
@@ -171,6 +173,8 @@ export class TmuxController {
       permissionRestartPending: false,
       projectLogo: Boolean(projectLogo),
       projectId: projectId || null,
+      profileId: profileId || null,
+      shared: Boolean(shared),
       favorite: Boolean(favorite),
       autoRestore: true,
       agentState: prompt ? "working" : "available",

@@ -178,7 +178,8 @@ export class ModuleService {
   }
 
   async list(projects) {
-    const installed = Object.values(this.store.all());
+    const projectIds = new Set(Object.keys(projects));
+    const installed = Object.values(this.store.all()).filter((module) => projectIds.has(module.projectId));
     const discovered = await this.discover(projects);
     const proposals = discovered.filter((candidate) => !this.store.get(candidate.id)).map((candidate) => ({ id: candidate.id, projectId: candidate.projectId, name: candidate.name, description: candidate.description, glyph: candidate.glyph, accent: candidate.accent }));
     return { modules: await Promise.all(installed.map((module) => this.payload(module))), proposals };

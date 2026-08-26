@@ -14,14 +14,46 @@ const assistantMeta = {
 
 // Cache leger par vue: on repeint la derniere donnee connue puis on rafraichit en fond.
 const viewCache = new Map();
+const PROFILE_KEY = "noyau:profile";
+const requestedProfileId = new URLSearchParams(location.search).get("profile");
+if (requestedProfileId) {
+  try { localStorage.setItem(PROFILE_KEY, requestedProfileId); } catch { /* stockage optionnel */ }
+}
+
+function activeProfileId() {
+  try { return localStorage.getItem(PROFILE_KEY) || ""; } catch { return ""; }
+}
+
+function profileCacheKey(key) {
+  return `${activeProfileId() || "primary"}:${key}`;
+}
+
+const ROOT_FOLDER = "root";
+const THEME_KEY = "noyau:theme";
+const THEMES = {
+  noyau: { label: "Thème Noyau", terminal: { background: "#080b0a", foreground: "#d9e0dc", cursor: "#b8ff5e", selectionBackground: "#31551f88" } },
+  "aurora": { label: "Château ambulant", terminal: { background: "#f2efe8", foreground: "#2b2721", cursor: "#b47a22", selectionBackground: "#c8a86a66" } },
+};
+
+function applyTheme(theme) {
+  const value = THEMES[theme] ? theme : "noyau";
+  document.documentElement.dataset.theme = value;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", value === "aurora" ? "#f0ede7" : "#080b0a");
+  try { localStorage.setItem(THEME_KEY, value); } catch { /* stockage optionnel */ }
+}
+
+function terminalTheme() {
+  return (THEMES[document.documentElement.dataset.theme] || THEMES.noyau).terminal;
+}
 
 function cachedView(key) {
-  if (viewCache.has(key)) return viewCache.get(key);
+  const scopedKey = profileCacheKey(key);
+  if (viewCache.has(scopedKey)) return viewCache.get(scopedKey);
   try {
-    const raw = localStorage.getItem(`noyau-cache-${key}`);
+    const raw = localStorage.getItem(`noyau-cache-${scopedKey}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    viewCache.set(key, parsed.value);
+    viewCache.set(scopedKey, parsed.value);
     return parsed.value;
   } catch {
     return null;
@@ -29,9 +61,10 @@ function cachedView(key) {
 }
 
 function storeView(key, value) {
-  viewCache.set(key, value);
+  const scopedKey = profileCacheKey(key);
+  viewCache.set(scopedKey, value);
   try {
-    localStorage.setItem(`noyau-cache-${key}`, JSON.stringify({ value, at: Date.now() }));
+    localStorage.setItem(`noyau-cache-${scopedKey}`, JSON.stringify({ value, at: Date.now() }));
   } catch { /* stockage optionnel */ }
 }
 
@@ -43,9 +76,10 @@ function applicationServerKey(value) {
 
 async function api(path, options = {}) {
   const multipart = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const profileId = activeProfileId();
   const response = await fetch(path, {
     ...options,
-    headers: { ...(multipart ? {} : { "Content-Type": "application/json" }), ...options.headers },
+    headers: { ...(multipart ? {} : { "Content-Type": "application/json" }), ...(profileId ? { "X-Noyau-Profile": profileId } : {}), ...options.headers },
   });
   if (response.status === 204) return null;
   const body = await response.json().catch(() => ({}));
@@ -74,6 +108,7 @@ const TOUCH_MODE = new URLSearchParams(location.search).get("touch") === "1";
 function appPath(parameters = {}) {
   const search = new URLSearchParams();
   if (TOUCH_MODE) search.set("touch", "1");
+  if (activeProfileId()) search.set("profile", activeProfileId());
   Object.entries(parameters).forEach(([key, value]) => search.set(key, String(value)));
   const query = search.toString();
   return query ? `/?${query}` : "/";
@@ -251,7 +286,37 @@ function exclusionLabel(reason) {
   return reason === "placement" ? "Placement exclu" : reason === "doublon-carte" ? "Doublon carte exclu" : reason === "professionnel" ? "Dépense professionnelle exclue" : "Transfert interne exclu";
 }
 
-function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose }) {
+function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const active = profiles.find((item) => item.id === profileId);
+  const label = active?.name || "Session locale";
+  return (
+    <div className="profile-switcher">
+      {open && (
+        <>
+          <button className="profile-menu-backdrop" onClick={() => setOpen(false)} aria-label="Fermer profils" />
+          <nav className="profile-menu">
+            {profiles.map((item) => (
+              <button className={item.id === profileId ? "active" : ""} onClick={() => { setOpen(false); onSwitch(item.id); }} key={item.id}>
+                <span>{item.name.slice(0, 1).toUpperCase()}</span>
+                <strong>{item.name}<small>{THEMES[item.theme]?.label || item.theme}</small></strong>
+                {item.id === profileId && <i>✓</i>}
+              </button>
+            ))}
+            <button className="profile-logout" onClick={() => { setOpen(false); onLogout(); }}>Se déconnecter</button>
+          </nav>
+        </>
+      )}
+      <button className="profile" onClick={() => setOpen((value) => !value)}>
+        <span>{label.slice(0, 1).toUpperCase()}</span>
+        <strong>{label}<small>{profiles.length > 1 ? "Changer de profil" : "Session locale"}</small></strong>
+        <i>···</i>
+      </button>
+    </div>
+  );
+}
+
+function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile }) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><Mark /><span>Noyau</span><button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button></div>
@@ -267,13 +332,13 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         {sessions.map((session) => (
           <button className={activeId === session.id ? "active" : ""} onClick={() => { onOpen(session.id); onClose(); }} key={session.id}>
             <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small />
-            <span><strong>{session.favorite && <b className="favorite-star">★</b>}{session.name}</strong><small>{session.project?.name || assistantMeta[session.assistant]?.label || "Terminal"} · {session.agentStatus?.label || "Disponible"}</small></span>
+            <span><strong>{session.favorite && <b className="favorite-star">★</b>}{session.name}{(session.shared || session.canEdit === false) && <b className="shared-star" title={session.canEdit === false ? `Partagé par ${session.owner?.name || "autre profil"}` : "Partagé avec les autres profils"}>⇄</b>}</strong><small>{session.canEdit === false ? `${session.owner?.name || "Autre profil"} · ` : ""}{session.project?.name || assistantMeta[session.assistant]?.label || "Terminal"} · {session.agentStatus?.label || "Disponible"}</small></span>
             <i className={`live-dot ${session.agentStatus?.state || "available"}`} title={session.agentStatus?.label || "Disponible"} />
           </button>
         ))}
         {!sessions.length && <p className="empty-small">Aucune session active.</p>}
       </div>
-      <button className="profile" onClick={onLogout}><span>G</span><strong>Session locale<small>Se déconnecter</small></strong><i>···</i></button>
+      <ProfileSwitcher profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onLogout={onLogout} />
     </aside>
   );
 }
@@ -338,10 +403,10 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite }) {
     <article className="agent-card">
       <button className="agent-card-open" onClick={() => onOpen(session.id)}>
         <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} />
-        <span className="agent-info"><strong><b className={`assistant-chip ${session.assistant}`} title={`${assistantMeta[session.assistant]?.label || session.assistant}${session.switchedFrom ? ` · basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}` : ""}`}>{assistantMeta[session.assistant]?.glyph || "?"}</b>{session.switchedFrom && <i className="switched-mark" title={`Basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}`}>↔</i>}<span className="agent-name">{session.name}</span></strong><small>{session.project?.name || "Sans projet"} · {session.cwd || session.id}</small><em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {session.usage?.contextPercent ?? "—"}% contexte · <RelativeTime date={session.activityAt} /></em></span>
+        <span className="agent-info"><strong><b className={`assistant-chip ${session.assistant}`} title={`${assistantMeta[session.assistant]?.label || session.assistant}${session.switchedFrom ? ` · basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}` : ""}`}>{assistantMeta[session.assistant]?.glyph || "?"}</b>{session.switchedFrom && <i className="switched-mark" title={`Basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}`}>↔</i>}<span className="agent-name">{session.name}</span>{session.canEdit === false && <b className="shared-chip" title={`Agent partagé par ${session.owner?.name || "autre profil"}`}>⇄ {session.owner?.name || "partagé"}</b>}{session.canEdit !== false && session.shared && <b className="shared-chip own" title="Agent partagé avec les autres profils">⇄ partagé</b>}</strong><small>{session.project?.name || "Sans projet"} · {session.cwd || session.id}</small><em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {session.usage?.contextPercent ?? "—"}% contexte · <RelativeTime date={session.activityAt} /></em></span>
         <span className="open-arrow">›</span>
       </button>
-      {session.managed && <div className="agent-card-actions"><button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button><button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`}>Éditer</button></div>}
+      {session.managed && session.canEdit !== false && <div className="agent-card-actions"><button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button><button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`}>Éditer</button></div>}
     </article>
   );
 }
@@ -1348,26 +1413,43 @@ function todoDueLabel(value) {
   return `Pour le ${value.split("-").reverse().join("/")}`;
 }
 
-function TodosView({ projects }) {
-  const [todos, setTodos] = useState(() => cachedView("todos") || []);
+function completedLabel(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `Terminé le ${date.toLocaleDateString("fr-FR")} à ${date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function TodosView() {
+  const cached = cachedView("todos");
+  const [todos, setTodos] = useState(() => (Array.isArray(cached) ? cached : cached?.todos) || []);
+  const [folders, setFolders] = useState(() => (Array.isArray(cached) ? [] : cached?.folders) || []);
   const [storage, setStorage] = useState("Obsidian · NAS");
   const [text, setText] = useState("");
-  const [projectId, setProjectId] = useState("");
+  const [folderId, setFolderId] = useState(ROOT_FOLDER);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [todoPanel, setTodoPanel] = useState(null);
+  const [datePanel, setDatePanel] = useState(null);
+
+  const apply = useCallback((result) => {
+    if (!result) return;
+    const nextTodos = result.todos || [];
+    const nextFolders = result.folders || [];
+    setTodos(nextTodos);
+    setFolders(nextFolders);
+    storeView("todos", { todos: nextTodos, folders: nextFolders });
+  }, []);
 
   const load = useCallback(async () => {
     try {
       const result = await api("/api/todos");
-      setTodos(result.todos || []);
-      storeView("todos", result.todos || []);
+      apply(result);
       setStorage(result.storage || "Obsidian");
       setError("");
     } catch (reason) {
       setError(reason.message);
     }
-  }, []);
+  }, [apply]);
 
   useEffect(() => {
     load();
@@ -1377,78 +1459,178 @@ function TodosView({ projects }) {
     return () => { clearInterval(timer); document.removeEventListener("visibilitychange", visible); };
   }, [load]);
 
+  async function run(key, task) {
+    setBusy(key);
+    try {
+      apply(await task());
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function add(event) {
     event.preventDefault();
     if (!text.trim()) return;
-    setBusy("new");
-    try {
-      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text, projectId: projectId || null }) });
-      setTodos((items) => [...items, result.todo]);
+    await run("new", async () => {
+      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text, folderId: folderId === ROOT_FOLDER ? null : folderId }) });
       setText("");
-      setError("");
-    } catch (reason) {
-      setError(reason.message);
-    } finally {
-      setBusy("");
-    }
+      return result;
+    });
   }
 
-  async function update(todo, changes) {
-    setBusy(todo.id);
-    try {
-      const result = await api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify(changes) });
-      setTodos((items) => items.map((item) => item.id === todo.id ? result.todo : item));
-      setError("");
-    } catch (reason) {
-      setError(reason.message);
-    } finally {
-      setBusy("");
-    }
+  const update = (todo, changes) => run(todo.id, () => api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify(changes) }));
+  const move = (todo, direction) => run(todo.id, () => api(`/api/todos/${encodeURIComponent(todo.id)}/move`, { method: "POST", body: JSON.stringify({ direction }) }));
+
+  async function createFolder() {
+    const name = window.prompt("Nom du dossier ?");
+    if (!name?.trim()) return;
+    await run("folder", () => api("/api/todos/folders", { method: "POST", body: JSON.stringify({ name }) }));
   }
 
-  async function move(todo, direction) {
-    setBusy(todo.id);
-    try {
-      const result = await api(`/api/todos/${encodeURIComponent(todo.id)}/move`, { method: "POST", body: JSON.stringify({ direction }) });
-      setTodos(result.todos || []);
-      setError("");
-    } catch (reason) {
-      setError(reason.message);
-    } finally {
-      setBusy("");
-    }
+  async function renameFolder(folder) {
+    const name = window.prompt("Nouveau nom du dossier ?", folder.name);
+    if (!name?.trim() || name === folder.name) return;
+    await run(folder.id, () => api(`/api/todos/folders/${encodeURIComponent(folder.id)}`, { method: "PATCH", body: JSON.stringify({ name }) }));
   }
+
+  async function removeFolder(folder) {
+    if (!window.confirm(`Supprimer dossier « ${folder.name} » ? Les tâches repartent hors dossier.`)) return;
+    await run(folder.id, () => api(`/api/todos/folders/${encodeURIComponent(folder.id)}`, { method: "DELETE" }));
+  }
+
+  // Les projets ouvrent la liste, les dossiers libres suivent, le hors-dossier ferme la marche.
+  const sections = useMemo(() => {
+    const rank = (folder) => folder.projectId ? 0 : folder.id === ROOT_FOLDER ? 2 : 1;
+    return [...folders]
+      .sort((a, b) => rank(a) - rank(b))
+      .map((folder) => ({ folder, items: todos.filter((todo) => (todo.folderId || ROOT_FOLDER) === folder.id) }))
+      .filter((section) => section.folder.id !== ROOT_FOLDER || section.items.length);
+  }, [folders, todos]);
 
   const openCount = todos.filter((todo) => !todo.completed).length;
   return (
     <div className="page todos-page">
-      <section className="hero-row todos-hero"><div><p className="eyebrow">OBSIDIAN · NAS</p><h1>Todo.</h1><p className="muted">{openCount} tâche{openCount > 1 ? "s" : ""} à faire · synchro directe {storage}</p></div></section>
+      <section className="hero-row todos-hero">
+        <div><p className="eyebrow">OBSIDIAN · NAS</p><h1>Todo.</h1><p className="muted">{openCount} tâche{openCount > 1 ? "s" : ""} à faire · synchro directe {storage}</p></div>
+        <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
+      </section>
       <form className="panel todo-add" onSubmit={add}>
         <input value={text} onChange={(event) => setText(event.target.value)} placeholder="Ajouter une tâche…" maxLength="300" />
-        <select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
+        <select value={folderId} onChange={(event) => setFolderId(event.target.value)} aria-label="Dossier">{folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select>
         <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : "Ajouter"}</button>
       </form>
       {error && <p className="finance-error todo-error">{error}</p>}
-      <section className="panel todo-list">
-        {todos.map((todo, index) => (
-          <article className={todo.completed ? "completed" : ""} key={todo.id}>
-            <label className="todo-check"><input type="checkbox" checked={todo.completed} onChange={(event) => update(todo, { completed: event.target.checked })} disabled={busy === todo.id} /><span><strong>{todo.text}</strong><small className={todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed ? "overdue" : ""}>{todoDueLabel(todo.dueDate)}</small></span></label>
-            <div className="todo-actions">
-              <select value={todo.projectId || ""} onChange={(event) => update(todo, { projectId: event.target.value || null })} disabled={busy === todo.id} aria-label="Projet"><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
-              <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setTodoPanel((current) => current?.id === todo.id && current.type === "date" ? null : { id: todo.id, type: "date" })} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
-              <button className="todo-move-trigger" onClick={() => setTodoPanel((current) => current?.id === todo.id && current.type === "move" ? null : { id: todo.id, type: "move" })} disabled={busy === todo.id} aria-label="Déplacer tâche">↕</button>
+      {sections.map(({ folder, items }) => (
+        <section className="panel todo-list" key={folder.id}>
+          <header className="todo-folder-head">
+            <div><strong>{folder.name}</strong>{folder.projectId && <b className="todo-folder-tag">PROJET</b>}</div>
+            <div className="todo-folder-actions">
+              <small>{items.filter((todo) => !todo.completed).length}/{items.length}</small>
+              {!folder.projectId && folder.id !== ROOT_FOLDER && <>
+                <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>Renommer</button>
+                <button onClick={() => removeFolder(folder)} disabled={busy === folder.id} aria-label={`Supprimer ${folder.name}`}>×</button>
+              </>}
             </div>
-            {todoPanel?.id === todo.id && todoPanel.type === "date" && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setTodoPanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setTodoPanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
-            {todoPanel?.id === todo.id && todoPanel.type === "move" && <div className="todo-inline-panel todo-move-panel"><span>Déplacer</span><button onClick={async () => { await move(todo, "up"); setTodoPanel(null); }} disabled={busy === todo.id || index === 0}>↑ Monter</button><button onClick={async () => { await move(todo, "down"); setTodoPanel(null); }} disabled={busy === todo.id || index === todos.length - 1}>↓ Descendre</button></div>}
-          </article>
-        ))}
-        {!todos.length && !error && <p className="finance-empty">Aucune tâche. Liste Obsidian vide.</p>}
-      </section>
+          </header>
+          {items.map((todo, index) => (
+            <article className={todo.completed ? "completed" : ""} key={todo.id}>
+              <label className="todo-check">
+                <input type="checkbox" checked={todo.completed} onChange={(event) => update(todo, { completed: event.target.checked })} disabled={busy === todo.id} />
+                <span>
+                  <strong>{todo.text}</strong>
+                  <small className={todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed ? "overdue" : ""}>{todo.completed ? completedLabel(todo.completedAt) || "Terminée" : todoDueLabel(todo.dueDate)}</small>
+                </span>
+              </label>
+              <div className="todo-actions">
+                <select value={folder.id} onChange={(event) => update(todo, { folderId: event.target.value })} disabled={busy === todo.id} aria-label="Dossier">{folders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
+                <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
+                <button className="todo-move" onClick={() => move(todo, "up")} disabled={busy === todo.id || index === 0} aria-label="Monter">↑</button>
+                <button className="todo-move" onClick={() => move(todo, "down")} disabled={busy === todo.id || index === items.length - 1} aria-label="Descendre">↓</button>
+                <button className="todo-move" onClick={() => move(todo, "bottom")} disabled={busy === todo.id || index === items.length - 1} aria-label="Envoyer tout en bas">⤓</button>
+              </div>
+              {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
+            </article>
+          ))}
+          {!items.length && <p className="finance-empty">Dossier vide.</p>}
+        </section>
+      ))}
+      {!sections.length && !error && <section className="panel todo-list"><p className="finance-empty">Aucune tâche. Liste Obsidian vide.</p></section>}
     </div>
   );
 }
 
-function SettingsView({ permission, onNotifications, onRefresh, onView }) {
+function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
+  const active = profiles.find((item) => item.id === profileId);
+  const [name, setName] = useState(active?.name || "");
+  const [theme, setTheme] = useState(active?.theme || "noyau");
+  const [todoFile, setTodoFile] = useState(active?.todoFile || "");
+  const [todoMountUri, setTodoMountUri] = useState(active?.todoMountUri || "");
+  const [newName, setNewName] = useState("");
+  const [newTheme, setNewTheme] = useState("aurora");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function run(task) {
+    setBusy(true);
+    setError("");
+    try {
+      await task();
+      await onChanged();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const save = () => run(async () => {
+    const result = await api(`/api/profiles/${encodeURIComponent(profileId)}`, { method: "PATCH", body: JSON.stringify({ name, theme, todoFile, todoMountUri: todoMountUri || null }) });
+    applyTheme(result.profile.theme);
+  });
+
+  const create = () => run(async () => {
+    await api("/api/profiles", { method: "POST", body: JSON.stringify({ name: newName, theme: newTheme }) });
+    setNewName("");
+  });
+
+  return (
+    <section className="panel profiles-settings">
+      <header className="panel-head"><div><strong>Profils</strong><small>Chaque profil garde ses agents, projets, todo et budget.</small></div></header>
+      <div className="profiles-grid">
+        {profiles.map((item) => (
+          <button className={item.id === profileId ? "active" : ""} onClick={() => onSwitch(item.id)} key={item.id}>
+            <strong>{item.name}</strong>
+            <small>{THEMES[item.theme]?.label || item.theme}{item.primary ? " · principal" : ""}</small>
+            <em>{item.id === profileId ? "Profil actif" : "Basculer"}</em>
+          </button>
+        ))}
+      </div>
+      <div className="profile-form">
+        <label htmlFor="profile-name">Nom du profil actif</label>
+        <input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} />
+        <label htmlFor="profile-theme">Thème</label>
+        <select id="profile-theme" value={theme} onChange={(event) => setTheme(event.target.value)}>{Object.entries(THEMES).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select>
+        <label htmlFor="profile-todo">Fichier Todo Obsidian</label>
+        <input id="profile-todo" value={todoFile} onChange={(event) => setTodoFile(event.target.value)} placeholder="/chemin/absolu/TO DO.md" />
+        <label htmlFor="profile-mount">Montage SMB (optionnel)</label>
+        <input id="profile-mount" value={todoMountUri} onChange={(event) => setTodoMountUri(event.target.value)} placeholder="smb://nas/partage" />
+        <div className="modal-actions"><button className="primary" onClick={save} disabled={busy}>{busy ? "Application…" : "Enregistrer profil"}</button></div>
+      </div>
+      <div className="profile-form">
+        <label htmlFor="profile-new">Nouveau profil</label>
+        <input id="profile-new" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Prénom" />
+        <select value={newTheme} onChange={(event) => setNewTheme(event.target.value)}>{Object.entries(THEMES).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select>
+        <div className="modal-actions"><button className="ghost" onClick={create} disabled={busy || !newName.trim()}>Créer profil</button></div>
+      </div>
+      {error && <p className="form-error">{error}</p>}
+    </section>
+  );
+}
+
+function SettingsView({ permission, onNotifications, onRefresh, onView, profiles, profileId, onSwitchProfile, onProfilesChanged }) {
   const [refreshing, setRefreshing] = useState(false);
   const [versionInfo, setVersionInfo] = useState(null);
   const notificationLabel = { active: "Tester notification", insecure: "HTTPS requis", denied: "Alertes bloquées" }[permission] || "Activer alertes";
@@ -1469,6 +1651,7 @@ function SettingsView({ permission, onNotifications, onRefresh, onView }) {
         <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexion privée</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : "Ouvre version HTTPS via VPN"}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
       </section>
+      {profiles.length > 0 && <ProfilesSettings key={profileId} profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onChanged={onProfilesChanged} />}
     </div>
   );
 }
@@ -1560,7 +1743,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       fontSize: 13,
       fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
       scrollback: touchTerminal ? 0 : 5000,
-      theme: { background: "#080b0a", foreground: "#d9e0dc", cursor: "#b8ff5e", selectionBackground: "#31551f88" },
+      theme: terminalTheme(),
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -2082,6 +2265,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
   const [projectLogo, setProjectLogo] = useState(Boolean(session.projectLogo));
   const [projectId, setProjectId] = useState(session.projectId || "");
   const [favorite, setFavorite] = useState(Boolean(session.favorite));
+  const [shared, setShared] = useState(Boolean(session.shared));
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -2094,7 +2278,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
         setLoading(false);
         return;
       }
-      const result = await api(`/api/sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ name, assistant, yolo, projectLogo, projectId: projectId || null, favorite }) });
+      const result = await api(`/api/sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ name, assistant, yolo, projectLogo, projectId: projectId || null, favorite, shared }) });
       onSaved(result.session, { switched: Boolean(result.switched) });
       if (result.switched && !result.history) window.alert("Aucun historique lisible: le nouvel agent repart de l'état du dépôt.");
       if (result.pending) window.alert("Mode permissions appliqué après prochaine réponse agent.");
@@ -2122,6 +2306,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
           {session.assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{session.assistant === "codex" ? "Codex --yolo" : "Claude --dangerously-skip-permissions"}</small></span></label>}
           <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Remplace icône agent si logo trouvé</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Agent commun</strong><small>Visible et utilisable depuis les autres profils</small></span></label>
           {session.permissionRestartPending && <p className="form-hint">Changement permissions en attente prochaine réponse.</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Annuler</button><button className="primary" disabled={loading}>{loading ? "Application…" : "Enregistrer"}</button></div>
@@ -2185,6 +2370,8 @@ function App() {
   const [bootStep, setBootStep] = useState("Démarrage…");
   const [bootDetail, setBootDetail] = useState("");
   const [permission, setPermission] = useState(!window.isSecureContext ? "insecure" : (typeof Notification === "undefined" ? "denied" : Notification.permission));
+  const [profiles, setProfiles] = useState([]);
+  const [profileId, setProfileId] = useState(() => activeProfileId());
 
   const refresh = useCallback(async () => {
     try {
@@ -2283,6 +2470,21 @@ function App() {
     return () => clearInterval(timer);
   }, [auth, refresh]);
 
+  // Le profil pilote le theme et le cloisonnement des donnees: on l'aligne des l'ouverture de session.
+  const refreshProfiles = useCallback(async () => {
+    const { profiles: list, activeProfileId: current } = await api("/api/profiles");
+    setProfiles(list);
+    setProfileId(current);
+    try { localStorage.setItem(PROFILE_KEY, current); } catch { /* stockage optionnel */ }
+    applyTheme(list.find((item) => item.id === current)?.theme);
+    return list;
+  }, []);
+
+  useEffect(() => {
+    if (!auth) return;
+    refreshProfiles().catch(() => { /* profils indisponibles: on garde le theme courant */ });
+  }, [auth, refreshProfiles]);
+
   // Version du build: tout changement purge les caches et recharge, sans action manuelle.
   useEffect(() => {
     let disposed = false;
@@ -2377,6 +2579,14 @@ function App() {
     setAuth(false);
   }
 
+  function switchProfile(id) {
+    if (!id || id === profileId) return;
+    try { localStorage.setItem(PROFILE_KEY, id); } catch { /* stockage optionnel */ }
+    applyTheme(profiles.find((item) => item.id === id)?.theme);
+    // Sessions, terminal et caches sont lies au profil: on repart d'une page propre, sans reconnexion.
+    location.assign(appPath());
+  }
+
   async function enableNotifications() {
     try {
       if (!window.isSecureContext) throw new Error("HTTPS requis pour notifications iPhone.");
@@ -2464,20 +2674,20 @@ function App() {
   return (
     <div className={`app-shell ${TOUCH_MODE ? "touch-shell" : ""}`}>
       {TOUCH_MODE && <TouchSystemBar sessions={orderedSessions} onHome={() => { setActiveId(null); setView("dashboard"); }} onNew={() => setModal(true)} />}
-      <Sidebar sessions={orderedSessions} activeId={activeId} view={view} onOpen={setActiveId} onView={setView} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} />
+      <Sidebar sessions={orderedSessions} activeId={activeId} view={view} onOpen={setActiveId} onView={setView} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} profiles={profiles} profileId={profileId} onSwitchProfile={switchProfile} />
       {menu && <button className="menu-backdrop" onClick={() => setMenu(false)} aria-label="Fermer menu" />}
       <main className="content">
         {!active ? (
           <>
             {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onRefreshQuotas={refreshQuotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
             {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onOpenTodos={() => setView("todos")} /></>}
-            {view === "todos" && <><Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} /><TodosView projects={projects} /></>}
+            {view === "todos" && <><Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} /><TodosView /></>}
             {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
             {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
             {view === "finance-agent" && <><Header title="Budget · Agent" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}
             {view === "finance-modules" && <><Header title="Budget · Modules" subtitle="Actifs et règles" onMenu={() => setMenu(true)} /><FinanceModulesView onView={setView} /></>}
             {view === "finance-banking" && <><Header title="Budget · Banques" subtitle="Connexions et synchronisation" onMenu={() => setMenu(true)} /><FinanceBankingView onView={setView} /></>}
-            {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} /></>}
+            {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} profiles={profiles} profileId={profileId} onSwitchProfile={switchProfile} onProfilesChanged={refreshProfiles} /></>}
           </>
         ) : (
           <TerminalView session={active} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { setActiveId(id); refresh(); }} onRefresh={refresh} />

@@ -69,8 +69,8 @@ export class PromptWatcher {
             title: agentNotificationTitle(this.sessionLabel(session), "Codex attend validation"),
             body: "Commande ou permission à accepter ou refuser.",
             tag: `approval-${session.id}`,
-            url: `/?session=${encodeURIComponent(session.id)}`,
-            replyUrl: `/?session=${encodeURIComponent(session.id)}&reply=1`,
+            url: `/?session=${encodeURIComponent(session.id)}${session.profileId ? `&profile=${encodeURIComponent(session.profileId)}` : ""}`,
+            replyUrl: `/?session=${encodeURIComponent(session.id)}&reply=1${session.profileId ? `&profile=${encodeURIComponent(session.profileId)}` : ""}`,
             icon: await this.sessionIcon(session.id),
             actions: [{ action: "reply", title: "Ouvrir" }],
           });
