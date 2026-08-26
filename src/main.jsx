@@ -934,14 +934,15 @@ function FinanceView({ onView }) {
       </details>
 
       <details className="panel finance-assets foldable">
-        <summary className="panel-head"><div><h3>Actifs suivis</h3><p>Valeurs manuelles configurables</p></div><b>{euro(summary.assets.total)}</b><i>›</i></summary>
-        <div>{summary.assets.entries.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{asset.institution || (asset.bucket === "liquid" ? "Actif liquide" : "Actif investi")}</small></span><b>{euro(asset.amount)}</b></article>)}{!summary.assets.entries.length && <p className="finance-empty">Aucun actif configuré.</p>}</div>
+        <summary className="panel-head"><div><h3>Actifs suivis</h3><p>Épargne disponible et placements bloqués, hors comptes courants</p></div><b className="asset-split"><span>{euro(summary.assets.liquid)} dispo</span><em>{euro(summary.assets.invested)} investi</em></b><i>›</i></summary>
+        <div>{summary.assets.entries.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{asset.bucket === "liquid" ? "Disponible" : "Investi · non mobilisable"}{asset.institution ? ` · ${asset.institution}` : ""}</small></span><b>{euro(asset.amount)}</b></article>)}{!summary.assets.entries.length && <p className="finance-empty">Aucun actif configuré.</p>}</div>
         <footer><button className="ghost" onClick={() => onView("finance-modules")}>Gérer modules</button></footer>
       </details>
 
       <section className="finance-layout">
-        <section className="panel finance-budgets">
-          <div className="panel-head"><div><h3>Budgets du mois</h3><p>Réel, prévision, limite</p></div><div className="budget-head-actions"><span>{euro(summary.budgetTotal)}</span><button className="ghost" onClick={useRealisticBudgets}>Préremplir réaliste</button></div></div>
+        <details className="panel finance-budgets foldable">
+          <summary className="panel-head"><div><h3>Budgets du mois</h3><p>Réel, prévision, limite</p></div><b>{euro(summary.budgetTotal)}</b><i>›</i></summary>
+          <div className="budget-head-actions budget-head-inline"><button className="ghost" onClick={useRealisticBudgets}>Préremplir réaliste</button></div>
           <div className="budget-list">
             {data.categories.map((category) => {
               const spent = summary.spentByCategory[category.id] || 0;
@@ -953,18 +954,18 @@ function FinanceView({ onView }) {
               return <details className="budget-category" key={category.id}><summary className="budget-row"><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} réel · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "à définir"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{categoryTransactions.length} ›</b></summary><div className="category-transactions">{categoryTransactions.map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account}</small></span><b>− {euro(Math.abs(transaction.amount))}</b></article>)}{!categoryTransactions.length && <p className="finance-empty">Aucune opération dans cette catégorie.</p>}</div></details>;
             })}
           </div>
-        </section>
+        </details>
 
         <FinanceAdvicePanel month={month} />
 
-        <section className="panel finance-insights">
-          <div className="panel-head"><div><h3>Alertes & leviers</h3><p>Repères automatiques, pas conseil financier</p></div></div>
+        <details className="panel finance-insights foldable">
+          <summary className="panel-head"><div><h3>Alertes & leviers</h3><p>Repères automatiques, pas conseil financier</p></div><b>{summary.warnings.length + summary.recommendations.length}</b><i>›</i></summary>
           <div className="insight-list">
             {summary.warnings.map((warning) => <article className={warning.tone} key={warning.id}><i /><span><strong>{warning.title}</strong><small>{warning.detail}</small></span></article>)}
             {summary.recommendations.map((recommendation, index) => <article className="tip" key={recommendation}><i>{index + 1}</i><span><strong>Optimisation</strong><small>{recommendation}</small></span></article>)}
             {!summary.warnings.length && !summary.recommendations.length && <p className="finance-empty">Importe opérations pour générer analyse.</p>}
           </div>
-        </section>
+        </details>
       </section>
 
       <details className="panel finance-excluded">
@@ -974,13 +975,16 @@ function FinanceView({ onView }) {
 
       <section className="finance-forms">
         <form className="panel finance-settings" onSubmit={saveSettings}>
-          <div className="panel-head"><div><h3>Plan mensuel</h3><p>Base calcul épargne</p></div><button className="primary" disabled={saving}>{saving ? "…" : "Enregistrer"}</button></div>
+          <details className="finance-settings-fold" open={false}>
+          <summary className="panel-head"><div><h3>Plan mensuel</h3><p>Base calcul épargne</p></div><i>›</i></summary>
           <div className="finance-form-grid">
             <label><span>Objectif épargne / mois</span><input type="number" min="0" step="0.01" value={settings.savingsGoal} onChange={(event) => setSettings({ ...settings, savingsGoal: event.target.value })} placeholder="0 €" /></label>
             <label><span>Réserve imprévus (0 = auto)</span><input type="number" min="0" step="0.01" value={settings.safetyBuffer} onChange={(event) => setSettings({ ...settings, safetyBuffer: event.target.value })} placeholder="Auto" /></label>
             <label><span>Fonds sécurité</span><select value={settings.emergencyMonths} onChange={(event) => setSettings({ ...settings, emergencyMonths: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6, 9, 12].map((value) => <option key={value} value={value}>{value} mois</option>)}</select></label>
           </div>
           <div className="budget-inputs">{data.categories.map((category) => <label key={category.id}><span>{category.label}</span><input type="number" min="0" step="0.01" value={settings.budgets[category.id]} onChange={(event) => setSettings({ ...settings, budgets: { ...settings.budgets, [category.id]: event.target.value } })} placeholder="Budget €" /></label>)}</div>
+          <div className="finance-settings-actions"><button className="primary" disabled={saving}>{saving ? "…" : "Enregistrer"}</button></div>
+          </details>
         </form>
       </section>
       <FinanceAgentDock month={month} onExpand={() => onView("finance-agent")} onChanged={load} />
