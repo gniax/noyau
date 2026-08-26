@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1528,13 +1529,31 @@ async function checkTodoReminders() {
   }
 }
 
-server.listen(port, host, () => {
+// Un seul port pour les deux protocoles: le premier octet 0x16 signale une poignee de main TLS,
+// tout le reste part sur le serveur HTTP. Plus besoin de retenir quel port porte quel schema.
+const frontDoor = secureServer
+  ? net.createServer((socket) => {
+      socket.setTimeout(15_000);
+      socket.once("timeout", () => socket.destroy());
+      socket.once("error", () => socket.destroy());
+      // Lecture d'un seul octet sans passer le socket en mode flux: TLS doit recevoir tout le reste intact.
+      socket.once("readable", () => {
+        const first = socket.read(1);
+        if (!first) return socket.destroy();
+        socket.setTimeout(0);
+        socket.unshift(first);
+        (first[0] === 0x16 ? secureServer : server).emit("connection", socket);
+      });
+    })
+  : server;
+
+frontDoor.listen(port, host, () => {
   const addresses = Object.values(os.networkInterfaces())
     .flat()
     .filter((item) => item?.family === "IPv4" && !item.internal)
-    .map((item) => `http://${item.address}:${port}`);
+    .map((item) => item.address);
   console.log(`Noyau actif: http://localhost:${port}`);
-  for (const address of addresses) console.log(`Réseau/VPN: ${address}`);
+  for (const address of addresses) console.log(`Réseau/VPN: http://${address}:${port}${secureServer ? ` et https://${address}:${port}` : ""}`);
 });
 
 if (secureServer) {
