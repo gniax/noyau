@@ -361,7 +361,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .finance-advice .advice-headline { margin: 13px 14px 10px; }
   .advice-list { padding-left: 14px; padding-right: 14px; }
   .advice-list header b { margin-left: 0; }
-  .plan-equation { padding: 0 14px; }
+  .quota-title { display: flex !important; align-items: center; gap: 8px; }.quota-refresh { flex: none; width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 1px solid #2e3b32; border-radius: 5px; background: #121713; color: var(--green); font-size: 11px; line-height: 1; cursor: pointer; }.quota-refresh:disabled { color: #6d7a72; cursor: wait; }.quota-refresh.updating span { display: block; animation: finance-refresh-spin .8s linear infinite; }
+.plan-equation { padding: 0 14px; }
   .budget-head-inline, .finance-settings-actions { padding-left: 14px; padding-right: 14px; }
 }
 

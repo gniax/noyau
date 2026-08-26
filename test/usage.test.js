@@ -17,6 +17,14 @@ test("Codex usage exposes remaining context and rate limit", () => {
   assert.equal(usage.rateWindowMinutes, 10_080);
 });
 
+test("Claude utilization is read as ratio or percentage", () => {
+  const ratio = parseClaudeRateLimits({ five_hour: { utilization: 0.32, resets_at: 1_800_000_000 } });
+  assert.equal(ratio.fiveHour.remainingPercent, 68);
+  const percent = parseClaudeRateLimits({ five_hour: { utilization: 68, resets_at: "2026-08-26T11:49:59.640906+00:00" }, seven_day: { utilization: 20, resets_at: "2026-08-30T00:59:59+00:00" } });
+  assert.equal(percent.fiveHour.remainingPercent, 32);
+  assert.equal(percent.sevenDay.remainingPercent, 80);
+});
+
 test("Codex rate windows cover the five-hour and weekly limits", () => {
   const windows = codexRateWindows({
     primary: { used_percent: 94, resets_at: 1_800_000_000, window_minutes: 300 },

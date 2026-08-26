@@ -73,7 +73,9 @@ export function parseCodexUsage(text) {
 
 export function parseClaudeRateLimits(rateLimits) {
   const parse = (item) => {
-    const used = item?.used_percentage ?? (Number.isFinite(Number(item?.utilization)) ? Number(item.utilization) * 100 : null);
+    // utilization arrive en ratio (0-1) via le hook statusline, en pourcentage via l'API OAuth.
+    const utilization = Number(item?.utilization);
+    const used = item?.used_percentage ?? (Number.isFinite(utilization) ? (utilization > 1 ? utilization : utilization * 100) : null);
     if (used === null || used === undefined || !Number.isFinite(Number(used))) return null;
     const rawReset = item.resets_at;
     const resetsAt = Number(rawReset) ? new Date(Number(rawReset) * 1000).toISOString() : (rawReset && !Number.isNaN(new Date(rawReset).getTime()) ? new Date(rawReset).toISOString() : null);
@@ -83,6 +85,28 @@ export function parseClaudeRateLimits(rateLimits) {
   const sevenDay = parse(rateLimits?.seven_day);
   if (!fiveHour && !sevenDay) return null;
   return { fiveHour, sevenDay, updatedAt: new Date().toISOString() };
+}
+
+// Passe la fenetre a 100% quand son reset est derriere nous: sans nouvel echange,
+// aucun agent ne rapporte le renouvellement et l'ecran resterait bloque a 0%.
+export function refreshExpiredWindow(window, now = Date.now()) {
+  if (!window) return window;
+  const resetsAt = Date.parse(window.resetsAt || "");
+  if (!Number.isFinite(resetsAt) || resetsAt > now) return window;
+  return { ...window, remainingPercent: 100, resetsAt: null, renewed: true };
+}
+
+export function refreshExpiredQuota(quota, now = Date.now()) {
+  if (!quota) return quota;
+  const next = { ...quota };
+  if (Array.isArray(quota.windows)) next.windows = quota.windows.map((window) => refreshExpiredWindow(window, now));
+  if (quota.fiveHour) next.fiveHour = refreshExpiredWindow(quota.fiveHour, now);
+  if (quota.sevenDay) next.sevenDay = refreshExpiredWindow(quota.sevenDay, now);
+  if (Number.isFinite(quota.remainingPercent) && next.windows?.length) {
+    next.remainingPercent = next.windows[0].remainingPercent;
+    next.resetsAt = next.windows[0].resetsAt;
+  }
+  return next;
 }
 
 export function parseClaudeUsage(text, contextWindow = 200_000) {
@@ -163,6 +187,35 @@ export class UsageService {
     } catch {
       return null;
     }
+  }
+
+  // Les quotas sont ceux du compte: la conversation Codex la plus recente suffit a les rafraichir.
+  async recentCodexFiles(limit = 6) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(this.codexRoot, { recursive: true });
+    } catch {
+      return [];
+    }
+    const stats = await Promise.all(entries.filter((entry) => entry.endsWith(".jsonl")).map(async (entry) => {
+      const file = path.join(this.codexRoot, entry);
+      try {
+        return { file, time: (await fs.stat(file)).mtimeMs };
+      } catch {
+        return null;
+      }
+    }));
+    return stats.filter(Boolean).sort((left, right) => right.time - left.time).slice(0, limit).map(({ file }) => file);
+  }
+
+  async latestCodexRateWindows(limit = 6) {
+    for (const file of await this.recentCodexFiles(limit)) {
+      try {
+        const parsed = parseCodexUsage(await readTail(file));
+        if (parsed?.rateWindows?.length) return parsed.rateWindows;
+      } catch { /* fichier en cours d'ecriture */ }
+    }
+    return [];
   }
 
   async get(session, pane = "") {

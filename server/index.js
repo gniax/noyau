@@ -15,7 +15,7 @@ import { WebSocketServer } from "ws";
 import { SessionStore } from "./session-store.js";
 import { TmuxController, validSessionId } from "./tmux.js";
 import { PushService } from "./push-service.js";
-import { UsageService, lastClaudeMessage, parseClaudeRateLimits } from "./usage.js";
+import { UsageService, lastClaudeMessage, parseClaudeRateLimits, refreshExpiredQuota } from "./usage.js";
 import { ProjectLogoService } from "./project-logo.js";
 import { agentNotificationTitle, PromptWatcher } from "./prompt-watcher.js";
 import { HandoverService } from "./handover.js";
@@ -544,6 +544,27 @@ app.delete("/api/finance/banking/connections/:bankId", async (request, response,
   }
 });
 
+app.post("/api/quotas/refresh", async (_request, response, next) => {
+  try {
+    const [, codexWindows] = await Promise.all([
+      claudeQuota.refresh().catch((error) => console.error(`Quota Claude: ${error.message}`)),
+      usage.latestCodexRateWindows().catch(() => []),
+    ]);
+    if (codexWindows.length) await providerState.set("codex", { windows: codexWindows, updatedAt: new Date().toISOString() });
+    const codex = providerState.get("codex");
+    response.json({
+      quotas: {
+        codex: codex?.windows?.length
+          ? refreshExpiredQuota({ remainingPercent: codex.windows[0].remainingPercent, resetsAt: codex.windows[0].resetsAt, windowMinutes: codex.windows[0].windowMinutes, windows: codex.windows })
+          : null,
+        claude: refreshExpiredQuota(providerState.get("claude")) || null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/finance/insights", (request, response) => {
   const month = request.query.month || currentMonthParis();
   const cached = providerState.get("finance-insights");
@@ -927,13 +948,17 @@ app.get("/api/sessions", async (_request, response, next) => {
         if (fresher) codexWindows.set(window.windowMinutes, window);
       }
     }
+    for (const window of providerState.get("codex")?.windows || []) {
+      const current = codexWindows.get(window.windowMinutes);
+      if (!current || String(window.resetsAt) > String(current.resetsAt)) codexWindows.set(window.windowMinutes, window);
+    }
     const codexQuota = [...codexWindows.values()].sort((left, right) => (left.windowMinutes || 0) - (right.windowMinutes || 0));
     if (codexQuota.length) await providerState.set("codex", { windows: codexQuota, updatedAt: new Date().toISOString() });
     response.json({
       sessions: enriched,
       quotas: {
-        codex: codexQuota.length ? { remainingPercent: codexQuota[0].remainingPercent, resetsAt: codexQuota[0].resetsAt, windowMinutes: codexQuota[0].windowMinutes, windows: codexQuota } : null,
-        claude: providerState.get("claude") || null,
+        codex: codexQuota.length ? refreshExpiredQuota({ remainingPercent: codexQuota[0].remainingPercent, resetsAt: codexQuota[0].resetsAt, windowMinutes: codexQuota[0].windowMinutes, windows: codexQuota }) : null,
+        claude: refreshExpiredQuota(providerState.get("claude")) || null,
       },
     });
   } catch (error) {
@@ -1298,6 +1323,14 @@ if (secureServer) {
 
 promptWatcher.start();
 claudeQuota.start();
+
+// Releve Codex periodique: les quotas se renouvellent meme quand aucun agent ne parle.
+async function refreshCodexQuota() {
+  const windows = await usage.latestCodexRateWindows().catch(() => []);
+  if (windows.length) await providerState.set("codex", { windows, updatedAt: new Date().toISOString() });
+}
+void refreshCodexQuota();
+setInterval(() => { refreshCodexQuota().catch(() => {}); }, 5 * 60 * 1000).unref();
 const todoReminderTimer = setInterval(checkTodoReminders, 5 * 60_000);
 todoReminderTimer.unref();
 setTimeout(checkTodoReminders, 5_000).unref();
