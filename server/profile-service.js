@@ -44,7 +44,7 @@ export class ProfileService {
       const now = new Date().toISOString();
       await this.store.setMany([
         ["principal", { name: this.primaryName, theme: "noyau", primary: true, todoFile: this.primaryTodoFile, todoMountUri: this.primaryTodoMountUri, createdAt: now, updatedAt: now }],
-        ["copine", { name: "Copine", theme: "aurora", primary: false, todoFile: this.profileTodoFile("copine"), todoMountUri: null, createdAt: now, updatedAt: now }],
+        ["guest", { name: "Invité", theme: "aurora", primary: false, todoFile: this.profileTodoFile("guest"), todoMountUri: null, createdAt: now, updatedAt: now }],
       ]);
       return { created: 2, migrated: 0 };
     }

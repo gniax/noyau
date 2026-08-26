@@ -16,9 +16,9 @@ test("profile service seeds isolated primary and partner profiles", async () => 
   await service.initialize();
   assert.equal(service.primaryId(), "principal");
   assert.equal(service.get("principal").theme, "noyau");
-  assert.equal(service.get("copine").theme, "aurora");
-  assert.equal(service.get("copine").todoFile, "/tmp/noyau/profiles/copine/TO DO.md");
-  assert.notEqual(service.get("principal").todoFile, service.get("copine").todoFile);
+  assert.equal(service.get("guest").theme, "aurora");
+  assert.equal(service.get("guest").todoFile, "/tmp/noyau/profiles/guest/TO DO.md");
+  assert.notEqual(service.get("principal").todoFile, service.get("guest").todoFile);
 });
 
 test("profile service creates and updates safe profile settings", async () => {

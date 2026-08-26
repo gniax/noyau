@@ -73,6 +73,7 @@ export class TmuxController {
           projectId: stored?.projectId || null,
           profileId: stored?.profileId || null,
           shared: Boolean(stored?.shared),
+          core: Boolean(stored?.core),
           favorite: Boolean(stored?.favorite),
           switchedFrom: stored?.switchedFrom || null,
           switchedAt: stored?.switchedAt || null,

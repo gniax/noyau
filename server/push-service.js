@@ -3,7 +3,8 @@ import path from "node:path";
 import webpush from "web-push";
 
 export class PushService {
-  constructor({ dataDir, subject = "mailto:admin@example.com" }) {
+  constructor({ dataDir, subject = "mailto:admin@example.com", defaultProfileId = null }) {
+    this.defaultProfileId = defaultProfileId;
     this.keysFile = path.join(dataDir, "vapid.json");
     this.subscriptionsFile = path.join(dataDir, "push-subscriptions.json");
     this.subject = subject;
@@ -33,12 +34,19 @@ export class PushService {
     return this.keys.publicKey;
   }
 
-  async subscribe(subscription) {
+  // Un appareil appartient a un profil: les alertes d'un compte ne partent jamais sur le telephone de l'autre.
+  async subscribe(subscription, profileId = null) {
     if (!this.valid(subscription)) throw new Error("Abonnement push invalide.");
+    const entry = { ...subscription, profileId: profileId || this.defaultProfileId };
     const existing = this.subscriptions.findIndex((item) => item.endpoint === subscription.endpoint);
-    if (existing >= 0) this.subscriptions[existing] = subscription;
-    else this.subscriptions.push(subscription);
+    if (existing >= 0) this.subscriptions[existing] = entry;
+    else this.subscriptions.push(entry);
     await this.persist();
+  }
+
+  devices(profileId = null) {
+    if (!profileId) return this.subscriptions;
+    return this.subscriptions.filter((item) => (item.profileId || this.defaultProfileId) === profileId);
   }
 
   async unsubscribe(endpoint) {
@@ -46,10 +54,10 @@ export class PushService {
     await this.persist();
   }
 
-  async send(payload) {
+  async send(payload, profileId = null) {
     const expired = new Set();
     const results = await Promise.allSettled(
-      this.subscriptions.map(async (subscription) => {
+      this.devices(profileId).map(async (subscription) => {
         try {
           await webpush.sendNotification(subscription, JSON.stringify(payload), { TTL: 3600, urgency: "high" });
           return true;

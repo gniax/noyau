@@ -110,8 +110,15 @@ const legacySessions = Object.entries(store.all()).filter(([, session]) => !sess
 if (legacySessions.length) await store.setMany(legacySessions);
 const legacyProjects = Object.entries(projects.all()).filter(([, project]) => !project.profileId).map(([id, project]) => [id, { ...project, profileId: primaryProfileId }]);
 if (legacyProjects.length) await projects.setMany(legacyProjects);
+// Agent de base du Noyau: il travaille sur le depot lui-meme, il reste protege contre la suppression.
+if (!Object.values(store.all()).some((session) => session.core)) {
+  const [coreId, coreSession] = Object.entries(store.all())
+    .filter(([, session]) => path.resolve(session.cwd || "/") === root)
+    .sort(([, a], [, b]) => String(a.createdAt).localeCompare(String(b.createdAt)))[0] || [];
+  if (coreId) await store.set(coreId, { ...coreSession, core: true, autoRestore: true });
+}
 const claudeQuota = new ClaudeQuotaService({ store: providerState });
-const push = new PushService({ dataDir });
+const push = new PushService({ dataDir, defaultProfileId: primaryProfileId });
 await push.load();
 const todoService = new TodoService({
   file: process.env.NOYAU_TODO_FILE || path.join(dataDir, "TO DO.md"),
@@ -131,7 +138,7 @@ const moduleService = new ModuleService({
       body: result.state === "success" ? `${action.label} terminé.` : `${action.label}: ${result.output || "échec"}`,
       tag: `module-${module.id}-${action.id}`,
       url: `/?view=projects&profile=${encodeURIComponent(profileId)}`,
-    });
+    }, profileId);
   },
 });
 const financeService = new FinanceService({
@@ -270,8 +277,15 @@ async function setAgentState(sessionId, agentState) {
   await store.set(sessionId, { ...current, agentState, agentStateUpdatedAt: new Date().toISOString() });
 }
 
-function projectPayload(id, project) {
-  return { id, ...project, logoUrl: `/api/projects/${encodeURIComponent(id)}/logo?profile=${encodeURIComponent(project.profileId || primaryProfileId)}` };
+function projectPayload(id, project, profileId = project.profileId || primaryProfileId) {
+  const owner = profileService.resolve(project.profileId);
+  return {
+    id,
+    ...project,
+    canEdit: (project.profileId || primaryProfileId) === profileId,
+    owner: { id: owner.id, name: owner.name },
+    logoUrl: `/api/projects/${encodeURIComponent(id)}/logo?profile=${encodeURIComponent(project.profileId || primaryProfileId)}`,
+  };
 }
 
 async function projectInput(body, current = {}) {
@@ -283,7 +297,8 @@ async function projectInput(body, current = {}) {
     const stat = await fs.stat(rootPath);
     if (!stat.isDirectory()) throw new Error("Dossier projet invalide.");
   }
-  return { ...current, name, rootPath, updatedAt: new Date().toISOString() };
+  const shared = body?.shared === undefined ? Boolean(current.shared) : Boolean(body.shared);
+  return { ...current, name, rootPath, shared, updatedAt: new Date().toISOString() };
 }
 
 function projectOwned(profileId, projectId) {
@@ -291,7 +306,13 @@ function projectOwned(profileId, projectId) {
 }
 
 function scopedProjects(profileId) {
-  return Object.fromEntries(Object.entries(projects.all()).filter(([, project]) => project.profileId === profileId));
+  return Object.fromEntries(Object.entries(projects.all()).filter(([, project]) => project.profileId === profileId || project.shared));
+}
+
+// Un projet partage reste modifiable par son seul proprietaire, mais utilisable par tous.
+function projectVisible(profileId, projectId) {
+  const project = projects.get(projectId);
+  return Boolean(project && (project.profileId === profileId || project.shared));
 }
 
 function sessionVisible(profileId, sessionId) {
@@ -305,7 +326,7 @@ function sessionOwned(profileId, sessionId) {
 
 function moduleOwned(profileId, moduleId) {
   const module = moduleStore.get(moduleId);
-  return Boolean(module && projectOwned(profileId, module.projectId));
+  return Boolean(module && projectVisible(profileId, module.projectId));
 }
 
 // Une bascule interrompue par un redemarrage ne doit pas laisser l'agent bloque sur "Récap en cours".
@@ -423,6 +444,34 @@ app.get("/version.json", async (_request, response, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+// Manifeste par profil: chaque compte installe son app (nom, couleurs, profil d'ouverture) sur son telephone.
+const MANIFEST_COLORS = { noyau: "#080b0a", "aurora": "#0f1119" };
+
+app.get("/manifest.webmanifest", (request, response) => {
+  const profile = profileService.resolve(request.query.profile);
+  const color = MANIFEST_COLORS[profile.theme] || MANIFEST_COLORS.noyau;
+  const suffix = profile.id === primaryProfileId ? "" : ` · ${profile.name}`;
+  response.setHeader("Cache-Control", "no-store");
+  response.type("application/manifest+json").send(JSON.stringify({
+    name: `Noyau${suffix} — Centre de contrôle`,
+    short_name: `Noyau${suffix}`,
+    description: "Centre de contrôle local pour agents, projets et automatisations.",
+    id: `/?profile=${profile.id}`,
+    start_url: `/?profile=${encodeURIComponent(profile.id)}`,
+    scope: "/",
+    display: "standalone",
+    background_color: color,
+    theme_color: color,
+    orientation: "any",
+    icons: [
+      { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+      { src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
+    ],
+  }));
 });
 
 app.get("/api/finance/banking/callback", async (request, response) => {
@@ -703,7 +752,7 @@ app.post("/api/finance/agent/message", async (request, response, next) => {
     const month = request.body?.month || currentMonthParis();
     const result = await request.profileRuntime.financeService.financeAgent(request.body?.message, month);
     response.json(result);
-    void push.send({ title: "Agent finances · Réponse prête", body: result.reply.slice(0, 180), tag: `finance-agent-${request.profile.id}`, url: `/?view=finance-agent&profile=${encodeURIComponent(request.profile.id)}` }).catch((error) => console.error(`Notification finances: ${error.message}`));
+    void push.send({ title: "Agent finances · Réponse prête", body: result.reply.slice(0, 180), tag: `finance-agent-${request.profile.id}`, url: `/?view=finance-agent&profile=${encodeURIComponent(request.profile.id)}` }, request.profile.id).catch((error) => console.error(`Notification finances: ${error.message}`));
   } catch (error) {
     next(error);
   }
@@ -729,7 +778,7 @@ app.post("/api/hooks/claude-statusline", async (request, response, next) => {
 });
 
 app.get("/api/projects", (request, response) => {
-  const list = Object.entries(scopedProjects(request.profile.id)).map(([id, project]) => projectPayload(id, project)).sort((a, b) => a.name.localeCompare(b.name));
+  const list = Object.entries(scopedProjects(request.profile.id)).map(([id, project]) => projectPayload(id, project, request.profile.id)).sort((a, b) => a.name.localeCompare(b.name));
   response.json({ projects: list });
 });
 
@@ -738,7 +787,7 @@ app.post("/api/projects", async (request, response, next) => {
     const id = `project-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
     const project = await projectInput(request.body, { profileId: request.profile.id, createdAt: new Date().toISOString() });
     await projects.set(id, project);
-    response.status(201).json({ project: projectPayload(id, project) });
+    response.status(201).json({ project: projectPayload(id, project, request.profile.id) });
   } catch (error) {
     next(error);
   }
@@ -757,7 +806,7 @@ app.get("/api/todos", async (request, response, next) => {
 app.post("/api/todos", async (request, response, next) => {
   try {
     const projectId = request.body?.projectId || null;
-    if (projectId && !projectOwned(request.profile.id, projectId)) throw new Error("Projet introuvable.");
+    if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
     const result = await request.profileRuntime.todoService.add({ text: request.body?.text, dueDate: request.body?.dueDate || null, projectId, folderId: request.body?.folderId || null });
     response.status(201).json(result);
   } catch (error) {
@@ -773,7 +822,7 @@ app.patch("/api/todos/:id", async (request, response, next) => {
     if (request.body?.dueDate !== undefined) changes.dueDate = request.body.dueDate || null;
     if (request.body?.projectId !== undefined) {
       changes.projectId = request.body.projectId || null;
-      if (changes.projectId && !projectOwned(request.profile.id, changes.projectId)) throw new Error("Projet introuvable.");
+      if (changes.projectId && !projectVisible(request.profile.id, changes.projectId)) throw new Error("Projet introuvable.");
     }
     if (request.body?.folderId !== undefined) changes.folderId = request.body.folderId || null;
     response.json(await request.profileRuntime.todoService.update(request.params.id, changes));
@@ -863,7 +912,7 @@ app.patch("/api/projects/:id", async (request, response, next) => {
     if (!PROJECT_PATTERN.test(request.params.id) || !projectOwned(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
     const project = await projectInput(request.body, projects.get(request.params.id));
     await projects.set(request.params.id, project);
-    response.json({ project: projectPayload(request.params.id, project) });
+    response.json({ project: projectPayload(request.params.id, project, request.profile.id) });
   } catch (error) {
     next(error);
   }
@@ -946,7 +995,7 @@ app.get("/api/notifications", (_request, response) => {
 
 app.post("/api/notifications/subscribe", async (request, response, next) => {
   try {
-    await push.subscribe(request.body?.subscription);
+    await push.subscribe(request.body?.subscription, request.profile.id);
     response.status(201).json({ ok: true });
   } catch (error) {
     next(error);
@@ -969,7 +1018,7 @@ app.post("/api/notifications/test", async (_request, response, next) => {
       body: "Notifications prêtes sur cet appareil.",
       tag: "noyau-test",
       url: "/",
-    });
+    }, request.profile.id);
     if (!devices) throw new Error("Aucun appareil push actif. Réactive alertes depuis app HTTPS installée.");
     response.json({ ok: true, devices });
   } catch (error) {
@@ -1061,7 +1110,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     payload.url ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&profile=${encodeURIComponent(notificationProfileId)}` : "/";
     payload.replyUrl ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&reply=1&profile=${encodeURIComponent(notificationProfileId)}` : payload.url;
     payload.actions = [{ action: "reply", title: "Répondre" }];
-    const devices = await push.send(payload);
+    const devices = await push.send(payload, notificationProfileId);
     response.json({ sent: true, devices });
     if (permissionRestart?.threadId) schedulePermissionRestart(sessionId, permissionRestart);
   } catch (error) {
@@ -1118,7 +1167,7 @@ app.get("/api/sessions", async (request, response, next) => {
 
 app.post("/api/sessions", async (request, response, next) => {
   try {
-    if (request.body?.projectId && !projectOwned(request.profile.id, request.body.projectId)) throw new Error("Projet introuvable.");
+    if (request.body?.projectId && !projectVisible(request.profile.id, request.body.projectId)) throw new Error("Projet introuvable.");
     response.status(201).json({ session: await tmux.create({ ...(request.body || {}), profileId: request.profile.id, shared: false }) });
   } catch (error) {
     next(error);
@@ -1153,7 +1202,7 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     const projectId = request.body?.projectId === undefined ? current.projectId || null : request.body.projectId || null;
     const favorite = request.body?.favorite === undefined ? Boolean(current.favorite) : Boolean(request.body.favorite);
     const shared = request.body?.shared === undefined ? Boolean(current.shared) : Boolean(request.body.shared);
-    if (projectId && !projectOwned(request.profile.id, projectId)) throw new Error("Projet introuvable.");
+    if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
     const assistant = request.body?.assistant;
     if (assistant && assistant !== session.assistant) {
       if (!["codex", "claude"].includes(assistant) || !["codex", "claude"].includes(session.assistant)) throw new Error("Bascule réservée aux agents Codex/Claude.");
@@ -1273,7 +1322,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
           body: "Passation faite depuis la dernière conversation.",
           tag: `migration-${created.id}`,
           url: `/?session=${encodeURIComponent(created.id)}&profile=${encodeURIComponent(metadata.profileId || primaryProfileId)}`,
-        });
+        }, metadata.profileId || primaryProfileId);
       } catch (error) {
         await store.set(session.id, { ...store.get(session.id), migrationState: "failed", migrationError: error.message });
       }
@@ -1294,6 +1343,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
 app.delete("/api/sessions/:id", async (request, response, next) => {
   try {
     if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
+    if (store.get(request.params.id)?.core) throw new Error("Agent de base du Noyau: non supprimable.");
     await tmux.kill(request.params.id);
     response.status(204).end();
   } catch (error) {
@@ -1456,7 +1506,7 @@ async function checkTodoReminders() {
         const runtime = await ensureProfileRuntime(profile.id);
         const reminders = await runtime.todoService.reminders();
         for (const reminder of reminders) {
-          const project = reminder.projectId && projectOwned(profile.id, reminder.projectId) ? projects.get(reminder.projectId) : null;
+          const project = reminder.projectId && projectVisible(profile.id, reminder.projectId) ? projects.get(reminder.projectId) : null;
           const title = reminder.kind === "tomorrow" ? "Tâche prévue demain" : reminder.kind === "today" ? "Tâche à faire aujourd’hui" : "Tâche en retard";
           const devices = await push.send({
             title: `${profile.name} · ${title}`,
@@ -1464,7 +1514,7 @@ async function checkTodoReminders() {
             tag: `todo-${profile.id}-${reminder.id}-${reminder.reminderKey}`,
             url: `/?view=todos&profile=${encodeURIComponent(profile.id)}`,
             actions: [{ action: "open", title: "Ouvrir" }],
-          });
+          }, profile.id);
           if (devices > 0) await runtime.todoService.markReminded(reminder.id, reminder.reminderKey);
         }
         todoReminderErrors.delete(profile.id);

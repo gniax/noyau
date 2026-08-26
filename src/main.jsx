@@ -32,14 +32,20 @@ const ROOT_FOLDER = "root";
 const THEME_KEY = "noyau:theme";
 const THEMES = {
   noyau: { label: "Thème Noyau", terminal: { background: "#080b0a", foreground: "#d9e0dc", cursor: "#b8ff5e", selectionBackground: "#31551f88" } },
-  "aurora": { label: "Château ambulant", terminal: { background: "#f2efe8", foreground: "#2b2721", cursor: "#b47a22", selectionBackground: "#c8a86a66" } },
+  "aurora": { label: "Château ambulant", terminal: { background: "#0f1119", foreground: "#eeeae3", cursor: "#e1b047", selectionBackground: "#e1b04744" } },
 };
 
 function applyTheme(theme) {
   const value = THEMES[theme] ? theme : "noyau";
   document.documentElement.dataset.theme = value;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", value === "aurora" ? "#f0ede7" : "#080b0a");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", value === "aurora" ? "#0f1119" : "#080b0a");
   try { localStorage.setItem(THEME_KEY, value); } catch { /* stockage optionnel */ }
+}
+
+function applyInstallIdentity(profile) {
+  if (!profile) return;
+  document.querySelector('link[rel="manifest"]')?.setAttribute("href", `/manifest.webmanifest?profile=${encodeURIComponent(profile.id)}`);
+  document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute("content", profile.primary ? "Noyau" : `Noyau · ${profile.name}`);
 }
 
 function terminalTheme() {
@@ -307,10 +313,10 @@ function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
           </nav>
         </>
       )}
-      <button className="profile" onClick={() => setOpen((value) => !value)}>
+      <button className="profile-chip" onClick={() => setOpen((value) => !value)} aria-label={`Profil ${label}`}>
         <span>{label.slice(0, 1).toUpperCase()}</span>
-        <strong>{label}<small>{profiles.length > 1 ? "Changer de profil" : "Session locale"}</small></strong>
-        <i>···</i>
+        <strong>{label}</strong>
+        <i aria-hidden="true">▾</i>
       </button>
     </div>
   );
@@ -319,7 +325,11 @@ function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
 function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile }) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
-      <div className="brand"><Mark /><span>Noyau</span><button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button></div>
+      <div className="brand">
+        <Mark /><span>Noyau</span>
+        <ProfileSwitcher profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onLogout={onLogout} />
+        <button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button>
+      </div>
       <nav className="main-nav">
         <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span>◫</span>Projets</button>
@@ -338,7 +348,6 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         ))}
         {!sessions.length && <p className="empty-small">Aucune session active.</p>}
       </div>
-      <ProfileSwitcher profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onLogout={onLogout} />
     </aside>
   );
 }
@@ -615,7 +624,7 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
           const openTodos = projectTodos.filter((todo) => !todo.completed);
           return (
             <article className="panel project-card" key={project.id}>
-              <header><ProjectIcon project={project} /><span><strong>{project.name}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span><div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div></header>
+              <header><ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={`Projet partagé par ${project.owner?.name || "autre profil"}`}>⇄ {project.owner?.name || "partagé"}</b> : project.shared ? <b className="shared-chip own" title="Projet partagé avec les autres profils">⇄ partagé</b> : null}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
               <p>{agents.length} agent{agents.length > 1 ? "s" : ""} actif{agents.length > 1 ? "s" : ""}</p>
               <div className="project-agents">
                 {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {session.agentStatus?.label || "Disponible"}</small></span><b>›</b></button>)}
@@ -2160,7 +2169,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         <div className="terminal-actions">
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
           {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} title={migrating ? "Appuie à nouveau pour basculer sans attendre le récap" : "Basculer d'agent en gardant le contexte"}>{migrating ? "Récap… ↻" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
-          {session.managed && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
+          {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
+          {session.core && <b className="core-chip" title="Agent de base du Noyau: non supprimable">NOYAU</b>}
         </div>
       </div>
       <div className="terminal-frame" ref={terminalNode} />
@@ -2306,7 +2316,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
           {session.assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{session.assistant === "codex" ? "Codex --yolo" : "Claude --dangerously-skip-permissions"}</small></span></label>}
           <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Remplace icône agent si logo trouvé</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
-          <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Agent commun</strong><small>Visible et utilisable depuis les autres profils</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Partager l’agent</strong><small>Visible et utilisable depuis les autres profils</small></span></label>
           {session.permissionRestartPending && <p className="form-hint">Changement permissions en attente prochaine réponse.</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Annuler</button><button className="primary" disabled={loading}>{loading ? "Application…" : "Enregistrer"}</button></div>
@@ -2318,6 +2328,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
 
 function ProjectModal({ project, onClose, onSaved }) {
   const [name, setName] = useState(project?.name || "");
+  const [shared, setShared] = useState(Boolean(project?.shared));
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -2326,7 +2337,7 @@ function ProjectModal({ project, onClose, onSaved }) {
     setLoading(true);
     setError("");
     try {
-      const result = await api(project ? `/api/projects/${project.id}` : "/api/projects", { method: project ? "PATCH" : "POST", body: JSON.stringify({ name, rootPath: null }) });
+      const result = await api(project ? `/api/projects/${project.id}` : "/api/projects", { method: project ? "PATCH" : "POST", body: JSON.stringify({ name, rootPath: null, shared }) });
       onSaved(result.project);
     } catch (reason) {
       setError(reason.message);
@@ -2341,6 +2352,7 @@ function ProjectModal({ project, onClose, onSaved }) {
         <div className="modal-head"><div><p className="eyebrow">{project ? "RÉGLAGES PROJET" : "NOUVEAU PROJET"}</p><h2>{project ? "Éditer projet" : "Créer projet"}</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
         <form onSubmit={submit}>
           <label htmlFor="project-name">Nom</label><input id="project-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex. Noyau" autoFocus />
+          <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Partager le projet</strong><small>Visible par les autres profils, avec ses agents, todos et modules</small></span></label>
           <p className="form-hint">Agents peuvent utiliser dossiers différents. Logo repris depuis premier agent rattaché.</p>
           {error && <p className="form-error">{error}</p>}
           <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Annuler</button><button className="primary" disabled={loading}>{loading ? "Enregistrement…" : "Enregistrer"}</button></div>
@@ -2476,7 +2488,9 @@ function App() {
     setProfiles(list);
     setProfileId(current);
     try { localStorage.setItem(PROFILE_KEY, current); } catch { /* stockage optionnel */ }
-    applyTheme(list.find((item) => item.id === current)?.theme);
+    const active = list.find((item) => item.id === current);
+    applyTheme(active?.theme);
+    applyInstallIdentity(active);
     return list;
   }, []);
 
