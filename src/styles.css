@@ -136,6 +136,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .agent-group-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 
+@media (min-width: 721px) {
+  .agent-grid, .agent-group-grid { gap: 0; background: transparent; }
+  .agent-grid > .agent-card, .agent-group-grid > .agent-card { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+}
+
 @media (max-width: 720px) {
   .sidebar { transform: translateX(-102%); transition: transform .2s ease; width: min(285px, 86vw); padding-top: max(20px, env(safe-area-inset-top)); }.sidebar.open { transform: translateX(0); }.close-menu { display: block; }.menu-backdrop { display: block; position: fixed; inset: 0; border: 0; background: #0009; z-index: 20; }
   .content { margin-left: 0; width: 100%; }.topbar { height: 64px; padding: max(8px, env(safe-area-inset-top)) 15px 0; }.menu-button { display: block; }.top-actions .primary { padding: 0 11px; }
