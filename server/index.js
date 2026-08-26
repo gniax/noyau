@@ -695,6 +695,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     const completion = (source === "codex" && event.type === "agent-turn-complete") || (source === "claude" && event.hook_event_name === "Stop");
     const attention = source === "claude" && event.hook_event_name === "Notification";
     const existing = sessionId && validSessionId(sessionId) ? store.get(sessionId) : null;
+    if (!existing) return response.status(202).json({ sent: false, reason: "unmanaged-session" });
     let metadata = existing;
     if (existing) {
       metadata = {

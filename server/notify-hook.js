@@ -2,6 +2,9 @@ import fs from "node:fs/promises";
 
 const source = process.argv[2];
 const dataDir = process.env.NOYAU_DATA_DIR || "/home/user/projects/noyau/.data";
+const sessionId = process.env.NOYAU_SESSION_ID || null;
+
+if (!sessionId) process.exit(0);
 
 async function stdin() {
   let data = "";
@@ -27,7 +30,7 @@ try {
   const response = await fetch("http://127.0.0.1:4242/api/hooks/notify", {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ source, sessionId: process.env.NOYAU_SESSION_ID || null, event: compactEvent }),
+    body: JSON.stringify({ source, sessionId, event: compactEvent }),
   });
   if (!response.ok) process.exitCode = 1;
 } catch (error) {

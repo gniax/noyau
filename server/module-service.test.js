@@ -39,3 +39,35 @@ test("systemd timer output exposes current schedule", () => {
   assert.equal(state.ActiveState, "active");
   assert.equal(timerTime(state.TimersCalendar, "14:00"), "18:30");
 });
+
+test("module action state persists through completion and service reload", async () => {
+  const store = new MemoryStore();
+  const id = "project-meridian--canva";
+  store.data[id] = {
+    id,
+    primaryUnit: "canva-bot.service",
+    controlUnits: ["canva-bot.service"],
+    schedules: [],
+    workingDirectory: os.tmpdir(),
+    actions: [{ id: "next", label: "Template suivant", command: { file: "/usr/bin/node", args: ["daily.js", "next"], timeout: 30_000 } }],
+  };
+  let finishCommand;
+  let finishNotification;
+  const command = new Promise((resolve) => { finishCommand = resolve; });
+  const notified = new Promise((resolve) => { finishNotification = resolve; });
+  const run = async (file) => file === "/usr/bin/systemctl"
+    ? { stdout: "Id=canva-bot.service\nActiveState=active\n\n" }
+    : command;
+  const service = new ModuleService({ workspaceRoot: os.tmpdir(), store, run, onActionComplete: finishNotification });
+
+  assert.equal(service.runAction(id, "next").state, "running");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.get(id).actionRuns.next.state, "running");
+  finishCommand({ stdout: "next template ready" });
+  await notified;
+  assert.equal(store.get(id).actionRuns.next.state, "success");
+
+  const reloaded = new ModuleService({ workspaceRoot: os.tmpdir(), store, run });
+  const payload = await reloaded.payload(store.get(id));
+  assert.equal(payload.actions[0].run.output, "next template ready");
+});

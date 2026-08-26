@@ -442,6 +442,7 @@ function ModuleSchedule({ moduleId, schedule, onSave }) {
 
 function ProjectModule({ module, onToggle, onAction, onSchedule }) {
   const [busy, setBusy] = useState(false);
+  const [actionNotice, setActionNotice] = useState("");
   async function toggle() {
     if (module.enabled && !window.confirm(`Désactiver ${module.name} et ses horaires ?`)) return;
     setBusy(true);
@@ -454,19 +455,27 @@ function ProjectModule({ module, onToggle, onAction, onSchedule }) {
   async function actionRun(action) {
     if (action.confirm && !window.confirm(action.confirm)) return;
     setBusy(true);
+    setActionNotice(`${action.label} · lancement…`);
     try {
-      await onAction(module.id, action.id);
+      const response = await onAction(module.id, action.id);
+      setActionNotice(response?.run ? `${action.label} · action lancée` : `${action.label} · lancement échoué`);
     } finally {
       setBusy(false);
     }
   }
-  const latestRun = module.actions.find((action) => action.run?.state === "running")?.run || module.actions.find((action) => action.run)?.run;
+  const latestAction = module.actions.filter((action) => action.run).sort((left, right) => String(right.run.startedAt).localeCompare(String(left.run.startedAt)))[0];
+  const latestRun = latestAction?.run;
+  const runLabel = latestRun?.state === "running"
+    ? `${latestAction.label} · exécution en cours…`
+    : latestRun?.state === "success"
+      ? `${latestAction.label} · terminé${latestRun.output ? ` · ${latestRun.output}` : ""}`
+      : latestRun ? `${latestAction.label} · erreur: ${latestRun.output || "échec"}` : actionNotice;
   return (
     <article className="project-module" style={{ "--module-accent": module.accent }}>
       <header><span className="module-glyph">{module.glyph}</span><div><strong>{module.name}</strong><small>{module.description}</small></div><button className={`module-toggle ${module.enabled ? "enabled" : ""}`} onClick={toggle} disabled={busy} role="switch" aria-checked={module.enabled}><i /><span>{module.enabled ? "Actif" : "Arrêté"}</span></button></header>
       <div className="module-schedules">{module.schedules.map((schedule) => <ModuleSchedule key={schedule.id} moduleId={module.id} schedule={schedule} onSave={onSchedule} />)}</div>
       <div className="module-actions">{module.actions.map((action) => <button key={action.id} className={action.tone} onClick={() => actionRun(action)} disabled={busy || action.run?.state === "running"}>{action.run?.state === "running" ? "Exécution…" : action.label}</button>)}</div>
-      {latestRun && latestRun.state !== "running" && <small className={`module-run ${latestRun.state}`}>{latestRun.state === "success" ? "Dernière action terminée" : `Erreur: ${latestRun.output || "échec"}`}</small>}
+      {runLabel && <small className={`module-run ${latestRun?.state || "running"}`}>{runLabel}</small>}
     </article>
   );
 }
@@ -2111,10 +2120,12 @@ function App() {
 
   async function moduleRequest(path, options) {
     try {
-      await api(path, options);
+      const result = await api(path, options);
       await refresh();
+      return result;
     } catch (error) {
       window.alert(error.message);
+      return null;
     }
   }
 

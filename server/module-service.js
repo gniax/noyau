@@ -173,7 +173,7 @@ export class ModuleService {
         const state = states.find((item) => item.Id === schedule.unit);
         return { id: schedule.id, label: schedule.label, time: timerTime(state?.TimersCalendar, schedule.defaultTime), active: state?.ActiveState === "active", nextRun: state?.NextElapseUSecRealtime || null };
       }),
-      actions: module.actions.map(({ id, label, description, confirm, tone }) => ({ id, label, description, confirm, tone, run: this.actionRuns.get(`${module.id}:${id}`) || null })),
+      actions: module.actions.map(({ id, label, description, confirm, tone }) => ({ id, label, description, confirm, tone, run: this.actionRuns.get(`${module.id}:${id}`) || module.actionRuns?.[id] || null })),
     };
   }
 
@@ -203,6 +203,11 @@ export class ModuleService {
     return this.payload(module);
   }
 
+  async saveActionRun(moduleId, actionId, run) {
+    const current = this.get(moduleId);
+    await this.store.set(moduleId, { ...current, actionRuns: { ...current.actionRuns, [actionId]: run } });
+  }
+
   runAction(id, actionId) {
     const module = this.get(id);
     const action = module.actions.find((item) => item.id === actionId);
@@ -211,15 +216,21 @@ export class ModuleService {
     if (this.actionRuns.get(key)?.state === "running") throw new Error("Action déjà en cours.");
     const run = { state: "running", startedAt: new Date().toISOString() };
     this.actionRuns.set(key, run);
-    void this.run(action.command.file, action.command.args, { cwd: module.workingDirectory, timeout: action.command.timeout }).then(({ stdout = "", stderr = "" }) => {
-      const result = { state: "success", startedAt: run.startedAt, finishedAt: new Date().toISOString(), output: String(stdout || stderr).trim().slice(-500) };
+    void this.saveActionRun(module.id, action.id, run).catch(() => {});
+    void (async () => {
+      let result;
+      try {
+        const { stdout = "", stderr = "" } = await this.run(action.command.file, action.command.args, { cwd: module.workingDirectory, timeout: action.command.timeout });
+        result = { state: "success", startedAt: run.startedAt, finishedAt: new Date().toISOString(), output: String(stdout || stderr).trim().slice(-500) };
+      } catch (error) {
+        result = { state: "error", startedAt: run.startedAt, finishedAt: new Date().toISOString(), output: String(error.stderr || error.message).trim().slice(-500) };
+      }
       this.actionRuns.set(key, result);
-      return this.onActionComplete?.({ module, action, result });
-    }).catch((error) => {
-      const result = { state: "error", startedAt: run.startedAt, finishedAt: new Date().toISOString(), output: String(error.stderr || error.message).trim().slice(-500) };
-      this.actionRuns.set(key, result);
-      return this.onActionComplete?.({ module, action, result });
-    }).catch(() => {});
+      await this.saveActionRun(module.id, action.id, result).catch(() => {});
+      try {
+        await this.onActionComplete?.({ module, action, result });
+      } catch { /* notification failure does not change action result */ }
+    })();
     return run;
   }
 }
