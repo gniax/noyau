@@ -2299,7 +2299,6 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
           {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} title={migrating ? "Appuie à nouveau pour basculer sans attendre le récap" : "Basculer d'agent en gardant le contexte"}>{migrating ? "Récap… ↻" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
           {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
-          {session.core && <b className="core-chip" title="Agent de base du Noyau: non supprimable">NOYAU</b>}
         </div>
       </div>
       <div className="terminal-frame" ref={terminalNode} />
