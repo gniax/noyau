@@ -1279,12 +1279,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 
 /* Todo: la page liste les dossiers, un clic ouvre son contenu. */
 .todo-folder-grid { display: grid; gap: 9px; }
-.todo-folder-card { display: grid; grid-template-columns: minmax(0,1fr) 14px; align-items: center; gap: 4px 12px; padding: 17px 18px; text-align: left; cursor: pointer; }
+.todo-folder-card { display: block; width: 100%; padding: 17px 18px; text-align: left; cursor: pointer; }
 .todo-folder-card:hover { border-color: var(--c-405534); }
-.todo-folder-title { min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
-.todo-folder-title strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; }
-.todo-folder-card small { grid-column: 1; color: var(--c-68736c); font-size: 11px; }
-.todo-folder-card i { grid-row: 1 / span 2; color: var(--c-59615c); font-style: normal; font-size: 17px; }
+.todo-folder-name { display: block; color: var(--text); font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
+.todo-folder-meta { display: block; margin-top: 6px; color: var(--c-68736c); font-size: 11px; }
+.todo-folder-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.todo-folder-badges .shared-chip { margin-left: 0; }
 .todo-back { border: 0; background: transparent; color: var(--c-8d9690); font-size: 11px; padding: 0 0 9px; cursor: pointer; }
 .todo-back:hover { color: var(--green); }
 .todos-page .todo-add { grid-template-columns: minmax(0,1fr) auto; }

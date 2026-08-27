@@ -1548,13 +1548,18 @@ function TodosView() {
             const late = open.filter((todo) => todo.dueDate && todo.dueDate < localIsoDate()).length;
             return (
               <button className="panel todo-folder-card" onClick={() => selectFolder(folder.id)} key={folder.id}>
-                <span className="todo-folder-title">
-                  <strong>{folder.name}</strong>
-                  {folder.projectId && <b className="todo-folder-tag">PROJET</b>}
-                  {folder.ownerProfileId && <b className="shared-chip" title={`Liste partagée par ${folder.ownerName}`}>⇄ {folder.ownerName}</b>}
+                <span className="todo-folder-name">{folder.name || "Dossier"}</span>
+                <span className="todo-folder-meta">
+                  {open.length ? `${open.length} à faire` : "Rien à faire"}
+                  {items.length - open.length ? ` · ${items.length - open.length} terminée${items.length - open.length > 1 ? "s" : ""}` : ""}
+                  {late ? ` · ${late} en retard` : ""}
                 </span>
-                <small>{open.length ? `${open.length} à faire` : "Rien à faire"}{items.length - open.length ? ` · ${items.length - open.length} terminée${items.length - open.length > 1 ? "s" : ""}` : ""}{late ? ` · ${late} en retard` : ""}</small>
-                <i aria-hidden="true">›</i>
+                {(folder.projectId || folder.ownerProfileId) && (
+                  <span className="todo-folder-badges">
+                    {folder.projectId && <b className="todo-folder-tag">PROJET</b>}
+                    {folder.ownerProfileId && <b className="shared-chip">⇄ {folder.ownerName}</b>}
+                  </span>
+                )}
               </button>
             );
           })}
