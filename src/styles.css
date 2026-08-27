@@ -1221,3 +1221,37 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .touch-shell .todo-move { min-width: 44px; height: 44px; }
 .core-chip { padding: 3px 7px; border: 1px solid var(--c-405534); border-radius: 20px; color: var(--green); font-size: 8px; font-weight: 700; letter-spacing: .6px; }
 .terminal-controls .keyboard-key { color: var(--green); font-size: 15px; }
+
+/* Todo: le texte prime, les actions se rangent derriere; sur telephone tout tient sans debordement. */
+.todo-list article { grid-template-columns: minmax(0,1fr) auto; gap: 10px 14px; align-items: center; min-height: 0; padding: 13px 14px; }
+.todo-check strong { font-size: 14px; }
+.todo-check small { font-size: 10px; margin-top: 4px; }
+.todo-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.todo-actions select { flex: 0 1 132px; width: auto; height: 34px; }
+.todo-actions .todo-date-trigger { flex: none; height: 34px; }
+.todo-move-group { display: inline-flex; gap: 4px; }
+.todo-move { width: 34px; min-width: 34px; height: 34px; }
+.todo-folder-head { gap: 8px; padding-bottom: 10px; }
+.todo-folder-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 4px 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.todo-folder-toggle i { flex: none; color: var(--c-68736c); font-style: normal; font-size: 10px; }
+.todo-folder-toggle strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.todo-folder-toggle em { flex: none; color: var(--c-68736c); font-style: normal; font-size: 10px; }
+.todo-folder-add { color: var(--green); font-size: 15px; line-height: 1; }
+.todo-inline-add { display: flex; gap: 8px; padding: 2px 0 12px; }
+.todo-inline-add input { flex: 1; min-width: 0; height: 42px; padding: 0 12px; border: 1px solid var(--c-303a34); border-radius: 8px; background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 16px; }
+.todo-inline-add button { flex: none; padding: 0 16px; border-radius: 8px; }
+.todo-done-toggle { width: 100%; padding: 11px 2px 3px; border: 0; background: transparent; color: var(--c-68736c); font-size: 10px; text-align: left; cursor: pointer; }
+.todo-list.folded { padding-bottom: 6px; }
+
+@media (max-width: 720px) {
+  .todos-hero { flex-wrap: wrap; }
+  .todo-add { grid-template-columns: 1fr; }
+  .todo-add select, .todo-add button { grid-column: 1; grid-row: auto; height: 44px; }
+  .todo-list article { grid-template-columns: 1fr; gap: 11px; padding: 12px; }
+  .todo-actions { justify-content: space-between; }
+  .todo-actions select { flex: 1 1 120px; height: 40px; font-size: 11px; }
+  .todo-actions .todo-date-trigger { height: 40px; max-width: none; padding: 0 12px; }
+  .todo-move { width: 40px; min-width: 40px; height: 40px; font-size: 14px; }
+  .todo-check strong { font-size: 15px; }
+  .todo-folder-actions button { min-width: 34px; min-height: 34px; }
+}
