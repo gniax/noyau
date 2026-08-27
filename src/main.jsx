@@ -1531,6 +1531,79 @@ function TodosView() {
       .filter((section) => section.folder.id !== ROOT_FOLDER || section.items.length);
   }, [folders, todos]);
 
+  // Glisser-deposer: on reordonne localement pendant le geste, on confirme au relachement.
+  function startDrag(event, todo, items) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const order = items.map((item) => item.id);
+    dragRef.current = { pointerId: event.pointerId, id: todo.id, folderId: todo.folderId || ROOT_FOLDER, order };
+    setDragging(todo.id);
+  }
+
+  function dragOver(event) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const rows = drag.order.map((id) => ({ id, node: rowRefs.current.get(id) })).filter((row) => row.node);
+    const hovered = rows.find((row) => {
+      const box = row.node.getBoundingClientRect();
+      return event.clientY < box.bottom - box.height / 2;
+    });
+    const nextOrder = drag.order.filter((id) => id !== drag.id);
+    const at = hovered && hovered.id !== drag.id ? nextOrder.indexOf(hovered.id) : nextOrder.length;
+    nextOrder.splice(at < 0 ? nextOrder.length : at, 0, drag.id);
+    if (nextOrder.join() === drag.order.join()) return;
+    drag.order = nextOrder;
+    setTodos((items) => {
+      const inFolder = new Map(items.filter((item) => nextOrder.includes(item.id)).map((item) => [item.id, item]));
+      const queue = nextOrder.map((id) => inFolder.get(id));
+      return items.map((item) => (inFolder.has(item.id) ? queue.shift() : item));
+    });
+  }
+
+  async function endDrag(event) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    setDragging("");
+    const position = drag.order.indexOf(drag.id);
+    const beforeId = drag.order[position + 1] || null;
+    await run(drag.id, () => api(`/api/todos/${encodeURIComponent(drag.id)}/move`, { method: "POST", body: JSON.stringify({ beforeId }) }));
+  }
+
+  function folderRow(todo, items) {
+    const overdue = todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed;
+    return (
+      <article
+        className={`${todo.completed ? "completed" : ""} ${dragging === todo.id ? "dragging" : ""}`}
+        ref={(node) => { if (node) rowRefs.current.set(todo.id, node); else rowRefs.current.delete(todo.id); }}
+        key={todo.id}
+      >
+        <button
+          className="todo-drag"
+          onPointerDown={(event) => startDrag(event, todo, items)}
+          onPointerMove={dragOver}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          aria-label={`Déplacer ${todo.text}`}
+        >⠿</button>
+        <label className="todo-check">
+          <input type="checkbox" checked={todo.completed} onChange={(event) => update(todo, { completed: event.target.checked })} disabled={busy === todo.id} />
+          <span>
+            <strong>{todo.text}</strong>
+            <small className={overdue ? "overdue" : ""}>{todo.completed ? completedLabel(todo.completedAt) || "Terminée" : todoDueLabel(todo.dueDate)}</small>
+          </span>
+        </label>
+        <div className="todo-actions">
+          <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
+          <select value={todo.folderId || ROOT_FOLDER} onChange={(event) => update(todo, { folderId: event.target.value })} disabled={busy === todo.id} aria-label="Dossier">{folders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
+        </div>
+        {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
+      </article>
+    );
+  }
+
   const openCount = todos.filter((todo) => !todo.completed).length;
   const active = sections.find((section) => section.folder.id === openFolder) || null;
 
