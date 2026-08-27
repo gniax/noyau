@@ -2731,6 +2731,17 @@ function App() {
       setActiveId(null);
       if (nextView) setView(nextView);
     };
+    // Notification tapee alors que l'app etait fermee: la destination attend dans le cache.
+    const consumePending = async () => {
+      try {
+        const cache = await caches.open("pending-navigation");
+        const stored = await cache.match("/pending");
+        if (!stored) return;
+        await cache.delete("/pending");
+        const pending = await stored.json();
+        if (pending?.url && Date.now() - (pending.at || 0) < 180_000) receiveNavigation(pending.url);
+      } catch { /* pas de cache disponible */ }
+    };
     const receiveUpdate = (event) => {
       if (event.data?.type === "NOYAU_UPDATE") return refresh();
       if (event.data?.type === "NOYAU_NAVIGATE" && event.data.url) receiveNavigation(event.data.url);
@@ -2738,9 +2749,13 @@ function App() {
     navigator.serviceWorker.addEventListener("controllerchange", refresh);
     navigator.serviceWorker.addEventListener("message", receiveUpdate);
     navigator.serviceWorker.register("/sw.js").then((registration) => registration.update()).catch(() => {});
+    consumePending();
+    const wake = () => document.visibilityState === "visible" && consumePending();
+    document.addEventListener("visibilitychange", wake);
     return () => {
       navigator.serviceWorker.removeEventListener("controllerchange", refresh);
       navigator.serviceWorker.removeEventListener("message", receiveUpdate);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, []);
 

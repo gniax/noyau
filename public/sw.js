@@ -138,13 +138,22 @@ self.addEventListener("push", (event) => {
   );
 });
 
+// iOS relance l'app sur sa derniere URL et ignore la destination: on depose la cible,
+// l'app la lit a son demarrage et ouvre la bonne conversation.
+async function rememberNavigation(url) {
+  try {
+    const cache = await caches.open("pending-navigation");
+    await cache.put("/pending", new Response(JSON.stringify({ url, at: Date.now() }), { headers: { "Content-Type": "application/json" } }));
+  } catch { /* sans cache, on compte sur la navigation directe */ }
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   if ("clearAppBadge" in self.navigator) self.navigator.clearAppBadge();
   const destination = event.action === "reply" ? event.notification.data?.replyUrl : event.notification.data?.url;
   const target = new URL(destination || "/", self.location.origin).href;
   event.waitUntil(
-    clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
+    rememberNavigation(target).then(() => clients.matchAll({ type: "window", includeUncontrolled: true })).then((windows) => {
       const existing = windows.find((client) => client.url === target || client.url.startsWith(self.location.origin));
       if (!existing) return clients.openWindow(target);
       // La fenetre ouverte doit atterrir sur la conversation visee, pas rester sur l'ecran courant.
