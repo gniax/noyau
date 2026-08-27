@@ -241,6 +241,17 @@ const fileUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024, files: 1 },
 });
 
+const AUTO_SYNC_KEY = "auto-sync";
+
+function parisNow(date = new Date()) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" })
+      .formatToParts(date)
+      .map(({ type, value }) => [type, value]),
+  );
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) };
+}
+
 function currentMonthParis() {
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit" }).formatToParts(new Date()).map(({ type, value }) => [type, value]));
   return `${parts.year}-${parts.month}`;
@@ -262,10 +273,11 @@ function financePayload(profileId, month = currentMonthParis()) {
   const dailyAllowance = payload.summary.daysRemaining ? Math.round((safeToSpend / payload.summary.daysRemaining) * 100) / 100 : 0;
   const warnings = payload.summary.warnings.filter(({ id }) => id !== "safe-spend");
   if (payload.summary.income > 0 && safeToSpend === 0) warnings.push({ id: "safe-spend", tone: "danger", title: "Pause dépenses libres", detail: "Solde prévu réservé aux charges, imprévus et épargne soutenable." });
+  const lastSyncAt = status.connections.map((connection) => connection.lastSyncAt).filter(Boolean).sort().at(-1) || null;
   return {
     ...payload,
     summary: { ...payload.summary, currentCash, currentAccounts, expectedIncomeRemaining, forecastBalance, safeToSpend, dailyAllowance, warnings },
-    banking: { ...payload.banking, status },
+    banking: { ...payload.banking, status, lastSyncAt, autoSync: runtime.enableBanking.store.get(AUTO_SYNC_KEY) || null },
   };
 }
 
@@ -1706,6 +1718,44 @@ async function refreshCodexQuota() {
 }
 void refreshCodexQuota();
 setInterval(() => { refreshCodexQuota().catch(() => {}); }, 5 * 60 * 1000).unref();
+// Synchro bancaire du matin: une seule passe par profil et par jour, des 6h heure de Paris.
+let morningSyncRunning = false;
+async function morningBankSync() {
+  if (morningSyncRunning) return;
+  morningSyncRunning = true;
+  try {
+    const { date, hour } = parisNow();
+    if (hour < 6) return;
+    for (const profile of profileService.list()) {
+      const runtime = await ensureProfileRuntime(profile.id);
+      const state = runtime.enableBanking.store.get(AUTO_SYNC_KEY);
+      if (state?.date === date) continue;
+      if (!runtime.enableBanking.status().connections.length) continue;
+      try {
+        const result = await runtime.enableBanking.sync(null);
+        const categorization = await runtime.financeService.categorizeTransactions({ month: currentMonthParis() }).catch(() => null);
+        await runtime.enableBanking.store.set(AUTO_SYNC_KEY, {
+          date,
+          at: new Date().toISOString(),
+          imported: result.imported || 0,
+          updated: result.updated || 0,
+          categorized: categorization?.categorized || 0,
+          error: null,
+        });
+      } catch (error) {
+        await runtime.enableBanking.store.set(AUTO_SYNC_KEY, { date, at: new Date().toISOString(), imported: 0, updated: 0, error: error.message });
+        console.error(`Synchro bancaire ${profile.name}: ${error.message}`);
+      }
+    }
+  } finally {
+    morningSyncRunning = false;
+  }
+}
+
+const morningSyncTimer = setInterval(() => { morningBankSync().catch(() => {}); }, 5 * 60_000);
+morningSyncTimer.unref();
+setTimeout(() => { morningBankSync().catch(() => {}); }, 20_000).unref();
+
 const todoReminderTimer = setInterval(checkTodoReminders, 5 * 60_000);
 todoReminderTimer.unref();
 setTimeout(checkTodoReminders, 5_000).unref();

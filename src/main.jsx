@@ -289,6 +289,22 @@ function operationDate(item) {
   return item.bookingDate ? `${actual} · comptabilisé ${item.bookingDate.split("-").reverse().join("/")}` : actual;
 }
 
+function merchantKey(value) {
+  const cleaned = String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\b(cb|carte|paiement|paiment|par|achat|achats|virement|vir|prlv|prelevement|facture|du|le|la|les|des)\b/g, " ")
+    .replace(/\d+/g, " ")
+    .replace(/[^a-z ]+/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2)
+    .slice(0, 3)
+    .join(" ")
+    .trim();
+  return cleaned || String(value || "").toLowerCase().trim();
+}
+
 function exclusionLabel(reason) {
   return reason === "placement" ? "Placement exclu" : reason === "doublon-carte" ? "Doublon carte exclu" : reason === "professionnel" ? "Dépense professionnelle exclue" : "Transfert interne exclu";
 }
@@ -585,14 +601,18 @@ function ProjectModule({ module, onToggle, onAction, onSchedule }) {
 }
 
 function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onOpenTodos }) {
-  const [todos, setTodos] = useState(() => cachedView("todos") || []);
+  // Le cache Todo porte { todos, folders } depuis la refonte par dossier: on accepte les deux formes.
+  const [todos, setTodos] = useState(() => {
+    const cached = cachedView("todos");
+    return (Array.isArray(cached) ? cached : cached?.todos) || [];
+  });
   const [todoBusy, setTodoBusy] = useState("");
 
   const loadTodos = useCallback(async () => {
     try {
       const result = await api("/api/todos");
       setTodos(result.todos || []);
-      storeView("todos", result.todos || []);
+      storeView("todos", { todos: result.todos || [], folders: result.folders || [] });
     } catch { /* on garde la derniere liste connue */ }
   }, []);
 
@@ -1256,6 +1276,7 @@ function FinanceTransactionsView({ onView }) {
   const [adding, setAdding] = useState(false);
   const [categorizing, setCategorizing] = useState(false);
   const [sortOrder, setSortOrder] = useState("date-desc");
+  const [grouped, setGrouped] = useState(true);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     try {
