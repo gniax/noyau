@@ -432,6 +432,22 @@ export class TodoService {
     });
   }
 
+  // Glisser-deposer: la tache vient se poser juste avant une autre, ou en fin de dossier.
+  placeBefore(id, beforeId = null) {
+    return this.enqueue(async () => {
+      if (!TODO_ID.test(id)) throw new Error("Tâche invalide.");
+      const document = await this.readDocument();
+      const task = document.tasks.find((item) => item.id === id);
+      if (!task) throw new Error("Tâche introuvable.");
+      const siblings = this.folderTasks(document, task.folderId);
+      const reference = beforeId ? siblings.find((item) => item.id === beforeId) : null;
+      if (beforeId && !reference) throw new Error("Tâche cible introuvable.");
+      const targetLine = reference ? reference.lineIndex : siblings.at(-1).lineIndex + 1;
+      if (targetLine === task.lineIndex || targetLine === task.lineIndex + 1) return this.payload(document);
+      return this.payload(await this.saveAndRead(this.relocate(document, task, targetLine)));
+    });
+  }
+
   reminders(now = new Date()) {
     return this.enqueue(async () => {
       if (now.getHours() < 9) return [];

@@ -89,3 +89,13 @@ test("deplacements haut/bas et envoi direct en bas restent dans le dossier", asy
   const stuck = await service.move(bottom.todos[2].id, "up");
   assert.deepEqual(stuck.todos.map((todo) => todo.text), ["Une", "Deux", "Balai"]);
 });
+
+test("glisser-deposer: la tache se pose avant une autre du meme dossier", async () => {
+  const { service } = await fixture("- [ ] Une\n- [ ] Deux\n- [ ] Trois\n");
+  const { todos } = await service.list();
+  const moved = await service.placeBefore(todos[2].id, todos[0].id);
+  assert.deepEqual(moved.todos.map((todo) => todo.text), ["Trois", "Une", "Deux"]);
+
+  const last = await service.placeBefore(moved.todos[0].id, null);
+  assert.deepEqual(last.todos.map((todo) => todo.text), ["Une", "Deux", "Trois"]);
+});

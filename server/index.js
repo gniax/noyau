@@ -896,7 +896,8 @@ app.patch("/api/todos/:id", async (request, response, next) => {
 app.post("/api/todos/:id/move", async (request, response, next) => {
   try {
     const runtime = await todoRuntime(request.profile, { todoId: request.params.id });
-    await runtime.todoService.move(request.params.id, request.body?.direction);
+    if (request.body?.beforeId === undefined) await runtime.todoService.move(request.params.id, request.body?.direction);
+    else await runtime.todoService.placeBefore(request.params.id, request.body.beforeId || null);
     response.json(await todosView(request.profile));
   } catch (error) {
     next(error);

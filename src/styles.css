@@ -1255,3 +1255,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .todo-check strong { font-size: 15px; }
   .todo-folder-actions button { min-width: 34px; min-height: 34px; }
 }
+
+/* Todo, mise en page finale: poignee a gauche, texte aere, actions groupees. */
+.todo-list { padding: 2px 0 6px; }
+.todo-folder-head { padding: 15px 18px 11px; }
+.todo-inline-add { padding: 12px 18px; }
+.todo-done-toggle { padding: 13px 18px 5px; }
+.todo-list > .finance-empty { padding: 14px 18px; }
+.todo-list article { grid-template-columns: 26px minmax(0,1fr) auto; gap: 10px 16px; padding: 15px 18px; align-items: center; }
+.todo-drag { width: 26px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--c-59615c); font-size: 13px; letter-spacing: -1px; cursor: grab; touch-action: none; }
+.todo-drag:hover { color: var(--green); background: var(--c-171b19); }
+.todo-drag:active { cursor: grabbing; }
+.todo-list article.dragging { background: var(--c-171b19); border-radius: 9px; box-shadow: 0 10px 26px #00000066; }
+.todo-check { gap: 13px; }
+.todo-check strong { line-height: 1.4; }
+
+@media (max-width: 720px) {
+  .todo-list article { grid-template-columns: 30px minmax(0,1fr); gap: 10px 12px; padding: 14px 16px; }
+  .todo-actions { grid-column: 2; justify-content: flex-start; }
+  .todo-drag { width: 30px; height: 46px; font-size: 15px; }
+  .todo-folder-head, .todo-inline-add, .todo-done-toggle, .todo-list > .finance-empty { padding-left: 16px; padding-right: 16px; }
+}
