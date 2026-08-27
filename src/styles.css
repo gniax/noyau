@@ -1190,7 +1190,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .shared-chip.own { border-color: var(--c-405534); color: var(--green); }
 .shared-star { margin-left: 5px; color: var(--c-8d9690); font-size: 9px; }
 
-.profiles-settings { display: grid; gap: 18px; padding: 22px; }
+.profiles-settings { display: grid; gap: 14px; padding: 0 0 18px; }
+.profiles-settings .panel-head { border-bottom: 0; padding: 18px 18px 4px; }
+.profiles-settings .profiles-grid, .profiles-settings .form-error { margin: 0 18px; }
+.settings-fold { margin-top: 10px; }
+.settings-fold .profile-form { padding: 4px 18px 18px; border-top: 0; }
+.settings-fold > summary > i { transition: transform .15s ease; }
+.settings-fold[open] > summary > i { transform: rotate(90deg); }
 .profiles-settings .panel-head strong { display: block; font-size: 14px; }
 .profiles-settings .panel-head small { display: block; color: var(--c-68736c); font-size: 10px; margin-top: 5px; }
 .profiles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 9px; }
@@ -1200,7 +1206,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .profiles-grid small { color: var(--c-68736c); font-size: 10px; }
 .profiles-grid em { color: var(--c-657069); font-style: normal; font-size: 9px; letter-spacing: .6px; text-transform: uppercase; }
 .profiles-grid button.active em { color: var(--green); }
-.profile-form { display: grid; gap: 6px; padding-top: 16px; border-top: 1px solid var(--c-1e2320); }
+.profile-form { display: grid; gap: 6px; padding-top: 12px; }
 .profile-form label { color: var(--c-9ca59f); font-size: 10px; font-weight: 650; margin-top: 8px; }
 .profile-form input, .profile-form select { background: var(--c-090c0b); border: 1px solid var(--c-2b332e); color: var(--text); border-radius: 6px; height: 43px; padding: 0 12px; }
 

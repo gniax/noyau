@@ -1715,37 +1715,47 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
     setNewName("");
   });
 
+  const activeName = active?.name || "Profil";
   return (
-    <section className="panel profiles-settings">
-      <header className="panel-head"><div><strong>Profils</strong><small>Chaque profil garde ses agents, projets, todo et budget.</small></div></header>
-      <div className="profiles-grid">
-        {profiles.map((item) => (
-          <button className={item.id === profileId ? "active" : ""} onClick={() => onSwitch(item.id)} key={item.id}>
-            <strong>{item.name}</strong>
-            <small>{THEMES[item.theme]?.label || item.theme}{item.primary ? " · principal" : ""}</small>
-            <em>{item.id === profileId ? "Profil actif" : "Basculer"}</em>
-          </button>
-        ))}
-      </div>
-      <div className="profile-form">
-        <label htmlFor="profile-name">Nom du profil actif</label>
-        <input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} />
-        <label htmlFor="profile-theme">Thème</label>
-        <select id="profile-theme" value={theme} onChange={(event) => setTheme(event.target.value)}>{Object.entries(THEMES).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select>
-        <label htmlFor="profile-todo">Fichier Todo Obsidian</label>
-        <input id="profile-todo" value={todoFile} onChange={(event) => setTodoFile(event.target.value)} placeholder="/chemin/absolu/TO DO.md" />
-        <label htmlFor="profile-mount">Montage SMB (optionnel)</label>
-        <input id="profile-mount" value={todoMountUri} onChange={(event) => setTodoMountUri(event.target.value)} placeholder="smb://nas/partage" />
-        <div className="modal-actions"><button className="primary" onClick={save} disabled={busy}>{busy ? "Application…" : "Enregistrer profil"}</button></div>
-      </div>
-      <div className="profile-form">
-        <label htmlFor="profile-new">Nouveau profil</label>
-        <input id="profile-new" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Prénom" />
-        <select value={newTheme} onChange={(event) => setNewTheme(event.target.value)}>{Object.entries(THEMES).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select>
-        <div className="modal-actions"><button className="ghost" onClick={create} disabled={busy || !newName.trim()}>Créer profil</button></div>
-      </div>
-      {error && <p className="form-error">{error}</p>}
-    </section>
+    <>
+      <section className="panel profiles-settings">
+        <header className="panel-head"><div><strong>Profils</strong><small>Agents, projets, todo et budget séparés</small></div></header>
+        <div className="profiles-grid">
+          {profiles.map((item) => (
+            <button className={item.id === profileId ? "active" : ""} onClick={() => onSwitch(item.id)} key={item.id}>
+              <strong>{item.name}</strong>
+              <small>{THEMES[item.theme]?.label || item.theme}{item.primary ? " · principal" : ""}</small>
+              <em>{item.id === profileId ? "Profil actif" : "Basculer"}</em>
+            </button>
+          ))}
+        </div>
+        {error && <p className="form-error">{error}</p>}
+      </section>
+      <details className="panel foldable settings-fold">
+        <summary className="panel-head"><div><h3>Réglages de {activeName}</h3><p>Nom, thème, fichier Todo Obsidian</p></div><i>›</i></summary>
+        <div className="profile-form">
+          <label htmlFor="profile-name">Nom du profil</label>
+          <input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} />
+          <label htmlFor="profile-theme">Thème</label>
+          <select id="profile-theme" value={theme} onChange={(event) => setTheme(event.target.value)}>{Object.entries(THEMES).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select>
+          <label htmlFor="profile-todo">Fichier Todo Obsidian</label>
+          <input id="profile-todo" value={todoFile} onChange={(event) => setTodoFile(event.target.value)} placeholder="/chemin/absolu/TO DO.md" />
+          <label htmlFor="profile-mount">Montage SMB (optionnel)</label>
+          <input id="profile-mount" value={todoMountUri} onChange={(event) => setTodoMountUri(event.target.value)} placeholder="smb://nas/partage" />
+          <div className="modal-actions"><button className="primary" onClick={save} disabled={busy}>{busy ? "Application…" : "Enregistrer"}</button></div>
+        </div>
+      </details>
+      <details className="panel foldable settings-fold">
+        <summary className="panel-head"><div><h3>Nouveau profil</h3><p>Son propre espace et son propre thème</p></div><i>›</i></summary>
+        <div className="profile-form">
+          <label htmlFor="profile-new">Prénom</label>
+          <input id="profile-new" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Prénom" />
+          <label htmlFor="profile-new-theme">Thème</label>
+          <select id="profile-new-theme" value={newTheme} onChange={(event) => setNewTheme(event.target.value)}>{Object.entries(THEMES).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select>
+          <div className="modal-actions"><button className="ghost" onClick={create} disabled={busy || !newName.trim()}>Créer le profil</button></div>
+        </div>
+      </details>
+    </>
   );
 }
 
