@@ -1433,14 +1433,11 @@ function TodosView() {
   const [folders, setFolders] = useState(() => (Array.isArray(cached) ? [] : cached?.folders) || []);
   const [storage, setStorage] = useState("Obsidian · NAS");
   const [text, setText] = useState("");
-  const [folderId, setFolderId] = useState(ROOT_FOLDER);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [datePanel, setDatePanel] = useState(null);
-  const [collapsed, setCollapsed] = useState(() => { try { return JSON.parse(localStorage.getItem(profileCacheKey("todo-folders")) || "{}"); } catch { return {}; } });
+  const [openFolder, setOpenFolder] = useState(() => { try { return localStorage.getItem(profileCacheKey("todo-folder")) || null; } catch { return null; } });
   const [showDone, setShowDone] = useState({});
-  const [inlineFolder, setInlineFolder] = useState(null);
-  const [inlineText, setInlineText] = useState("");
   const [dragging, setDragging] = useState("");
   const dragRef = React.useRef(null);
   const rowRefs = React.useRef(new Map());
@@ -1489,7 +1486,7 @@ function TodosView() {
     event.preventDefault();
     if (!text.trim()) return;
     await run("new", async () => {
-      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text, folderId: folderId === ROOT_FOLDER ? null : folderId }) });
+      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text, folderId: !openFolder || openFolder === ROOT_FOLDER ? null : openFolder }) });
       setText("");
       return result;
     });
@@ -1498,23 +1495,14 @@ function TodosView() {
   const update = (todo, changes) => run(todo.id, () => api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify(changes) }));
   const move = (todo, direction) => run(todo.id, () => api(`/api/todos/${encodeURIComponent(todo.id)}/move`, { method: "POST", body: JSON.stringify({ direction }) }));
 
-  // Dossiers replies: sur telephone la liste reste courte et on garde le choix d'un ecran a l'autre.
-  function toggleFolder(id) {
-    setCollapsed((current) => {
-      const next = { ...current, [id]: !current[id] };
-      try { localStorage.setItem(profileCacheKey("todo-folders"), JSON.stringify(next)); } catch { /* stockage optionnel */ }
-      return next;
-    });
-  }
-
-  async function addInline(folder, event) {
-    event.preventDefault();
-    if (!inlineText.trim()) return;
-    await run(`add-${folder.id}`, async () => {
-      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text: inlineText, folderId: folder.id === ROOT_FOLDER ? null : folder.id }) });
-      setInlineText("");
-      return result;
-    });
+  // Un dossier a la fois: la page liste les dossiers, le clic ouvre son contenu.
+  function selectFolder(id) {
+    setOpenFolder(id);
+    setDatePanel(null);
+    try {
+      if (id) localStorage.setItem(profileCacheKey("todo-folder"), id);
+      else localStorage.removeItem(profileCacheKey("todo-folder"));
+    } catch { /* stockage optionnel */ }
   }
 
   async function createFolder() {
@@ -1544,134 +1532,73 @@ function TodosView() {
   }, [folders, todos]);
 
   const openCount = todos.filter((todo) => !todo.completed).length;
+  const active = sections.find((section) => section.folder.id === openFolder) || null;
 
-  // Glisser-deposer: on reordonne localement pendant le geste, on confirme au relachement.
-  function startDrag(event, todo, items) {
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    event.preventDefault();
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    const order = items.map((item) => item.id);
-    dragRef.current = { pointerId: event.pointerId, id: todo.id, folderId: todo.folderId || ROOT_FOLDER, order };
-    setDragging(todo.id);
-  }
-
-  function dragOver(event) {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    const rows = drag.order.map((id) => ({ id, node: rowRefs.current.get(id) })).filter((row) => row.node);
-    const hovered = rows.find((row) => {
-      const box = row.node.getBoundingClientRect();
-      return event.clientY < box.bottom - box.height / 2;
-    });
-    const nextOrder = drag.order.filter((id) => id !== drag.id);
-    const at = hovered && hovered.id !== drag.id ? nextOrder.indexOf(hovered.id) : nextOrder.length;
-    nextOrder.splice(at < 0 ? nextOrder.length : at, 0, drag.id);
-    if (nextOrder.join() === drag.order.join()) return;
-    drag.order = nextOrder;
-    setTodos((items) => {
-      const inFolder = new Map(items.filter((item) => nextOrder.includes(item.id)).map((item) => [item.id, item]));
-      const queue = nextOrder.map((id) => inFolder.get(id));
-      return items.map((item) => (inFolder.has(item.id) ? queue.shift() : item));
-    });
-  }
-
-  async function endDrag(event) {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    setDragging("");
-    const position = drag.order.indexOf(drag.id);
-    const beforeId = drag.order[position + 1] || null;
-    await run(drag.id, () => api(`/api/todos/${encodeURIComponent(drag.id)}/move`, { method: "POST", body: JSON.stringify({ beforeId }) }));
-  }
-
-  function folderRow(todo, items) {
-    const overdue = todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed;
+  if (!active) {
     return (
-      <article
-        className={`${todo.completed ? "completed" : ""} ${dragging === todo.id ? "dragging" : ""}`}
-        ref={(node) => { if (node) rowRefs.current.set(todo.id, node); else rowRefs.current.delete(todo.id); }}
-        key={todo.id}
-      >
-        <button
-          className="todo-drag"
-          onPointerDown={(event) => startDrag(event, todo, items)}
-          onPointerMove={dragOver}
-          onPointerUp={endDrag}
-          onPointerCancel={endDrag}
-          aria-label={`Déplacer ${todo.text}`}
-        >⠿</button>
-        <label className="todo-check">
-          <input type="checkbox" checked={todo.completed} onChange={(event) => update(todo, { completed: event.target.checked })} disabled={busy === todo.id} />
-          <span>
-            <strong>{todo.text}</strong>
-            <small className={overdue ? "overdue" : ""}>{todo.completed ? completedLabel(todo.completedAt) || "Terminée" : todoDueLabel(todo.dueDate)}</small>
-          </span>
-        </label>
-        <div className="todo-actions">
-          <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
-          <select value={todo.folderId || ROOT_FOLDER} onChange={(event) => update(todo, { folderId: event.target.value })} disabled={busy === todo.id} aria-label="Dossier">{folders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
-        </div>
-        {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
-      </article>
+      <div className="page todos-page">
+        <section className="hero-row todos-hero">
+          <div><p className="eyebrow">OBSIDIAN · NAS</p><h1>Todo.</h1><p className="muted">{openCount} tâche{openCount > 1 ? "s" : ""} à faire · {storage}</p></div>
+          <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
+        </section>
+        {error && <p className="finance-error todo-error">{error}</p>}
+        <section className="todo-folder-grid">
+          {sections.map(({ folder, items }) => {
+            const open = items.filter((todo) => !todo.completed);
+            const late = open.filter((todo) => todo.dueDate && todo.dueDate < localIsoDate()).length;
+            return (
+              <button className="panel todo-folder-card" onClick={() => selectFolder(folder.id)} key={folder.id}>
+                <span className="todo-folder-title">
+                  <strong>{folder.name}</strong>
+                  {folder.projectId && <b className="todo-folder-tag">PROJET</b>}
+                  {folder.ownerProfileId && <b className="shared-chip" title={`Liste partagée par ${folder.ownerName}`}>⇄ {folder.ownerName}</b>}
+                </span>
+                <small>{open.length ? `${open.length} à faire` : "Rien à faire"}{items.length - open.length ? ` · ${items.length - open.length} terminée${items.length - open.length > 1 ? "s" : ""}` : ""}{late ? ` · ${late} en retard` : ""}</small>
+                <i aria-hidden="true">›</i>
+              </button>
+            );
+          })}
+          {!sections.length && !error && <p className="finance-empty">Aucune tâche. Liste Obsidian vide.</p>}
+        </section>
+      </div>
     );
   }
 
+  const { folder, items } = active;
+  const open = items.filter((todo) => !todo.completed);
+  const done = items.filter((todo) => todo.completed);
   return (
     <div className="page todos-page">
       <section className="hero-row todos-hero">
-        <div><p className="eyebrow">OBSIDIAN · NAS</p><h1>Todo.</h1><p className="muted">{openCount} tâche{openCount > 1 ? "s" : ""} à faire · {storage}</p></div>
-        <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
+        <div>
+          <button className="todo-back" onClick={() => selectFolder(null)}>‹ Tous les dossiers</button>
+          <h1>{folder.name}</h1>
+          <p className="muted">{open.length} à faire{done.length ? ` · ${done.length} terminée${done.length > 1 ? "s" : ""}` : ""}</p>
+        </div>
+        {!folder.projectId && folder.id !== ROOT_FOLDER && (
+          <div className="todo-folder-actions">
+            <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>Renommer</button>
+            <button onClick={() => removeFolder(folder)} disabled={busy === folder.id} aria-label={`Supprimer ${folder.name}`}>Supprimer</button>
+          </div>
+        )}
       </section>
       <form className="panel todo-add" onSubmit={add}>
-        <input value={text} onChange={(event) => setText(event.target.value)} placeholder="Ajouter une tâche…" maxLength="300" />
-        <select value={folderId} onChange={(event) => setFolderId(event.target.value)} aria-label="Dossier">{folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select>
+        <input value={text} onChange={(event) => setText(event.target.value)} placeholder={`Ajouter dans ${folder.name}…`} maxLength="300" />
         <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : "Ajouter"}</button>
       </form>
       {error && <p className="finance-error todo-error">{error}</p>}
-      {sections.map(({ folder, items }) => {
-        const open = items.filter((todo) => !todo.completed);
-        const done = items.filter((todo) => todo.completed);
-        const folded = collapsed[folder.id] === true;
-        return (
-          <section className={`panel todo-list ${folded ? "folded" : ""}`} key={folder.id}>
-            <header className="todo-folder-head">
-              <button className="todo-folder-toggle" onClick={() => toggleFolder(folder.id)} aria-expanded={!folded}>
-                <i aria-hidden="true">{folded ? "▸" : "▾"}</i>
-                <strong>{folder.name}</strong>
-                <em>{open.length}{done.length ? ` · ${done.length} ✓` : ""}</em>
-              </button>
-              <div className="todo-folder-actions">
-                {folder.projectId && <b className="todo-folder-tag">PROJET</b>}
-                {folder.ownerProfileId && <b className="shared-chip" title={`Liste partagée par ${folder.ownerName}`}>⇄ {folder.ownerName}</b>}
-                <button className="todo-folder-add" onClick={() => { setInlineFolder(inlineFolder === folder.id ? null : folder.id); setInlineText(""); }} aria-label={`Ajouter une tâche dans ${folder.name}`}>+</button>
-                {!folder.projectId && folder.id !== ROOT_FOLDER && <>
-                  <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>✎</button>
-                  <button onClick={() => removeFolder(folder)} disabled={busy === folder.id} aria-label={`Supprimer ${folder.name}`}>×</button>
-                </>}
-              </div>
-            </header>
-            {!folded && inlineFolder === folder.id && (
-              <form className="todo-inline-add" onSubmit={(event) => addInline(folder, event)}>
-                <input value={inlineText} onChange={(event) => setInlineText(event.target.value)} placeholder={`Nouvelle tâche dans ${folder.name}…`} maxLength="300" autoFocus />
-                <button className="primary" disabled={busy === `add-${folder.id}` || !inlineText.trim()}>{busy === `add-${folder.id}` ? "…" : "Ajouter"}</button>
-              </form>
-            )}
-            {!folded && open.map((todo) => folderRow(todo, open))}
-            {!folded && !open.length && !done.length && <p className="finance-empty">Dossier vide.</p>}
-            {!folded && done.length > 0 && (
-              <>
-                <button className="todo-done-toggle" onClick={() => setShowDone((current) => ({ ...current, [folder.id]: !current[folder.id] }))}>
-                  {showDone[folder.id] ? "▾" : "▸"} {done.length} terminée{done.length > 1 ? "s" : ""}
-                </button>
-                {showDone[folder.id] && done.map((todo) => folderRow(todo, done))}
-              </>
-            )}
-          </section>
-        );
-      })}
-      {!sections.length && !error && <section className="panel todo-list"><p className="finance-empty">Aucune tâche. Liste Obsidian vide.</p></section>}
+      <section className="panel todo-list">
+        {open.map((todo) => folderRow(todo, open))}
+        {!open.length && !done.length && <p className="finance-empty">Dossier vide.</p>}
+        {done.length > 0 && (
+          <>
+            <button className="todo-done-toggle" onClick={() => setShowDone((current) => ({ ...current, [folder.id]: !current[folder.id] }))}>
+              {showDone[folder.id] ? "▾" : "▸"} {done.length} terminée{done.length > 1 ? "s" : ""}
+            </button>
+            {showDone[folder.id] && done.map((todo) => folderRow(todo, done))}
+          </>
+        )}
+      </section>
     </div>
   );
 }

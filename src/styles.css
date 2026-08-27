@@ -1276,3 +1276,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   .todo-drag { width: 30px; height: 46px; font-size: 15px; }
   .todo-folder-head, .todo-inline-add, .todo-done-toggle, .todo-list > .finance-empty { padding-left: 16px; padding-right: 16px; }
 }
+
+/* Todo: la page liste les dossiers, un clic ouvre son contenu. */
+.todo-folder-grid { display: grid; gap: 9px; }
+.todo-folder-card { display: grid; grid-template-columns: minmax(0,1fr) 14px; align-items: center; gap: 4px 12px; padding: 17px 18px; text-align: left; cursor: pointer; }
+.todo-folder-card:hover { border-color: var(--c-405534); }
+.todo-folder-title { min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+.todo-folder-title strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; }
+.todo-folder-card small { grid-column: 1; color: var(--c-68736c); font-size: 11px; }
+.todo-folder-card i { grid-row: 1 / span 2; color: var(--c-59615c); font-style: normal; font-size: 17px; }
+.todo-back { border: 0; background: transparent; color: var(--c-8d9690); font-size: 11px; padding: 0 0 9px; cursor: pointer; }
+.todo-back:hover { color: var(--green); }
+.todos-page .todo-add { grid-template-columns: minmax(0,1fr) auto; }
