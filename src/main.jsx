@@ -53,7 +53,8 @@ function wantsOnScreenKeyboard() {
   if (physicalKeyboardSeen()) return false;
   // Noyau Desk tourne sur le PC, clavier branche; un telephone ou une tablette n'en a pas.
   if (TOUCH_MODE) return false;
-  return window.matchMedia("(pointer: coarse)").matches;
+  // Un portable tactile expose aussi un pointeur fin: seul un vrai mobile n'en a aucun.
+  return window.matchMedia("(pointer: coarse)").matches && !window.matchMedia("(any-pointer: fine)").matches;
 }
 const THEME_KEY = "noyau:theme";
 const THEMES = {
@@ -2010,7 +2011,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const touchTerminal = (TOUCH_MODE || coarsePointer) && oskEnabled;
     const terminal = new Terminal({
       cursorBlink: true,
-      disableStdin: touchTerminal,
+      disableStdin: touchTerminal || !oskEnabled,
       fontSize: 13,
       fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
       scrollback: touchTerminal ? 0 : 5000,
@@ -2022,7 +2023,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     fit.fit();
     terminalRef.current = terminal;
     const xtermViewport = terminalNode.current.querySelector(".xterm-viewport");
-    if (touchTerminal) {
+    if (touchTerminal || !oskEnabled) {
       const helper = terminalNode.current.querySelector(".xterm-helper-textarea");
       if (helper) {
         helper.readOnly = true;

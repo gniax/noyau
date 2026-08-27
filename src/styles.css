@@ -1337,3 +1337,5 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .agent-group-grid { gap: 0; background: transparent; }
 .agent-group-grid > .agent-card { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .agent-group > summary { background: var(--c-141916); }
+.project-preview-grid, .bank-list { gap: 0; background: transparent; }
+.project-preview-grid > button, .bank-list > * { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
