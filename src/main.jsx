@@ -50,7 +50,10 @@ function wantsOnScreenKeyboard() {
   const mode = oskMode();
   if (mode === "always") return true;
   if (mode === "never") return false;
-  return !physicalKeyboardSeen();
+  if (physicalKeyboardSeen()) return false;
+  // Noyau Desk tourne sur le PC, clavier branche; un telephone ou une tablette n'en a pas.
+  if (TOUCH_MODE) return false;
+  return window.matchMedia("(pointer: coarse)").matches;
 }
 const THEME_KEY = "noyau:theme";
 const THEMES = {
@@ -1913,7 +1916,7 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
         <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>Fin réponse, attente validation, migration terminée.</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
         <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
-        <article><span className="setting-symbol">⌨</span><div><strong>Clavier virtuel</strong><small>{osk === "auto" ? `Automatique · ${physicalKeyboardSeen() ? "clavier physique détecté sur cet appareil" : "aucun clavier physique détecté"}` : osk === "always" ? "Toujours ouvert au toucher" : "Jamais ouvert, frappe au clavier physique"}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label="Clavier virtuel"><option value="auto">Automatique</option><option value="always">Toujours</option><option value="never">Jamais</option></select></article>
+        <article><span className="setting-symbol">⌨</span><div><strong>Clavier virtuel</strong><small>Réglage propre à cet appareil · {osk === "auto" ? (wantsOnScreenKeyboard() ? "ouvert au toucher ici" : "désactivé ici (clavier physique ou PC)") : osk === "always" ? "toujours ouvert au toucher" : "jamais ouvert"}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label="Clavier virtuel"><option value="auto">Automatique</option><option value="always">Toujours</option><option value="never">Jamais</option></select></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexion privée</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : "Ouvre version HTTPS via VPN"}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
       </section>
       {profiles.length > 0 && <ProfilesSettings key={profileId} profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onChanged={onProfilesChanged} />}
@@ -1936,6 +1939,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   const tapDoneRef = React.useRef(0);
   const [connected, setConnected] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [oskEnabled, setOskEnabled] = useState(wantsOnScreenKeyboard);
   const [ctrl, setCtrl] = useState(false);
   const [alt, setAlt] = useState(false);
   const [keyboardActive, setKeyboardActive] = useState(false);
@@ -2002,7 +2006,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
 
   useEffect(() => {
     const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
-    const touchTerminal = TOUCH_MODE || coarsePointer;
+    // Sans clavier virtuel, l'agent recoit les touches directement: pas de champ de capture cache.
+    const touchTerminal = (TOUCH_MODE || coarsePointer) && oskEnabled;
     const terminal = new Terminal({
       cursorBlink: true,
       disableStdin: touchTerminal,
@@ -2231,7 +2236,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       terminal.dispose();
       terminalRef.current = null;
     };
-  }, [session.id, session.name]);
+  }, [session.id, session.name, oskEnabled]);
 
   function send(data) {
     if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({ type: "input", data }));
@@ -2245,11 +2250,14 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     setAlt(false);
   }
 
-  function focusKeyboard() {
-    if (TOUCH_MODE || window.matchMedia("(pointer: coarse)").matches) {
+  function focusKeyboard(force = false) {
+    if (!force && !oskEnabled) {
+      terminalRef.current?.focus();
+      return;
+    }
+    if (force || TOUCH_MODE || window.matchMedia("(pointer: coarse)").matches) {
       const input = keyboardRef.current;
-      // inputMode "none" garde la capture des touches mais empeche le clavier virtuel de surgir.
-      if (input) input.inputMode = wantsOnScreenKeyboard() ? "text" : "none";
+      if (input) input.inputMode = "text";
       try {
         input?.focus({ preventScroll: true });
       } catch {
@@ -2470,7 +2478,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
           autoFocus={new URLSearchParams(location.search).get("reply") === "1"}
         />
         <div className="key-row">
-          <button className="keyboard-key" {...tapKey(focusKeyboard)} aria-label="Afficher le clavier">
+          <button className="keyboard-key" {...tapKey(() => { setOskEnabled(true); focusKeyboard(true); })} aria-label="Afficher le clavier">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M6 13.5h.01M9.5 13.5h6.5" /></svg>
           </button>
           <label className={`upload-key ${uploading ? "disabled" : ""}`} aria-label="Joindre photo ou fichier">
@@ -2795,10 +2803,12 @@ function App() {
 
   // Une frappe hors champ de saisie ne peut venir que d'un vrai clavier: on s'en souvient.
   useEffect(() => {
+    const hardwareOnly = new Set(["Tab", "Escape", "Control", "Alt", "Meta", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Insert", "Delete"]);
     const detect = (event) => {
       if (!event.isTrusted || event.key === "Unidentified") return;
       const target = event.target;
-      if (target instanceof HTMLElement && ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
+      const inField = target instanceof HTMLElement && ["INPUT", "TEXTAREA"].includes(target.tagName);
+      if (inField && !hardwareOnly.has(event.key) && !/^F\d{1,2}$/.test(event.key) && !event.ctrlKey && !event.metaKey && !event.altKey) return;
       markPhysicalKeyboard();
     };
     window.addEventListener("keydown", detect);
