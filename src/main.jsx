@@ -2174,6 +2174,27 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     }
     const openKeyboard = () => focusKeyboard();
     terminalNode.current.addEventListener("click", openKeyboard);
+    // Sans clavier virtuel, aucun champ n'est focalise (sinon le clavier du systeme surgit):
+    // on capte les touches au niveau du document et on les envoie telles quelles a l'agent.
+    const specialKeys = { Enter: "Enter", Backspace: "Backspace", Tab: "Tab", Escape: "Escape", ArrowUp: "ArrowUp", ArrowDown: "ArrowDown", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", PageUp: "PageUp", PageDown: "PageDown" };
+    const editableTarget = (node) => node instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName) || node.isContentEditable);
+    const captureKey = (event) => {
+      if (oskEnabled || event.metaKey || event.defaultPrevented || editableTarget(event.target)) return;
+      if (specialKeys[event.key]) {
+        event.preventDefault();
+        sendSpecial(specialKeys[event.key]);
+        return;
+      }
+      if (event.ctrlKey && /^[a-zA-Z]$/.test(event.key)) {
+        event.preventDefault();
+        send(String.fromCharCode(event.key.toLowerCase().charCodeAt(0) - 96));
+        return;
+      }
+      if (event.ctrlKey || event.altKey || event.key.length !== 1) return;
+      event.preventDefault();
+      send(event.key);
+    };
+    window.addEventListener("keydown", captureKey);
     const handleMessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "output") {
@@ -2195,7 +2216,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         setConnected(true);
         resize();
         socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
-        if (!touchTerminal) terminal.focus();
+        if (touchTerminal || oskEnabled) terminal.focus();
       });
       socket.addEventListener("message", handleMessage);
       socket.addEventListener("close", () => {
@@ -2230,6 +2251,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       terminalNode.current?.removeEventListener("touchend", touchEnd, true);
       terminalNode.current?.removeEventListener("touchcancel", cancelTouchScroll, true);
       terminalNode.current?.removeEventListener("click", openKeyboard);
+      window.removeEventListener("keydown", captureKey);
       inputDisposable.dispose();
       socket?.close();
       socketRef.current = null;
@@ -2251,10 +2273,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   }
 
   function focusKeyboard(force = false) {
-    if (!force && !oskEnabled) {
-      terminalRef.current?.focus();
-      return;
-    }
+    // Mode clavier physique: rien a focaliser, la capture globale s'en charge deja.
+    if (!force && !oskEnabled) return;
     if (force || TOUCH_MODE || window.matchMedia("(pointer: coarse)").matches) {
       const input = keyboardRef.current;
       if (input) input.inputMode = "text";

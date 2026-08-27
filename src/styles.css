@@ -1330,3 +1330,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .touch-system-fullscreen { width: 40px; height: 34px; }
 .touch-system-bar { grid-template-columns: 190px minmax(0,1fr) auto auto auto 112px; }
 @media (max-width: 900px) { .touch-system-bar { grid-template-columns: 142px minmax(0,1fr) 44px 90px 88px; } }
+
+/* Accueil: separateurs dessines par les cartes, plus de dalle grise sous la derniere rangee. */
+.agent-grid { gap: 0; background: transparent; }
+.agent-grid > .agent-card, .agent-grid > .agent-group { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface); }
+.agent-group-grid { gap: 0; background: transparent; }
+.agent-group-grid > .agent-card { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.agent-group > summary { background: var(--c-141916); }
