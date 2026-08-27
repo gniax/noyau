@@ -1288,3 +1288,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .todo-back { border: 0; background: transparent; color: var(--c-8d9690); font-size: 11px; padding: 0 0 9px; cursor: pointer; }
 .todo-back:hover { color: var(--green); }
 .todos-page .todo-add { grid-template-columns: minmax(0,1fr) auto; }
+.view-error { display: grid; gap: 10px; padding: 24px; }
+.view-error strong { font-size: 15px; }
+.view-error p { margin: 0; color: var(--c-c9777d); font-size: 12px; overflow-wrap: anywhere; }

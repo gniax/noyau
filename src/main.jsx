@@ -2403,6 +2403,38 @@ function ProjectModal({ project, onClose, onSaved }) {
   );
 }
 
+// Un ecran qui plante ne doit pas laisser une page noire: on affiche l'erreur et un retour possible.
+class ViewBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidUpdate(previous) {
+    if (previous.viewKey !== this.props.viewKey && this.state.error) this.setState({ error: null });
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="page">
+        <section className="panel view-error">
+          <strong>Cet écran a planté.</strong>
+          <p>{String(this.state.error?.message || this.state.error)}</p>
+          <div className="modal-actions">
+            <button className="ghost" onClick={() => this.setState({ error: null })}>Réessayer</button>
+            <button className="primary" onClick={() => location.reload()}>Recharger</button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+}
+
 function App() {
   const [auth, setAuth] = useState(null);
   const [sessions, setSessions] = useState([]);
@@ -2732,6 +2764,7 @@ function App() {
       <Sidebar sessions={orderedSessions} activeId={activeId} view={view} onOpen={setActiveId} onView={setView} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} profiles={profiles} profileId={profileId} onSwitchProfile={switchProfile} />
       {menu && <button className="menu-backdrop" onClick={() => setMenu(false)} aria-label="Fermer menu" />}
       <main className="content">
+        <ViewBoundary viewKey={`${view}:${activeId || ""}`}>
         {!active ? (
           <>
             {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onRefreshQuotas={refreshQuotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
@@ -2747,6 +2780,7 @@ function App() {
         ) : (
           <TerminalView session={active} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { setActiveId(id); refresh(); }} onRefresh={refresh} />
         )}
+        </ViewBoundary>
       </main>
       {modal && <NewSessionModal projects={projects} sessions={orderedSessions} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); setActiveId(session.id); refresh(); }} />}
       {editingSession && <EditSessionModal session={editingSession} projects={projects} onClose={() => setEditingId(null)} onSaved={(next, meta) => { setEditingId(null); if (meta?.switched && next?.id) { if (activeId === editingSession.id) setActiveId(next.id); } refresh(); }} />}
