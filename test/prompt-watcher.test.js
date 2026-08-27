@@ -32,6 +32,6 @@ test("prompt watcher sends once until prompt disappears", async () => {
   screen = "Would you like to grant these permissions?\nYes\nNo";
   await watcher.tick();
   assert.equal(payloads.length, 2);
-  assert.equal(payloads[0].title, "[Atlas] Codex attend validation");
+  assert.equal(payloads[0].title, "🟩 [Atlas] Codex attend validation");
   assert.equal(payloads[0].url, "/?session=noyau-codex-test");
 });
