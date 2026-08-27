@@ -521,6 +521,25 @@ app.get("/manifest.webmanifest", (request, response) => {
   }));
 });
 
+// Icone de notification: le navigateur la telecharge hors session applicative, donc sans cle.
+// On n'expose qu'une image (logo de projet ou icone d'agent), jamais de donnee de session.
+app.get("/notification-icon/:id", async (request, response, next) => {
+  try {
+    const id = String(request.params.id).replace(/\.png$/, "");
+    const session = validSessionId(id) ? store.get(id) : null;
+    const file = session?.projectLogo
+      ? (session.projectId ? await projectLogoFile(session.projectId) : null) || await projectLogos.find(session.cwd).catch(() => null)
+      : null;
+    response.setHeader("Cache-Control", "public, max-age=300");
+    if (file) return response.sendFile(file);
+    const fallback = assistantIcon(session?.assistant);
+    if (!fallback) return response.status(404).end();
+    response.sendFile(path.join(root, process.env.NODE_ENV === "production" ? "dist" : "public", fallback));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/finance/banking/callback", async (request, response) => {
   try {
     const pendingId = `pending-${String(request.query.state || "").slice(0, 80)}`;
@@ -1333,9 +1352,7 @@ async function notificationIcon(sessionId) {
   if (!entry) return null;
   if (!entry.projectLogo) return assistantIcon(entry.assistant);
   const file = (entry.projectId ? await projectLogoFile(entry.projectId) : null) || await projectLogos.find(entry.cwd).catch(() => null);
-  return file
-    ? `/api/sessions/${encodeURIComponent(sessionId)}/logo?profile=${encodeURIComponent(entry.profileId || primaryProfileId)}`
-    : assistantIcon(entry.assistant);
+  return file ? `/notification-icon/${encodeURIComponent(sessionId)}.png` : assistantIcon(entry.assistant);
 }
 
 async function sourceQuotaRemaining(session, metadata) {
