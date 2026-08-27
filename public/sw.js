@@ -131,7 +131,7 @@ self.addEventListener("push", (event) => {
         badge: "/icon-192.png",
         tag: payload.tag || "noyau",
         actions: Array.isArray(payload.actions) ? payload.actions.slice(0, 2) : [],
-        data: { url: payload.url || "/", replyUrl: payload.replyUrl || payload.url || "/" },
+        data: { url: payload.url || "/", replyUrl: payload.replyUrl || payload.url || "/", sessionId: payload.sessionId || null },
       }),
       "setAppBadge" in self.navigator ? self.navigator.setAppBadge(1) : Promise.resolve(),
     ]),
@@ -147,6 +147,7 @@ self.addEventListener("notificationclick", (event) => {
     clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
       const existing = windows.find((client) => client.url === target || client.url.startsWith(self.location.origin));
       if (!existing) return clients.openWindow(target);
+      // La fenetre ouverte doit atterrir sur la conversation visee, pas rester sur l'ecran courant.
       // iOS ignore client.navigate en mode application: on passe la destination a l'app elle-meme.
       return existing.focus().then((client) => {
         (client || existing).postMessage({ type: "NOYAU_NAVIGATE", url: target });

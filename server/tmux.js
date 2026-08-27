@@ -212,8 +212,11 @@ export class TmuxController {
   }
 
   async restartAgent({ id, assistant, cwd, threadId, yolo = false }) {
-    if (!validSessionId(id) || !["codex", "claude"].includes(assistant)) throw new Error("Agent invalide pour redémarrage.");
-    const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", path.resolve(cwd || this.workspaceRoot), this.commands[assistant]];
+    if (!validSessionId(id) || !["codex", "claude", "shell"].includes(assistant)) throw new Error("Agent invalide pour redémarrage.");
+    const workingDirectory = path.resolve(cwd || this.workspaceRoot);
+    // Un terminal n'a pas de conversation a reprendre: on relance simplement le shell.
+    if (assistant === "shell") return this.run(["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory]);
+    const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands[assistant]];
     if (assistant === "codex") {
       args.push("--no-alt-screen");
       if (yolo) args.push("--yolo");

@@ -1789,6 +1789,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   const tapRef = React.useRef(null);
   const tapDoneRef = React.useRef(0);
   const [connected, setConnected] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [ctrl, setCtrl] = useState(false);
   const [alt, setAlt] = useState(false);
   const [keyboardActive, setKeyboardActive] = useState(false);
@@ -2247,6 +2248,20 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     }
   }
 
+  // Redemarrage: le pane repart avec la meme conversation, la connexion terminal se remet toute seule.
+  async function restart() {
+    setRestarting(true);
+    try {
+      const result = await api(`/api/sessions/${session.id}/restart`, { method: "POST" });
+      if (!result?.resumed) window.alert("Agent redémarré. Aucune conversation précédente à reprendre.");
+      onRefresh?.();
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      setRestarting(false);
+    }
+  }
+
   async function kill() {
     if (!window.confirm(`Arrêter définitivement session « ${session.name} » ?`)) return;
     await api(`/api/sessions/${session.id}`, { method: "DELETE" });
@@ -2281,6 +2296,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         <div className="terminal-identity"><strong><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /><span>{session.name}</span></strong><small>{session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small></div>
         <div className="terminal-actions">
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
+          {session.managed && <button className="restart-link" onClick={restart} disabled={restarting} title="Redémarrer l'agent en reprenant la conversation">{restarting ? "↻…" : "↻"}</button>}
           {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} title={migrating ? "Appuie à nouveau pour basculer sans attendre le récap" : "Basculer d'agent en gardant le contexte"}>{migrating ? "Récap… ↻" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
           {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
           {session.core && <b className="core-chip" title="Agent de base du Noyau: non supprimable">NOYAU</b>}
@@ -2660,7 +2676,10 @@ function App() {
         if (known && known !== version) {
           localStorage.setItem(VERSION_KEY, version);
           await purgeClient();
-          location.replace(appPath({ v: version }));
+          // Une mise a jour ne doit pas fermer la conversation ouverte: on garde la destination courante.
+          const current = new URLSearchParams(location.search);
+          const keep = Object.fromEntries(["session", "view", "reply"].filter((key) => current.get(key)).map((key) => [key, current.get(key)]));
+          location.replace(appPath({ ...keep, v: version }));
           return;
         }
         if (!known) localStorage.setItem(VERSION_KEY, version);

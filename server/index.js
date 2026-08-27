@@ -1182,6 +1182,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     }
     payload.body = String(payload.body).replace(/\s+/g, " ").trim().slice(0, 220);
     payload.icon ||= await notificationIcon(sessionId);
+    payload.sessionId = sessionId && validSessionId(sessionId) ? sessionId : null;
     const notificationProfileId = metadata?.profileId || primaryProfileId;
     payload.url ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&profile=${encodeURIComponent(notificationProfileId)}` : "/";
     payload.replyUrl ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&reply=1&profile=${encodeURIComponent(notificationProfileId)}` : payload.url;
@@ -1312,12 +1313,20 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
 });
 
 // Logo de l'agent pour la notification: le navigateur le charge en same-origin avec le cookie.
+// Icone de notification: logo du projet si on en trouve un, sinon l'icone de l'agent lui-meme.
+function assistantIcon(assistant) {
+  return ["codex", "claude", "shell"].includes(assistant) ? `/agents/${assistant}.png` : null;
+}
+
 async function notificationIcon(sessionId) {
   if (!sessionId || !validSessionId(sessionId)) return null;
   const entry = store.get(sessionId);
-  if (!entry?.projectLogo) return null;
+  if (!entry) return null;
+  if (!entry.projectLogo) return assistantIcon(entry.assistant);
   const file = (entry.projectId ? await projectLogoFile(entry.projectId) : null) || await projectLogos.find(entry.cwd).catch(() => null);
-  return file ? `/api/sessions/${encodeURIComponent(sessionId)}/logo?profile=${encodeURIComponent(entry.profileId || primaryProfileId)}` : null;
+  return file
+    ? `/api/sessions/${encodeURIComponent(sessionId)}/logo?profile=${encodeURIComponent(entry.profileId || primaryProfileId)}`
+    : assistantIcon(entry.assistant);
 }
 
 async function sourceQuotaRemaining(session, metadata) {
@@ -1414,6 +1423,28 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
     migrations.delete(request.params.id);
     const current = store.get(request.params.id);
     if (current?.migrationState === "summarizing") await store.set(request.params.id, { ...current, migrationState: "failed", migrationError: error.message });
+    next(error);
+  }
+});
+
+// Redemarrage manuel: l'agent repart dans le meme pane et reprend la conversation en cours.
+app.post("/api/sessions/:id/restart", async (request, response, next) => {
+  try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
+    const current = store.get(request.params.id);
+    if (!current) throw new Error("Session Noyau introuvable.");
+    const threadId = current.assistant === "codex" ? current.threadId : current.agentSessionId;
+    await tmux.restartAgent({ id: request.params.id, assistant: current.assistant, cwd: current.cwd, threadId, yolo: Boolean(current.yolo) });
+    await store.set(request.params.id, {
+      ...current,
+      runningYolo: Boolean(current.yolo),
+      permissionRestartPending: false,
+      permissionRestartError: null,
+      agentState: "available",
+      agentStateUpdatedAt: new Date().toISOString(),
+    });
+    response.json({ ok: true, resumed: Boolean(threadId) });
+  } catch (error) {
     next(error);
   }
 });
