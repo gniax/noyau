@@ -21,14 +21,9 @@ export function detectCodexApproval(screen) {
   return CODEX_APPROVALS.some((pattern) => pattern.test(visibleTail));
 }
 
-// iOS ignore l'icone d'une notification web et affiche celle de l'app: le marqueur d'agent
-// dans le titre reste le seul moyen de distinguer Codex, Claude et un terminal au premier coup d'oeil.
-export const ASSISTANT_MARKS = { codex: "🟩", claude: "🟧", shell: "🟦" };
-
-export function agentNotificationTitle(label, text, assistant = null) {
+export function agentNotificationTitle(label, text) {
   const source = String(label || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 48);
-  const mark = ASSISTANT_MARKS[assistant] ? `${ASSISTANT_MARKS[assistant]} ` : "";
-  return `${mark}${source ? `[${source}] ` : ""}${text}`;
+  return `${source ? `[${source}] ` : ""}${text}`;
 }
 
 export class PromptWatcher {
@@ -71,7 +66,7 @@ export class PromptWatcher {
         this.waiting.add(session.id);
         try {
           await this.push.send({
-            title: agentNotificationTitle(this.sessionLabel(session), "Codex attend validation", session.assistant),
+            title: agentNotificationTitle(this.sessionLabel(session), "Codex attend validation"),
             body: "Commande ou permission à accepter ou refuser.",
             tag: `approval-${session.id}`,
             url: `/?session=${encodeURIComponent(session.id)}${session.profileId ? `&profile=${encodeURIComponent(session.profileId)}` : ""}`,

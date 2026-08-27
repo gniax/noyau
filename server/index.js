@@ -1116,7 +1116,7 @@ app.post("/api/notifications/test", async (request, response, next) => {
     notificationTestCursor.set(request.profile.id, cursor + 1);
     const sample = visible[cursor] || null;
     const devices = await push.send({
-      title: sample ? agentNotificationTitle(sample.projectId ? projects.get(sample.projectId)?.name : sample.name, "Test notification", sample.assistant) : "Noyau connecté",
+      title: sample ? agentNotificationTitle(sample.projectId ? projects.get(sample.projectId)?.name : sample.name, "Test notification") : "Noyau connecté",
       body: sample ? `Icône et ouverture de ${sample.name} vérifiées.` : "Notifications prêtes sur cet appareil.",
       tag: "noyau-test",
       icon: sample ? await notificationIcon(sample.id) : null,
@@ -1160,14 +1160,14 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     let payload = null;
     if (completion) {
       payload = {
-        title: agentNotificationTitle(notificationLabel, `${source === "codex" ? "Codex" : "Claude"} a terminé`, metadata?.assistant || source),
+        title: agentNotificationTitle(notificationLabel, `${source === "codex" ? "Codex" : "Claude"} a terminé`),
         body: lastMessage || "Réponse prête.",
         tag: `${source}-${event["thread-id"] || event.session_id || "complete"}`,
       };
     }
     if (attention) {
       payload = {
-        title: agentNotificationTitle(notificationLabel, event.title || "Claude attend", metadata?.assistant || source),
+        title: agentNotificationTitle(notificationLabel, event.title || "Claude attend"),
         body: event.message || "Action demandée.",
         tag: `claude-${event.session_id || "attention"}-${event.notification_type || "notification"}`,
       };
@@ -1431,7 +1431,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
         const { prompt } = await handoverPrompt({ session, metadata, target });
         const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt, replace: true });
         await push.send({
-          title: agentNotificationTitle(metadata.projectId ? projects.get(metadata.projectId)?.name : metadata.name, `Contexte repris par ${target === "codex" ? "Codex" : "Claude"}`, target),
+          title: agentNotificationTitle(metadata.projectId ? projects.get(metadata.projectId)?.name : metadata.name, `Contexte repris par ${target === "codex" ? "Codex" : "Claude"}`),
           body: "Passation faite depuis la dernière conversation.",
           tag: `migration-${created.id}`,
           url: `/?session=${encodeURIComponent(created.id)}&profile=${encodeURIComponent(metadata.profileId || primaryProfileId)}`,
