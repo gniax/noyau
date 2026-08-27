@@ -3,3 +3,8 @@ user_pref("browser.startup.firstrunSkipsHomepage", true);
 user_pref("browser.startup.homepage_override.mstone", "ignore");
 user_pref("ui.osk.enabled", true);
 user_pref("widget.disable-native-theme-for-content", false);
+user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+user_pref("browser.fullscreen.autohide", true);
+user_pref("full-screen-api.warning.timeout", 0);
+user_pref("full-screen-api.transition-duration.enter", "0 0");
+user_pref("full-screen-api.transition-duration.leave", "0 0");

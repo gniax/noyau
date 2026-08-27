@@ -1,0 +1,3 @@
+/* Noyau Desk: fenetre sans onglets ni barre d'adresse, le plein ecran reste basculable (F11). */
+#TabsToolbar, #nav-bar, #sidebar-box, #titlebar { visibility: collapse !important; }
+#main-window:not([inFullscreen]) #browser { margin-top: 0 !important; }

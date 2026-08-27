@@ -1322,3 +1322,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .transaction-group[open] > summary { background: var(--c-141916); }
 .transaction-group article { padding-left: 30px; }
 .transaction-tools .ghost.active { border-color: var(--c-405534); color: var(--green); }
+.setting-select { height: 34px; padding: 0 10px; border: 1px solid var(--c-2b332e); border-radius: 6px; background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 11px; }
+.fullscreen-toggle { display: inline-grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--c-2b332e); border-radius: 7px; background: transparent; color: var(--c-8d9690); cursor: pointer; }
+.fullscreen-toggle:hover { border-color: var(--c-405534); color: var(--green); }
+.fullscreen-toggle svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.top-actions { display: flex; align-items: center; gap: 8px; }
+.touch-system-fullscreen { width: 40px; height: 34px; }
+.touch-system-bar { grid-template-columns: 190px minmax(0,1fr) auto auto auto 112px; }
+@media (max-width: 900px) { .touch-system-bar { grid-template-columns: 142px minmax(0,1fr) 44px 90px 88px; } }

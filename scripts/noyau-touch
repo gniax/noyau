@@ -25,8 +25,9 @@ fi
 exec 9>"$launch_lock"
 flock -n 9 || exit 0
 
-mkdir -p "$profile_root"
+mkdir -p "$profile_root" "$profile_root/chrome"
 install -m 600 "$app_root/desktop/firefox-user.js" "$profile_root/user.js"
+install -m 600 "$app_root/desktop/userChrome.css" "$profile_root/chrome/userChrome.css"
 systemctl --user start noyau.service
 
 profile_pids=""
@@ -90,7 +91,12 @@ if [ -z "${DISPLAY:-}" ]; then
   exit 1
 fi
 
-/usr/bin/firefox --new-instance --profile "$profile_root" --kiosk "$app_url" &
+# Kiosque optionnel: par defaut fenetre sans chrome, pour garder le plein ecran basculable depuis Noyau.
+if [ "${NOYAU_TOUCH_KIOSK:-0}" = "1" ]; then
+  /usr/bin/firefox --new-instance --profile "$profile_root" --kiosk "$app_url" &
+else
+  /usr/bin/firefox --new-instance --profile "$profile_root" "$app_url" &
+fi
 firefox_launcher=$!
 sleep 2
 flock -u 9

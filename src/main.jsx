@@ -30,6 +30,28 @@ function profileCacheKey(key) {
 }
 
 const ROOT_FOLDER = "root";
+const OSK_KEY = "noyau:osk";
+const PHYSICAL_KEY = "noyau:physical-keyboard";
+
+// Clavier virtuel: "auto" le retient des qu'un vrai clavier a servi sur cet appareil.
+function oskMode() {
+  try { return localStorage.getItem(OSK_KEY) || "auto"; } catch { return "auto"; }
+}
+
+function physicalKeyboardSeen() {
+  try { return localStorage.getItem(PHYSICAL_KEY) === "1"; } catch { return false; }
+}
+
+function markPhysicalKeyboard() {
+  try { localStorage.setItem(PHYSICAL_KEY, "1"); } catch { /* stockage optionnel */ }
+}
+
+function wantsOnScreenKeyboard() {
+  const mode = oskMode();
+  if (mode === "always") return true;
+  if (mode === "never") return false;
+  return !physicalKeyboardSeen();
+}
 const THEME_KEY = "noyau:theme";
 const THEMES = {
   noyau: { label: "Thème Noyau", terminal: { background: "#080b0a", foreground: "#d9e0dc", cursor: "#b8ff5e", selectionBackground: "#31551f88" } },
@@ -382,8 +404,39 @@ function Header({ title, subtitle, onMenu, actionLabel = "Nouvel agent", onActio
     <header className="topbar">
       <button className="icon-button menu-button" onClick={onMenu} aria-label="Menu">☰</button>
       <div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
-      {onAction && <div className="top-actions"><button className="primary" onClick={onAction}><span>+</span> {actionLabel}</button></div>}
+      <div className="top-actions">
+        <FullscreenToggle />
+        {onAction && <button className="primary" onClick={onAction}><span>+</span> {actionLabel}</button>}
+      </div>
     </header>
+  );
+}
+
+// Plein ecran natif: dispo sur le PC (Firefox, Chrome), absent sur iOS ou l'API n'existe pas.
+function FullscreenToggle({ className = "" }) {
+  const [full, setFull] = useState(() => Boolean(document.fullscreenElement));
+  useEffect(() => {
+    const sync = () => setFull(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+  if (!document.fullscreenEnabled) return null;
+  const toggle = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen({ navigationUI: "hide" });
+    } catch (error) {
+      window.alert(`Plein écran refusé: ${error.message}`);
+    }
+  };
+  return (
+    <button className={`fullscreen-toggle ${className}`} onClick={toggle} title={full ? "Quitter le plein écran (F11)" : "Passer en plein écran (F11)"} aria-label={full ? "Quitter le plein écran" : "Passer en plein écran"}>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        {full
+          ? <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
+          : <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />}
+      </svg>
+    </button>
   );
 }
 
@@ -426,6 +479,7 @@ function TouchSystemBar({ sessions, onHome, onNew }) {
         <span><i className={online ? "available" : "offline"} />{online ? "PC local" : "Hors ligne"}</span>
       </div>
       <button className="touch-system-new" onClick={onNew}>＋ Agent</button>
+      <FullscreenToggle className="touch-system-fullscreen" />
       <button className="touch-system-sleep" onClick={sleepDisplay} disabled={sleeping} title="Éteindre écran jusqu’au prochain toucher">◐ Écran</button>
       <time dateTime={now.toISOString()}><strong>{time}</strong><small>{date}</small></time>
     </header>
@@ -1834,6 +1888,15 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
 function SettingsView({ permission, onNotifications, onRefresh, onView, profiles, profileId, onSwitchProfile, onProfilesChanged }) {
   const [refreshing, setRefreshing] = useState(false);
   const [versionInfo, setVersionInfo] = useState(null);
+  const [osk, setOsk] = useState(oskMode);
+
+  function chooseOsk(value) {
+    setOsk(value);
+    try {
+      localStorage.setItem(OSK_KEY, value);
+      if (value === "always") localStorage.removeItem(PHYSICAL_KEY);
+    } catch { /* stockage optionnel */ }
+  }
   const notificationLabel = { active: "Tester notification", insecure: "HTTPS requis", denied: "Alertes bloquées" }[permission] || "Activer alertes";
   useEffect(() => {
     fetch("/version.json", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then(setVersionInfo).catch(() => {});
@@ -1850,6 +1913,7 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
         <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>Fin réponse, attente validation, migration terminée.</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
         <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
+        <article><span className="setting-symbol">⌨</span><div><strong>Clavier virtuel</strong><small>{osk === "auto" ? `Automatique · ${physicalKeyboardSeen() ? "clavier physique détecté sur cet appareil" : "aucun clavier physique détecté"}` : osk === "always" ? "Toujours ouvert au toucher" : "Jamais ouvert, frappe au clavier physique"}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label="Clavier virtuel"><option value="auto">Automatique</option><option value="always">Toujours</option><option value="never">Jamais</option></select></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexion privée</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : "Ouvre version HTTPS via VPN"}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
       </section>
       {profiles.length > 0 && <ProfilesSettings key={profileId} profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onChanged={onProfilesChanged} />}
@@ -2184,6 +2248,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   function focusKeyboard() {
     if (TOUCH_MODE || window.matchMedia("(pointer: coarse)").matches) {
       const input = keyboardRef.current;
+      // inputMode "none" garde la capture des touches mais empeche le clavier virtuel de surgir.
+      if (input) input.inputMode = wantsOnScreenKeyboard() ? "text" : "none";
       try {
         input?.focus({ preventScroll: true });
       } catch {
@@ -2726,6 +2792,18 @@ function App() {
       clearInterval(creepTimer);
     };
   }, [bootNonce, advance]);
+
+  // Une frappe hors champ de saisie ne peut venir que d'un vrai clavier: on s'en souvient.
+  useEffect(() => {
+    const detect = (event) => {
+      if (!event.isTrusted || event.key === "Unidentified") return;
+      const target = event.target;
+      if (target instanceof HTMLElement && ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
+      markPhysicalKeyboard();
+    };
+    window.addEventListener("keydown", detect);
+    return () => window.removeEventListener("keydown", detect);
+  }, []);
 
   useEffect(() => {
     if (!auth) return;
