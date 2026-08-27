@@ -1293,3 +1293,4 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .view-error p { margin: 0; color: var(--c-c9777d); font-size: 12px; overflow-wrap: anywhere; }
 .restart-link { flex: none; border: 1px solid var(--c-354039); border-radius: 5px; background: var(--c-171d19); color: var(--green); padding: 6px 9px; font-size: 11px; cursor: pointer; }
 .restart-link:disabled { opacity: .55; }
+.terminal-controls .restart-key { color: var(--orange); font-size: 15px; }

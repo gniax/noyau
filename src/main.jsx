@@ -2250,6 +2250,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
 
   // Redemarrage: le pane repart avec la meme conversation, la connexion terminal se remet toute seule.
   async function restart() {
+    if (restarting || !window.confirm("Redémarrer l'agent en reprenant la conversation en cours ?")) return;
     setRestarting(true);
     try {
       const result = await api(`/api/sessions/${session.id}/restart`, { method: "POST" });
@@ -2296,7 +2297,6 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         <div className="terminal-identity"><strong><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /><span>{session.name}</span></strong><small>{session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small></div>
         <div className="terminal-actions">
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
-          {session.managed && <button className="restart-link" onClick={restart} disabled={restarting} title="Redémarrer l'agent en reprenant la conversation">{restarting ? "↻…" : "↻"}</button>}
           {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} title={migrating ? "Appuie à nouveau pour basculer sans attendre le récap" : "Basculer d'agent en gardant le contexte"}>{migrating ? "Récap… ↻" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
           {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
           {session.core && <b className="core-chip" title="Agent de base du Noyau: non supprimable">NOYAU</b>}
@@ -2328,6 +2328,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
             <input type="file" onChange={attachFile} disabled={uploading} />
             <span>{uploading ? "…" : "＋"}</span>
           </label>
+          {session.managed && <button className="restart-key" {...tapKey(restart)} aria-label="Redémarrer l'agent">{restarting ? "…" : "↻"}</button>}
           <button className="copy-key" {...tapKey(copyTerminal)}>Copier</button>
           <button className="paste-key" {...tapKey(pasteClipboard)}>Coller</button>
           <button className={ctrl ? "selected" : ""} {...tapKey(() => toggleModifier("ctrl"))}>Ctrl</button>

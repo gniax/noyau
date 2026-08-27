@@ -1089,11 +1089,15 @@ app.delete("/api/notifications/subscribe", async (request, response, next) => {
 
 app.post("/api/notifications/test", async (_request, response, next) => {
   try {
+    // Test grandeur nature: on emprunte l'agent le plus recent pour verifier l'icone et l'ouverture.
+    const sample = (await tmux.list()).find((session) => session.managed && sessionVisible(request.profile.id, session.id));
     const devices = await push.send({
-      title: "Noyau connecté",
-      body: "Notifications prêtes sur cet appareil.",
+      title: sample ? agentNotificationTitle(sample.projectId ? projects.get(sample.projectId)?.name : sample.name, "Test notification") : "Noyau connecté",
+      body: sample ? `Icône et ouverture de ${sample.name} vérifiées.` : "Notifications prêtes sur cet appareil.",
       tag: "noyau-test",
-      url: "/",
+      icon: sample ? await notificationIcon(sample.id) : null,
+      sessionId: sample?.id || null,
+      url: sample ? `/?session=${encodeURIComponent(sample.id)}&profile=${encodeURIComponent(request.profile.id)}` : "/",
     }, request.profile.id);
     if (!devices) throw new Error("Aucun appareil push actif. Réactive alertes depuis app HTTPS installée.");
     response.json({ ok: true, devices });
