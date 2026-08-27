@@ -128,6 +128,7 @@ const todoService = new TodoService({
 const usage = new UsageService();
 const projectLogos = new ProjectLogoService();
 const migrations = new Map();
+const notificationTestCursor = new Map();
 const weatherCache = new Map();
 const moduleService = new ModuleService({
   workspaceRoot,
@@ -1087,10 +1088,14 @@ app.delete("/api/notifications/subscribe", async (request, response, next) => {
   }
 });
 
-app.post("/api/notifications/test", async (_request, response, next) => {
+app.post("/api/notifications/test", async (request, response, next) => {
   try {
     // Test grandeur nature: on emprunte l'agent le plus recent pour verifier l'icone et l'ouverture.
-    const sample = (await tmux.list()).find((session) => session.managed && sessionVisible(request.profile.id, session.id));
+    const visible = (await tmux.list()).filter((session) => session.managed && sessionVisible(request.profile.id, session.id));
+    // Chaque test prend l'agent suivant: on voit tourner les icones (logo projet, Codex, Claude, terminal).
+    const cursor = (notificationTestCursor.get(request.profile.id) || 0) % Math.max(1, visible.length);
+    notificationTestCursor.set(request.profile.id, cursor + 1);
+    const sample = visible[cursor] || null;
     const devices = await push.send({
       title: sample ? agentNotificationTitle(sample.projectId ? projects.get(sample.projectId)?.name : sample.name, "Test notification") : "Noyau connecté",
       body: sample ? `Icône et ouverture de ${sample.name} vérifiées.` : "Notifications prêtes sur cet appareil.",

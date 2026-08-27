@@ -2323,17 +2323,25 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
           autoFocus={new URLSearchParams(location.search).get("reply") === "1"}
         />
         <div className="key-row">
-          <button className="keyboard-key" {...tapKey(focusKeyboard)} aria-label="Afficher le clavier">⌨</button>
+          <button className="keyboard-key" {...tapKey(focusKeyboard)} aria-label="Afficher le clavier">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M6 13.5h.01M9.5 13.5h6.5" /></svg>
+          </button>
           <label className={`upload-key ${uploading ? "disabled" : ""}`} aria-label="Joindre photo ou fichier">
             <input type="file" onChange={attachFile} disabled={uploading} />
             <span>{uploading ? "…" : "＋"}</span>
           </label>
-          {session.managed && <button className="restart-key" {...tapKey(restart)} aria-label="Redémarrer l'agent">{restarting ? "…" : "↻"}</button>}
-          <button className="copy-key" {...tapKey(copyTerminal)}>Copier</button>
-          <button className="paste-key" {...tapKey(pasteClipboard)}>Coller</button>
+          {session.managed && <button className="restart-key" {...tapKey(restart)} aria-label="Redémarrer l'agent">
+            {restarting ? "…" : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg>}
+          </button>}
+          <button className="copy-key" {...tapKey(copyTerminal)} aria-label="Copier l'écran">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15" /></svg>
+          </button>
+          <button className="paste-key" {...tapKey(pasteClipboard)} aria-label="Coller">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="16" rx="2" /><path d="M9 5V3.8A.8.8 0 0 1 9.8 3h4.4a.8.8 0 0 1 .8.8V5M9 12h6M9 16h4" /></svg>
+          </button>
+          <button {...tapKey(() => pressSpecial("Escape"))}>Esc</button>
           <button className={ctrl ? "selected" : ""} {...tapKey(() => toggleModifier("ctrl"))}>Ctrl</button>
           <button className={alt ? "selected" : ""} {...tapKey(() => toggleModifier("alt"))}>Alt</button>
-          <button {...tapKey(() => pressSpecial("Escape"))}>Esc</button>
           <button {...tapKey(() => pressSpecial("Tab"))}>Tab</button>
           <button {...tapKey(() => pressSpecial("ArrowLeft"))}>←</button>
           <button {...tapKey(() => pressSpecial("ArrowUp"))}>↑</button>
