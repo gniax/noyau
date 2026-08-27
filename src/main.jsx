@@ -305,6 +305,17 @@ function merchantKey(value) {
   return cleaned || String(value || "").toLowerCase().trim();
 }
 
+// Ligne d'etat de synchro: derniere reception bancaire et resultat du passage automatique de 6h.
+function bankSyncLabel(banking) {
+  if (!banking?.status?.connections?.length) return "Aucune banque liée.";
+  const last = banking.lastSyncAt ? new Date(banking.lastSyncAt) : null;
+  const when = last && !Number.isNaN(last.getTime())
+    ? `${last.toLocaleDateString("fr-FR")} à ${last.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`
+    : "jamais";
+  const auto = banking.autoSync?.error ? ` · dernier passage auto en échec: ${banking.autoSync.error}` : "";
+  return `Dernière synchro bancaire ${when} · automatique chaque matin à 6h${auto}`;
+}
+
 function exclusionLabel(reason) {
   return reason === "placement" ? "Placement exclu" : reason === "doublon-carte" ? "Doublon carte exclu" : reason === "professionnel" ? "Dépense professionnelle exclue" : "Transfert interne exclu";
 }
@@ -1002,7 +1013,7 @@ function FinanceView({ onView }) {
   return (
     <div className="page finance-page has-finance-dock">
       <section className="hero-row finance-hero">
-        <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Budget.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p></div>
+        <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Budget.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p><p className="finance-sync-line">{bankSyncLabel(data.banking)}</p></div>
         <div className="finance-hero-actions"><BudgetMenu onView={onView} /><button className={`finance-refresh ${updating ? "updating" : ""}`} onClick={updateBudget} disabled={updating || syncCooldown > 0} aria-label={syncCooldown > 0 ? `Synchronisation disponible dans ${syncCooldown} secondes` : "Mettre à jour depuis banques"} title={syncCooldown > 0 ? `Réessayer dans ${syncCooldown}s` : updatedAt ? `À jour à ${updatedAt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}` : "Mettre à jour depuis banques"}><span aria-hidden="true">↻</span>{syncCooldown > 0 && <small>{syncCooldown}</small>}</button><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
       </section>
 
@@ -1328,14 +1339,54 @@ function FinanceTransactionsView({ onView }) {
     }
   }
   const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
+  const lastSync = data?.banking?.lastSyncAt ? new Date(data.banking.lastSyncAt) : null;
   const sortedTransactions = useMemo(() => [...(data?.transactions || [])].sort((a, b) => {
     if (sortOrder === "amount-desc") return Math.abs(b.amount) - Math.abs(a.amount) || b.date.localeCompare(a.date);
     if (sortOrder === "amount-asc") return Math.abs(a.amount) - Math.abs(b.amount) || b.date.localeCompare(a.date);
     return b.date.localeCompare(a.date) || String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
   }), [data?.transactions, sortOrder]);
+  // Achats repetes (cafes, courses…): on les empile sous une seule ligne depliable.
+  const groups = useMemo(() => {
+    if (!grouped) return sortedTransactions.map((item) => ({ key: item.id, items: [item] }));
+    const buckets = new Map();
+    for (const item of sortedTransactions) {
+      const key = `${item.kind}:${merchantKey(item.description)}`;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(item);
+    }
+    return [...buckets.entries()].map(([key, items]) => ({ key, items }));
+  }, [sortedTransactions, grouped]);
+
+  function transactionRow(item) {
+    return (
+      <article className={item.excluded ? "excluded" : ""} key={item.id}>
+        <span className={`transaction-kind ${item.kind}`}>{item.excluded ? "↔" : item.kind === "income" ? "+" : "−"}</span>
+        <span><strong>{item.description}</strong><small title={item.categoryReason || ""}>{operationDate(item)} · {item.account} · {item.excluded ? exclusionLabel(item.exclusionReason) : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}{item.categorySource === "codex" ? ` · Codex: ${item.categoryReason}` : ""}</small></span>
+        <b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b>
+        <button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button>
+      </article>
+    );
+  }
+
+  function transactionGroup({ key, items }) {
+    if (items.length === 1) return transactionRow(items[0]);
+    const total = items.reduce((sum, item) => sum + item.amount, 0);
+    const dates = items.map((item) => item.date).sort();
+    return (
+      <details className="transaction-group" key={key}>
+        <summary>
+          <span className={`transaction-kind ${items[0].kind}`}>{items.length}×</span>
+          <span><strong>{items[0].description}</strong><small>{items.length} opérations · du {dates[0].split("-").reverse().join("/")} au {dates.at(-1).split("-").reverse().join("/")}</small></span>
+          <b className={total >= 0 ? "income" : "expense"}>{total >= 0 ? "+" : "−"}{euro(Math.abs(total))}</b>
+        </summary>
+        {items.map(transactionRow)}
+      </details>
+    );
+  }
+
   return (
     <div className="page finance-page finance-operations-page has-finance-dock">
-      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · HISTORIQUE LOCAL</p><h1>Opérations.</h1><p className="muted">Saisie manuelle et imports bancaires.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · HISTORIQUE LOCAL</p><h1>Opérations.</h1><p className="muted">Saisie manuelle et imports bancaires{lastSync ? ` · synchro ${lastSync.toLocaleDateString("fr-FR")} ${lastSync.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}` : ""}.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></div></section>
       {error && <p className="finance-error">{error}</p>}
       <section className="operations-layout">
         <form className="panel transaction-form" onSubmit={addTransaction}>
@@ -1351,9 +1402,9 @@ function FinanceTransactionsView({ onView }) {
           </div>
         </form>
         <section className="panel finance-transactions">
-          <div className="panel-head"><div><h3>Historique</h3><p>{data?.transactions.length || 0} opérations · {data?.classification.categorizedByCodex || 0}/{data?.classification.bankTransactions || 0} classées Codex</p></div><div className="transaction-tools"><button className="ghost" onClick={categorizeTransactions} disabled={categorizing}>{categorizing ? "Codex classe…" : "Reclasser Codex"}</button><label className="transaction-sort"><span>Trier</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}><option value="date-desc">Date récente</option><option value="amount-desc">Montant décroissant</option><option value="amount-asc">Montant croissant</option></select></label></div></div>
+          <div className="panel-head"><div><h3>Historique</h3><p>{data?.transactions.length || 0} opérations · {data?.classification.categorizedByCodex || 0}/{data?.classification.bankTransactions || 0} classées Codex</p></div><div className="transaction-tools"><button className={grouped ? "ghost active" : "ghost"} onClick={() => setGrouped((value) => !value)}>{grouped ? "Groupés" : "Détaillés"}</button><button className="ghost" onClick={categorizeTransactions} disabled={categorizing}>{categorizing ? "Codex classe…" : "Reclasser Codex"}</button><label className="transaction-sort"><span>Trier</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}><option value="date-desc">Date récente</option><option value="amount-desc">Montant décroissant</option><option value="amount-asc">Montant croissant</option></select></label></div></div>
           <div className="transaction-list">
-            {sortedTransactions.map((item) => <article className={item.excluded ? "excluded" : ""} key={item.id}><span className={`transaction-kind ${item.kind}`}>{item.excluded ? "↔" : item.kind === "income" ? "+" : "−"}</span><span><strong>{item.description}</strong><small title={item.categoryReason || ""}>{operationDate(item)} · {item.account} · {item.excluded ? exclusionLabel(item.exclusionReason) : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}{item.categorySource === "codex" ? ` · Codex: ${item.categoryReason}` : ""}</small></span><b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b><button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button></article>)}
+            {groups.map(transactionGroup)}
             {data && !data.transactions.length && <p className="finance-empty">Aucune opération ce mois.</p>}
           </div>
         </section>

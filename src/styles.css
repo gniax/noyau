@@ -1310,3 +1310,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .terminal-controls .restart-key { color: var(--orange); font-size: 11px; }
 .key-row .copy-key, .key-row .paste-key { color: var(--c-aab3ad); }
 .touch-shell .key-row button, .touch-shell .key-row .upload-key { height: 42px; min-width: 50px; }
+
+.finance-sync-line { margin: 6px 0 0; color: var(--c-68736c); font-size: 10px; }
+.transaction-group > summary { display: grid; grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: 11px; padding: 13px 14px; list-style: none; cursor: pointer; border-bottom: 1px solid var(--line); }
+.transaction-group > summary::-webkit-details-marker { display: none; }
+.transaction-group > summary:hover { background: var(--c-151a17); }
+.transaction-group > summary strong, .transaction-group > summary small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.transaction-group > summary strong { font-size: 12px; }
+.transaction-group > summary small { color: var(--c-68756d); font-size: 9px; margin-top: 4px; }
+.transaction-group > summary .transaction-kind { font-size: 9px; }
+.transaction-group[open] > summary { background: var(--c-141916); }
+.transaction-group article { padding-left: 30px; }
+.transaction-tools .ghost.active { border-color: var(--c-405534); color: var(--green); }
