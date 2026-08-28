@@ -2009,9 +2009,12 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
     // Sans clavier virtuel, l'agent recoit les touches directement: pas de champ de capture cache.
     const touchTerminal = (TOUCH_MODE || coarsePointer) && oskEnabled;
+    // Capture au niveau du document seulement la ou un clavier systeme peut surgir:
+    // sur un poste souris-clavier, xterm garde sa saisie native, plus fiable.
+    const captureMode = (TOUCH_MODE || coarsePointer) && !oskEnabled;
     const terminal = new Terminal({
       cursorBlink: true,
-      disableStdin: touchTerminal || !oskEnabled,
+      disableStdin: touchTerminal || captureMode,
       fontSize: 13,
       fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
       scrollback: touchTerminal ? 0 : 5000,
@@ -2023,7 +2026,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     fit.fit();
     terminalRef.current = terminal;
     const xtermViewport = terminalNode.current.querySelector(".xterm-viewport");
-    if (touchTerminal || !oskEnabled) {
+    if (touchTerminal || captureMode) {
       const helper = terminalNode.current.querySelector(".xterm-helper-textarea");
       if (helper) {
         helper.readOnly = true;
@@ -2180,7 +2183,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const specialKeys = { Enter: "Enter", Backspace: "Backspace", Tab: "Tab", Escape: "Escape", ArrowUp: "ArrowUp", ArrowDown: "ArrowDown", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", PageUp: "PageUp", PageDown: "PageDown" };
     const editableTarget = (node) => node instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName) || node.isContentEditable);
     const captureKey = (event) => {
-      if (oskEnabled || event.metaKey || event.defaultPrevented || editableTarget(event.target)) return;
+      if (!captureMode || event.metaKey || event.defaultPrevented || editableTarget(event.target)) return;
       if (specialKeys[event.key]) {
         event.preventDefault();
         sendSpecial(specialKeys[event.key]);
@@ -2195,7 +2198,15 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       event.preventDefault();
       send(event.key);
     };
+    const capturePaste = (event) => {
+      if (!captureMode || editableTarget(event.target)) return;
+      const text = event.clipboardData?.getData("text");
+      if (!text) return;
+      event.preventDefault();
+      send(text);
+    };
     window.addEventListener("keydown", captureKey);
+    window.addEventListener("paste", capturePaste);
     const handleMessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "output") {
@@ -2217,7 +2228,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         setConnected(true);
         resize();
         socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
-        if (touchTerminal || oskEnabled) terminal.focus();
+        if (!captureMode) terminal.focus();
       });
       socket.addEventListener("message", handleMessage);
       socket.addEventListener("close", () => {
@@ -2253,6 +2264,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       terminalNode.current?.removeEventListener("touchcancel", cancelTouchScroll, true);
       terminalNode.current?.removeEventListener("click", openKeyboard);
       window.removeEventListener("keydown", captureKey);
+      window.removeEventListener("paste", capturePaste);
       inputDisposable.dispose();
       socket?.close();
       socketRef.current = null;
@@ -2274,8 +2286,11 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   }
 
   function focusKeyboard(force = false) {
-    // Mode clavier physique: rien a focaliser, la capture globale s'en charge deja.
-    if (!force && !oskEnabled) return;
+    // Poste souris-clavier: xterm garde le focus natif, on ne detourne rien.
+    if (!force && !oskEnabled) {
+      if (!(TOUCH_MODE || window.matchMedia("(pointer: coarse)").matches)) terminalRef.current?.focus();
+      return;
+    }
     if (force || TOUCH_MODE || window.matchMedia("(pointer: coarse)").matches) {
       const input = keyboardRef.current;
       if (input) input.inputMode = "text";
