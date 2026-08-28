@@ -1570,6 +1570,29 @@ async function writeClipboard(text) {
   return copied;
 }
 
+// Les agents coupent une URL sur plusieurs lignes: on recolle les morceaux d'une ligne pleine
+// tant que la suite ne contient que des caracteres d'URL.
+function extractLinks(rows, width) {
+  const safe = /^[A-Za-z0-9%&=_\-.~:/?#[\]@!$'()*+,;]+$/;
+  const links = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const match = rows[index].match(/https?:\/\/[^\s"'<>]+/);
+    if (!match) continue;
+    let url = match[0];
+    let cursor = index;
+    while (cursor + 1 < rows.length) {
+      const filled = rows[cursor].replace(/\s+$/, "").length >= width - 4;
+      const next = rows[cursor + 1].trim();
+      if (!filled || next.length < 3 || !safe.test(next)) break;
+      url += next;
+      cursor += 1;
+    }
+    links.push(url);
+    index = cursor;
+  }
+  return [...new Set(links)];
+}
+
 function completedLabel(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -2457,10 +2480,13 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     const terminal = terminalRef.current;
     if (!terminal) return;
     const buffer = terminal.buffer.active;
-    const lines = [];
+    const rows = [];
     const first = Math.max(0, buffer.length - 600);
-    for (let row = first; row < buffer.length; row += 1) lines.push(buffer.getLine(row)?.translateToString(true) || "");
-    setSnapshot(lines.join("\n").replace(/\n{3,}/g, "\n\n").trim());
+    for (let row = first; row < buffer.length; row += 1) rows.push(buffer.getLine(row)?.translateToString(true) || "");
+    setSnapshot({
+      text: rows.join("\n").replace(/\n{3,}/g, "\n\n").trim(),
+      links: extractLinks(rows, terminal.cols),
+    });
   }
 
   async function copyText(value) {
@@ -2554,17 +2580,17 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSnapshot(null)}>
           <section className="modal terminal-snapshot">
             <div className="modal-head"><div><p className="eyebrow">TEXTE DE L’ÉCRAN</p><h2>Copier</h2></div><button className="icon-button" onClick={() => setSnapshot(null)}>×</button></div>
-            {[...new Set(snapshot.match(/https?:\/\/[^\s"'<>]+/g) || [])].slice(0, 6).map((link) => (
+            {snapshot.links.slice(0, 6).map((link) => (
               <div className="snapshot-link" key={link}>
                 <span>{link}</span>
                 <button className="ghost" onClick={() => copyText(link)}>Copier</button>
                 <a className="ghost" href={link} target="_blank" rel="noreferrer">Ouvrir</a>
               </div>
             ))}
-            <textarea className="snapshot-text" value={snapshot} readOnly spellCheck="false" onFocus={(event) => event.target.setSelectionRange(0, 0)} />
+            <textarea className="snapshot-text" value={snapshot.text} readOnly spellCheck="false" onFocus={(event) => event.target.setSelectionRange(0, 0)} />
             <div className="modal-actions">
               <button className="ghost" onClick={() => setSnapshot(null)}>Fermer</button>
-              <button className="primary" onClick={() => copyText(snapshot)}>Tout copier</button>
+              <button className="primary" onClick={() => copyText(snapshot.text)}>Tout copier</button>
             </div>
           </section>
         </div>
