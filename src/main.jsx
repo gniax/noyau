@@ -1960,6 +1960,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   const tapDoneRef = React.useRef(0);
   const [connected, setConnected] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [snapshot, setSnapshot] = useState(null);
   const [oskEnabled, setOskEnabled] = useState(wantsOnScreenKeyboard);
   const [ctrl, setCtrl] = useState(false);
   const [alt, setAlt] = useState(false);
@@ -2450,6 +2451,22 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     }
   }
 
+  // Les agents redessinent leur interface en continu, ce qui efface la selection en cours:
+  // on fige le texte dans un panneau ou la selection tient, avec les liens isoles.
+  function openSnapshot() {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const buffer = terminal.buffer.active;
+    const lines = [];
+    const first = Math.max(0, buffer.length - 600);
+    for (let row = first; row < buffer.length; row += 1) lines.push(buffer.getLine(row)?.translateToString(true) || "");
+    setSnapshot(lines.join("\n").replace(/\n{3,}/g, "\n\n").trim());
+  }
+
+  async function copyText(value) {
+    if (!await writeClipboard(value)) window.alert("Copie refusée par le navigateur.");
+  }
+
   async function copyTerminal() {
     try {
       const terminal = terminalRef.current;
@@ -2533,6 +2550,25 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         </div>
       </div>
       <div className="terminal-frame" ref={terminalNode} />
+      {snapshot !== null && (
+        <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSnapshot(null)}>
+          <section className="modal terminal-snapshot">
+            <div className="modal-head"><div><p className="eyebrow">TEXTE DE L’ÉCRAN</p><h2>Copier</h2></div><button className="icon-button" onClick={() => setSnapshot(null)}>×</button></div>
+            {[...new Set(snapshot.match(/https?:\/\/[^\s"'<>]+/g) || [])].slice(0, 6).map((link) => (
+              <div className="snapshot-link" key={link}>
+                <span>{link}</span>
+                <button className="ghost" onClick={() => copyText(link)}>Copier</button>
+                <a className="ghost" href={link} target="_blank" rel="noreferrer">Ouvrir</a>
+              </div>
+            ))}
+            <textarea className="snapshot-text" value={snapshot} readOnly spellCheck="false" onFocus={(event) => event.target.setSelectionRange(0, 0)} />
+            <div className="modal-actions">
+              <button className="ghost" onClick={() => setSnapshot(null)}>Fermer</button>
+              <button className="primary" onClick={() => copyText(snapshot)}>Tout copier</button>
+            </div>
+          </section>
+        </div>
+      )}
       <div className={`terminal-controls ${keyboardActive ? "keyboard-active" : ""}`}>
         <input
           ref={keyboardRef}
@@ -2563,6 +2599,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
           {session.managed && <button className="restart-key" {...tapKey(restart)} aria-label="Redémarrer l'agent">
             {restarting ? "…" : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg>}
           </button>}
+          <button className="text-key" {...tapKey(openSnapshot)} aria-label="Texte de l'écran">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h8l4 4v12H6z" /><path d="M14 4v4h4M9 13h6M9 16.5h4" /></svg>
+          </button>
           <button className="copy-key" {...tapKey(copyTerminal)} aria-label="Copier l'écran">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15" /></svg>
           </button>
