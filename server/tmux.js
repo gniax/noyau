@@ -21,15 +21,18 @@ export function classifyAssistant(command, storedAssistant) {
   if (storedAssistant) return storedAssistant;
   if (command.includes("claude")) return "claude";
   if (command.includes("codex")) return "codex";
+  if (command.includes("antigravity")) return "antigravity";
   return "shell";
 }
 
 export class TmuxController {
-  constructor({ binary = "tmux", store, workspaceRoot, codexBinary = "codex", claudeBinary = "claude" }) {
+  constructor({ binary = "tmux", store, workspaceRoot, codexBinary = "codex", claudeBinary = "claude", antigravityBinary = "antigravity", antigravityArgs = [] }) {
     this.binary = binary;
     this.store = store;
     this.workspaceRoot = workspaceRoot;
-    this.commands = { codex: codexBinary, claude: claudeBinary };
+    this.commands = { codex: codexBinary, claude: claudeBinary, antigravity: antigravityBinary };
+    // Antigravity n'expose pas encore d'options connues: on laisse la ligne de commande configurable.
+    this.antigravityArgs = antigravityArgs;
   }
 
   async run(args) {
@@ -109,7 +112,7 @@ export class TmuxController {
     for (const [id, entry] of Object.entries(this.store.all())) {
       if (!entry.autoRestore || live.has(id) || !validSessionId(id) || !id.startsWith("noyau-")) continue;
       try {
-        if (!["codex", "claude", "shell"].includes(entry.assistant)) throw new Error("Assistant invalide.");
+        if (!["codex", "claude", "shell", "antigravity"].includes(entry.assistant)) throw new Error("Assistant invalide.");
         const cwd = path.resolve(entry.cwd || this.workspaceRoot);
         const stat = await fs.stat(cwd);
         if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
@@ -123,6 +126,8 @@ export class TmuxController {
           if (entry.yolo) args.push("--dangerously-skip-permissions");
           args.push(entry.agentSessionId ? "--resume" : "--continue");
           if (entry.agentSessionId) args.push(String(entry.agentSessionId));
+        } else if (entry.assistant === "antigravity") {
+          args.push(this.commands.antigravity, ...this.antigravityArgs);
         }
         await this.run(args);
         live.add(id);
@@ -137,7 +142,7 @@ export class TmuxController {
   }
 
   async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, profileId = null, shared = false, favorite = false }) {
-    if (!["codex", "claude", "shell"].includes(assistant)) throw new Error("Assistant invalide.");
+    if (!["codex", "claude", "shell", "antigravity"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
     let stat;
     try {
@@ -153,6 +158,7 @@ export class TmuxController {
     const args = ["new-session", "-d", "-s", id, "-c", resolvedCwd, "-e", `NOYAU_SESSION_ID=${id}`];
     if (assistant !== "shell") {
       args.push(this.commands[assistant]);
+      if (assistant === "antigravity") args.push(...this.antigravityArgs);
       if (assistant === "codex") {
         args.push("--no-alt-screen");
         if (unrestricted) args.push("--yolo");
@@ -212,10 +218,12 @@ export class TmuxController {
   }
 
   async restartAgent({ id, assistant, cwd, threadId, yolo = false }) {
-    if (!validSessionId(id) || !["codex", "claude", "shell"].includes(assistant)) throw new Error("Agent invalide pour redémarrage.");
+    if (!validSessionId(id) || !["codex", "claude", "shell", "antigravity"].includes(assistant)) throw new Error("Agent invalide pour redémarrage.");
     const workingDirectory = path.resolve(cwd || this.workspaceRoot);
     // Un terminal n'a pas de conversation a reprendre: on relance simplement le shell.
     if (assistant === "shell") return this.run(["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory]);
+    // Antigravity: pas de reprise documentee, on relance l'agent tel quel.
+    if (assistant === "antigravity") return this.run(["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands.antigravity, ...this.antigravityArgs]);
     const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands[assistant]];
     if (assistant === "codex") {
       args.push("--no-alt-screen");

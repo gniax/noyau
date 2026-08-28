@@ -158,12 +158,22 @@ const enableBanking = new EnableBankingService({ store: bankingStore, finance: f
 financeService.setAggregatorConfigured(enableBanking.configured());
 const codexBinary = process.env.CODEX_BIN || (await commandPath("codex"));
 const claudeBinary = process.env.CLAUDE_BIN || (await commandPath("claude"));
+const antigravityBinary = process.env.ANTIGRAVITY_BIN || (await commandPath("antigravity"));
 const tmux = new TmuxController({
   store,
   workspaceRoot,
   codexBinary,
   claudeBinary,
+  antigravityBinary,
+  antigravityArgs: (process.env.NOYAU_ANTIGRAVITY_ARGS || "").split(" ").filter(Boolean),
 });
+// `which` renvoie un chemin absolu quand l'outil est installe, sinon le nom brut.
+const installedAssistants = {
+  codex: path.isAbsolute(codexBinary),
+  claude: path.isAbsolute(claudeBinary),
+  antigravity: path.isAbsolute(antigravityBinary),
+  shell: true,
+};
 const restorePlan = await tmux.initializeRestorePlan();
 const restoreResult = await tmux.restorePersisted();
 if (restorePlan.migrated || restoreResult.restored.length || restoreResult.failed.length) {
@@ -1271,6 +1281,7 @@ app.get("/api/sessions", async (request, response, next) => {
     const codexQuota = [...codexWindows.values()].sort((left, right) => (left.windowMinutes || 0) - (right.windowMinutes || 0));
     if (codexQuota.length) await providerState.set("codex", { windows: codexQuota, updatedAt: new Date().toISOString() });
     response.json({
+      assistants: installedAssistants,
       sessions: enriched,
       quotas: {
         codex: codexQuota.length ? refreshExpiredQuota({ remainingPercent: codexQuota[0].remainingPercent, resetsAt: codexQuota[0].resetsAt, windowMinutes: codexQuota[0].windowMinutes, windows: codexQuota }) : null,
@@ -1285,6 +1296,7 @@ app.get("/api/sessions", async (request, response, next) => {
 app.post("/api/sessions", async (request, response, next) => {
   try {
     if (request.body?.projectId && !projectVisible(request.profile.id, request.body.projectId)) throw new Error("Projet introuvable.");
+    if (installedAssistants[request.body?.assistant] === false) throw new Error("Antigravity n'est pas installé sur ce PC. Installe-le, puis redémarre Noyau (ou renseigne ANTIGRAVITY_BIN).");
     const project = request.body?.projectId ? projects.get(request.body.projectId) : null;
     const shared = request.body?.shared === undefined ? Boolean(project?.shared) : Boolean(request.body.shared);
     response.status(201).json({ session: await tmux.create({ ...(request.body || {}), profileId: request.profile.id, shared }) });
@@ -1355,7 +1367,7 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
 // Logo de l'agent pour la notification: le navigateur le charge en same-origin avec le cookie.
 // Icone de notification: logo du projet si on en trouve un, sinon l'icone de l'agent lui-meme.
 function assistantIcon(assistant) {
-  return ["codex", "claude", "shell"].includes(assistant) ? `/agents/${assistant}.png` : null;
+  return ["codex", "claude", "shell", "antigravity"].includes(assistant) ? `/agents/${assistant}.png` : null;
 }
 
 async function notificationIcon(sessionId) {

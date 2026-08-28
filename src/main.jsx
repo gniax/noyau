@@ -10,6 +10,7 @@ import "./theme-castle.css";
 const assistantMeta = {
   codex: { label: "Codex", glyph: "C", color: "green" },
   claude: { label: "Claude", glyph: "A", color: "orange" },
+  antigravity: { label: "Antigravity", glyph: "G", color: "violet" },
   shell: { label: "Terminal", glyph: ">_", color: "blue" },
 };
 
@@ -1550,6 +1551,25 @@ function todoDueLabel(value) {
   return `Pour le ${value.split("-").reverse().join("/")}`;
 }
 
+async function writeClipboard(text) {
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch { /* on retombe sur la methode historique */ }
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+  document.body.appendChild(area);
+  area.select();
+  area.setSelectionRange(0, text.length);
+  const copied = document.execCommand("copy");
+  area.remove();
+  return copied;
+}
+
 function completedLabel(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -2198,6 +2218,18 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       event.preventDefault();
       send(event.key);
     };
+    const copyShortcut = (event) => {
+      const wantsCopy = (event.metaKey && event.key.toLowerCase() === "c") || (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "c");
+      if (!wantsCopy || !terminalRef.current?.hasSelection?.()) return;
+      event.preventDefault();
+      copyTerminal();
+    };
+    const nativeCopy = (event) => {
+      const selection = terminalRef.current?.getSelection?.();
+      if (!selection || !event.clipboardData) return;
+      event.clipboardData.setData("text/plain", selection);
+      event.preventDefault();
+    };
     const capturePaste = (event) => {
       if (!captureMode || editableTarget(event.target)) return;
       const text = event.clipboardData?.getData("text");
@@ -2205,6 +2237,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       event.preventDefault();
       send(text);
     };
+    window.addEventListener("keydown", copyShortcut);
+    window.addEventListener("copy", nativeCopy);
     window.addEventListener("keydown", captureKey);
     window.addEventListener("paste", capturePaste);
     const handleMessage = (event) => {
@@ -2263,6 +2297,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       terminalNode.current?.removeEventListener("touchend", touchEnd, true);
       terminalNode.current?.removeEventListener("touchcancel", cancelTouchScroll, true);
       terminalNode.current?.removeEventListener("click", openKeyboard);
+      window.removeEventListener("keydown", copyShortcut);
+      window.removeEventListener("copy", nativeCopy);
       window.removeEventListener("keydown", captureKey);
       window.removeEventListener("paste", capturePaste);
       inputDisposable.dispose();
@@ -2402,12 +2438,15 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
 
   async function pasteClipboard() {
     try {
+      if (!window.isSecureContext || !navigator.clipboard?.readText) throw new Error("insecure");
       const data = await navigator.clipboard.readText();
       if (!data) throw new Error("Presse-papiers vide.");
       sendKeyboardData(data);
     } catch (error) {
-      focusKeyboard();
-      window.alert(error.message === "Presse-papiers vide." ? error.message : "Accès presse-papiers refusé. Touche zone terminal puis utilise Coller du clavier iOS.");
+      if (error.message === "Presse-papiers vide.") return window.alert(error.message);
+      // Sans contexte securise, la lecture du presse-papiers est interdite: saisie manuelle.
+      const manual = window.prompt("Colle ici le texte à envoyer à l\'agent (Cmd+V) :", "");
+      if (manual) sendKeyboardData(manual);
     }
   }
 
@@ -2424,7 +2463,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         content = lines.join("\n").trimEnd();
       }
       if (!content) throw new Error("Terminal vide.");
-      await navigator.clipboard.writeText(content);
+      if (!await writeClipboard(content)) throw new Error("Copie refusée par le navigateur.");
     } catch (error) {
       window.alert(error.message || "Copie presse-papiers refusée.");
     }
@@ -2545,7 +2584,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   );
 }
 
-function NewSessionModal({ projects, sessions, onClose, onCreated }) {
+function NewSessionModal({ projects, sessions, assistants, onClose, onCreated }) {
   const [assistant, setAssistant] = useState("codex");
   const [name, setName] = useState("");
   const [yolo, setYolo] = useState(false);
@@ -2577,7 +2616,14 @@ function NewSessionModal({ projects, sessions, onClose, onCreated }) {
         <form onSubmit={submit}>
           <label>Type</label>
           <div className="assistant-choice">
-            {Object.entries(assistantMeta).map(([id, meta]) => <button type="button" className={assistant === id ? "selected" : ""} onClick={() => setAssistant(id)} key={id}><AgentIcon assistant={id} /><span>{meta.label}</span></button>)}
+            {Object.entries(assistantMeta).map(([id, meta]) => {
+              const missing = assistants?.[id] === false;
+              return (
+                <button type="button" className={`${assistant === id ? "selected" : ""} ${missing ? "missing" : ""}`} onClick={() => setAssistant(id)} disabled={missing} title={missing ? `${meta.label} n'est pas installé sur ce PC` : meta.label} key={id}>
+                  <AgentIcon assistant={id} /><span>{meta.label}{missing ? " · absent" : ""}</span>
+                </button>
+              );
+            })}
           </div>
           <label htmlFor="name">Nom</label>
           <input id="name" value={name} onChange={(event) => setName(event.target.value)} placeholder={`Ex. ${assistant === "shell" ? "Serveur local" : "Refonte dashboard"}`} />
@@ -2587,7 +2633,7 @@ function NewSessionModal({ projects, sessions, onClose, onCreated }) {
           <input id="cwd" list="agent-directories" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="/home/user/projects/mon-projet" autoComplete="off" spellCheck="false" />
           <datalist id="agent-directories">{[...new Set(sessions.map((session) => session.cwd).filter(Boolean))].map((directory) => <option value={directory} key={directory} />)}</datalist>
           <p className="form-hint">Chemin existant sur ce PC. Vide = dossier projets par défaut. Projet sert seulement au classement.</p>
-          {assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{assistant === "codex" ? "Codex --yolo" : "Claude --dangerously-skip-permissions"}</small></span></label>}
+          {["codex", "claude"].includes(assistant) && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{assistant === "codex" ? "Codex --yolo" : "Claude --dangerously-skip-permissions"}</small></span></label>}
           <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Cherche logo/icon dans dossier projet</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
           {error && <p className="form-error">{error}</p>}
@@ -2731,6 +2777,7 @@ function App() {
   const [modules, setModules] = useState([]);
   const [moduleProposals, setModuleProposals] = useState([]);
   const [quotas, setQuotas] = useState({ codex: null, claude: null });
+  const [assistants, setAssistants] = useState(null);
   const [activeId, setActiveId] = useState(() => new URLSearchParams(location.search).get("session"));
   const [view, setView] = useState(() => ["projects", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
   const [modal, setModal] = useState(false);
@@ -2749,8 +2796,9 @@ function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [{ sessions: nextSessions, quotas: nextQuotas }, { projects: nextProjects }, nextModules] = await Promise.all([api("/api/sessions"), api("/api/projects"), api("/api/modules")]);
+      const [{ sessions: nextSessions, quotas: nextQuotas, assistants: nextAssistants }, { projects: nextProjects }, nextModules] = await Promise.all([api("/api/sessions"), api("/api/projects"), api("/api/modules")]);
       setSessions(nextSessions);
+      setAssistants(nextAssistants || null);
       setQuotas(nextQuotas || { codex: null, claude: null });
       setProjects(nextProjects);
       setModules(nextModules.modules || []);
@@ -3103,7 +3151,7 @@ function App() {
         )}
         </ViewBoundary>
       </main>
-      {modal && <NewSessionModal projects={projects} sessions={orderedSessions} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); setActiveId(session.id); refresh(); }} />}
+      {modal && <NewSessionModal projects={projects} sessions={orderedSessions} assistants={assistants} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); setActiveId(session.id); refresh(); }} />}
       {editingSession && <EditSessionModal session={editingSession} projects={projects} onClose={() => setEditingId(null)} onSaved={(next, meta) => { setEditingId(null); if (meta?.switched && next?.id) { if (activeId === editingSession.id) setActiveId(next.id); } refresh(); }} />}
       {projectModalId && <ProjectModal project={editingProject} onClose={() => setProjectModalId(null)} onSaved={() => { setProjectModalId(null); refresh(); }} />}
     </div>
