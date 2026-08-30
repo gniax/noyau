@@ -330,3 +330,35 @@ test("Codex categorization saves completed batches before failure", async () => 
   await service.categorizeTransactions();
   assert.equal(service.transactions().filter(({ categorySource }) => categorySource === "codex").length, 21);
 });
+
+test("un virement interne sans contrepartie visible alimente le seul actif liquide", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-01T12:00:00Z") });
+  await service.addModule({ moduleType: "asset", name: "LEP", amount: 1000, bucket: "liquid" });
+  await service.addModule({ moduleType: "transfer", name: "Transferts internes", transactionMatch: "VIR SEPA MR DUPONT JEAN" });
+  await service.importTransactions([
+    { kind: "expense", amount: 400, date: "2026-08-10", description: "VIR SEPA MR DUPONT JEAN", account: "Compte courant", source: "enable-banking", sourceAccount: "courant", externalId: "t1" },
+    { kind: "expense", amount: 150, date: "2026-08-12", description: "VIR SEPA MR DUPONT JEAN", account: "Compte courant", source: "enable-banking", sourceAccount: "courant", externalId: "t2" },
+    { kind: "income", amount: 150, date: "2026-08-12", description: "VIR SEPA MR DUPONT JEAN", account: "Livret partagé", source: "enable-banking", sourceAccount: "livret", externalId: "t3" },
+  ]);
+
+  const { summary } = service.payload("2026-08");
+  const lep = summary.assets.entries.find(({ name }) => name === "LEP");
+  // Les 400 EUR partent hors perimetre, les 150 EUR font l'aller-retour entre deux comptes suivis.
+  assert.equal(lep.contributions, 400);
+  assert.equal(lep.amount, 1400);
+});
+
+test("un choix explicite prime sur la detection automatique", async () => {
+  const service = new FinanceService({ store: new MemoryStore(), now: () => new Date("2026-08-01T12:00:00Z") });
+  const asset = await service.addModule({ moduleType: "asset", name: "LEP", amount: 1000, bucket: "liquid" });
+  await service.addModule({ moduleType: "transfer", name: "Transferts internes", transactionMatch: "VIR SEPA MR DUPONT JEAN" });
+  await service.importTransactions([{ kind: "expense", amount: 400, date: "2026-08-10", description: "VIR SEPA MR DUPONT JEAN", account: "Compte courant", source: "enable-banking", sourceAccount: "courant", externalId: "t1" }]);
+
+  const before = service.payload("2026-08");
+  const transfer = before.transactions.find(({ amount }) => amount === -400);
+  assert.equal(transfer.assetAuto, asset.id);
+
+  await service.assignTransactionAsset(transfer.id, null);
+  const after = service.payload("2026-08");
+  assert.equal(after.summary.assets.entries.find(({ name }) => name === "LEP").contributions, 0);
+});

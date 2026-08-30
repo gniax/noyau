@@ -1435,10 +1435,10 @@ function FinanceTransactionsView({ onView }) {
         <span><strong>{item.description}</strong><small title={item.categoryReason || ""}>{operationDate(item)} · {item.account} · {item.excluded ? exclusionLabel(item.exclusionReason) : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}{item.categorySource === "codex" ? ` · Codex: ${item.categoryReason}` : ""}</small></span>
         <b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b>
         <button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button>
-        {(item.excluded || item.assetId) && assetModules.length > 0 && (
+        {(item.excluded || item.assetId || item.assetAuto) && assetModules.length > 0 && (
           <label className="transaction-asset">
-            <span>Versé sur</span>
-            <select value={item.assetId || ""} onChange={(event) => assignAsset(item.id, event.target.value)} aria-label="Rattacher à un actif">
+            <span>{item.assetAuto && !item.assetId ? "Épargne détectée" : "Versé sur"}</span>
+            <select value={item.assetId || item.assetAuto || ""} onChange={(event) => assignAsset(item.id, event.target.value)} aria-label="Rattacher à un actif">
               <option value="">Aucun actif</option>
               {assetModules.map((module) => <option value={module.id} key={module.id}>{module.name}</option>)}
             </select>

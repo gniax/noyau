@@ -98,6 +98,31 @@ function normalized(value) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function dayGap(left, right) {
+  return Math.abs((new Date(`${left}T00:00:00Z`) - new Date(`${right}T00:00:00Z`)) / 86_400_000);
+}
+
+// Un virement interne dont on voit la contrepartie reste entre comptes suivis; sans contrepartie,
+// l'argent a quitte le perimetre visible: il est parti sur l'epargne non agregee.
+function hasVisibleCounterpart(transaction, items) {
+  return items.some((other) => other.id !== transaction.id
+    && Math.abs(other.amount + transaction.amount) < 0.01
+    && dayGap(other.date, transaction.date) <= 4
+    && (!transaction.account || !other.account || other.account !== transaction.account));
+}
+
+function autoSavingsAsset(modules) {
+  const liquid = modules.filter(({ moduleType, enabled, bucket }) => moduleType === "asset" && enabled !== false && bucket !== "invested");
+  return liquid.length === 1 ? liquid[0].id : null;
+}
+
+function orphanTransfers(items, classifications) {
+  return items.filter((transaction) => classifications.get(transaction.id) === "transfert-interne"
+    && !transaction.assetPinned
+    && !transaction.assetId
+    && !hasVisibleCounterpart(transaction, items));
+}
+
 function matchTerms(value) {
   return String(value || "").split(/[\n,;|]+/).map(normalized).filter(Boolean);
 }
@@ -381,7 +406,7 @@ export class FinanceService {
         ...common,
         amount,
         // Repere de depart: les versements posterieurs viennent s'ajouter au montant saisi.
-        amountUpdatedAt: amount === existing?.amount ? existing?.amountUpdatedAt || existing?.createdAt || common.createdAt : new Date().toISOString(),
+        amountUpdatedAt: amount === existing?.amount ? existing?.amountUpdatedAt || existing?.createdAt || common.createdAt : this.now().toISOString(),
         bucket: ["liquid", "invested"].includes(input.bucket ?? existing?.bucket) ? input.bucket ?? existing.bucket : "liquid",
         institution: String(input.institution ?? existing?.institution ?? "").trim().slice(0, 80),
         transactionMatch: String(input.transactionMatch ?? existing?.transactionMatch ?? "").trim().slice(0, 240),
@@ -589,7 +614,8 @@ export class FinanceService {
     if (!/^transaction-[a-z0-9-]+$/.test(id) || !transaction) throw new Error("Opération introuvable.");
     const asset = assetId ? this.store.get(assetId) : null;
     if (assetId && asset?.moduleType !== "asset") throw new Error("Actif introuvable.");
-    await this.store.set(id, { ...transaction, assetId: assetId || null });
+    // Choix explicite: il fige l'operation, y compris "aucun actif", face a l'attribution automatique.
+    await this.store.set(id, { ...transaction, assetId: assetId || null, assetPinned: true });
     return { id, ...this.store.get(id) };
   }
 
@@ -837,6 +863,10 @@ export class FinanceService {
     const dataConfidence = history.length >= 3 ? "high" : history.length >= 2 ? "medium" : "low";
     const essentialBase = round([...ESSENTIAL_CATEGORY_IDS].reduce((total, id) => total + Math.max(settings.budgets[id], categoryPlans[id].historicalAverage, spentByCategory[id]), 0));
     const emergencyTarget = round(essentialBase * settings.emergencyMonths);
+    // Sans compte d'epargne agrege, un seul actif liquide suffit a savoir ou vont les virements
+    // internes sans contrepartie visible: on les lui attribue, quel que soit le profil.
+    const autoAssetId = autoSavingsAsset(modules);
+    const orphanInternalTransfers = orphanTransfers(allTransactions, classifications);
     // Un actif suit les versements qui lui correspondent: un virement vers le LEP le fait monter.
     const assetEntries = modules
       .filter(({ moduleType, enabled }) => moduleType === "asset" && enabled !== false)
@@ -854,12 +884,17 @@ export class FinanceService {
             .filter((transaction) => !transaction.assetId && (!since || transaction.date > since) && matchers.some((matcher) => normalized(transaction.description).includes(matcher)))
             .reduce((total, transaction) => total - transaction.amount, 0))
           : 0;
-        const contributions = round(assigned + matched);
+        const automatic = id === autoAssetId
+          ? round(orphanInternalTransfers
+            .filter((transaction) => (!since || transaction.date > since) && !matchers.some((matcher) => normalized(transaction.description).includes(matcher)))
+            .reduce((total, transaction) => total - transaction.amount, 0))
+          : 0;
+        const contributions = round(assigned + matched + automatic);
         return { id, name, institution, bucket, baseAmount: amount, contributions, amount: round(amount + contributions) };
       });
     const unassignedSavings = round(allTransactions
-      .filter((transaction) => transaction.date.startsWith(selectedMonth) && transaction.exclusionReason === "placement" && transaction.amount < 0)
-      .filter((transaction) => !transaction.assetId)
+      .filter((transaction) => transaction.date.startsWith(selectedMonth) && classifications.get(transaction.id) === "placement" && transaction.amount < 0)
+      .filter((transaction) => !transaction.assetId && !(autoAssetId && orphanInternalTransfers.some(({ id }) => id === transaction.id)))
       .filter((transaction) => !assetEntries.some((asset) => {
         const terms = matchTerms(modules.find(({ id }) => id === asset.id)?.transactionMatch);
         const matchers = terms.length ? terms : [normalized(asset.name)];
@@ -1024,12 +1059,17 @@ export class FinanceService {
     const modules = this.modules();
     const allTransactions = applyCategoryModules(this.transactions(), modules);
     const classifications = classifyTransactions(allTransactions, modules);
+    const autoAssetId = autoSavingsAsset(modules);
+    const orphanInternalTransfers = orphanTransfers(allTransactions, classifications);
     return {
       settings: this.settings(),
       summary: this.summary(selectedMonth),
-      transactions: allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth)).map((transaction) => classifications.has(transaction.id)
-        ? { ...transaction, excluded: true, exclusionReason: classifications.get(transaction.id) }
-        : transaction),
+      transactions: allTransactions.filter((transaction) => transaction.date.startsWith(selectedMonth)).map((transaction) => {
+        const assetAuto = autoAssetId && orphanInternalTransfers.some(({ id }) => id === transaction.id) ? autoAssetId : null;
+        return classifications.has(transaction.id)
+          ? { ...transaction, assetAuto, excluded: true, exclusionReason: classifications.get(transaction.id) }
+          : { ...transaction, assetAuto };
+      }),
       categories: FINANCE_CATEGORIES,
       modules: this.modules(),
       recurring: this.recurring(),
