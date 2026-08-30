@@ -6,6 +6,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 import "./theme-castle.css";
+import { shouldCopyTerminal } from "./terminal-shortcuts.js";
 
 const assistantMeta = {
   codex: { label: "Codex", glyph: "C", color: "green" },
@@ -2406,10 +2407,11 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
     };
     const inField = (node) => node instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName) || node.isContentEditable);
     const copyShortcut = (event) => {
-      const wantsCopy = (event.metaKey && event.key.toLowerCase() === "c") || (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "c");
-      if (!wantsCopy || inField(event.target) || !window.getSelection()?.isCollapsed || !terminalRef.current?.hasSelection?.()) return;
+      const selection = terminalRef.current?.getSelection?.() || "";
+      if (!shouldCopyTerminal({ event, targetInField: inField(event.target), browserSelectionCollapsed: window.getSelection()?.isCollapsed !== false, terminalSelection: selection })) return;
       event.preventDefault();
-      copyTerminal();
+      event.stopPropagation();
+      void copyTerminal();
     };
     const nativeCopy = (event) => {
       // Une copie faite dans un champ ou dans le panneau texte appartient au navigateur.
@@ -2448,7 +2450,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       event.preventDefault();
       send(text);
     };
-    window.addEventListener("keydown", copyShortcut);
+    window.addEventListener("keydown", copyShortcut, true);
     window.addEventListener("copy", nativeCopy);
     window.addEventListener("keydown", captureKey);
     window.addEventListener("paste", capturePaste);
@@ -2525,7 +2527,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       terminalNode.current?.removeEventListener("touchcancel", cancelTouchScroll, true);
       terminalNode.current?.removeEventListener("click", openKeyboard);
       terminalNode.current?.removeEventListener("wheel", wheelScroll, true);
-      window.removeEventListener("keydown", copyShortcut);
+      window.removeEventListener("keydown", copyShortcut, true);
       window.removeEventListener("copy", nativeCopy);
       window.removeEventListener("keydown", captureKey);
       window.removeEventListener("paste", capturePaste);
