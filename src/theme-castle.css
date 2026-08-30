@@ -22,17 +22,13 @@
 :root[data-theme="aurora"] body::before {
   content: "";
   position: fixed;
-  inset: -25%;
-  width: 150%;
-  height: 150%;
+  inset: -6%;
   z-index: 0;
   pointer-events: none;
-  background:
-    radial-gradient(ellipse 750px 600px at 80% 88%, rgba(225, 176, 71, 0.16) 0%, transparent 62%),
-    radial-gradient(ellipse 700px 550px at 15% 15%, rgba(111, 159, 196, 0.14) 0%, transparent 62%),
-    radial-gradient(ellipse 600px 480px at 85% 20%, rgba(232, 160, 180, 0.12) 0%, transparent 58%),
-    radial-gradient(ellipse 650px 500px at 20% 80%, rgba(155, 142, 196, 0.12) 0%, transparent 58%);
-  animation: castle-aurora-drift 22s ease-in-out infinite alternate;
+  background: url("/backgrounds/guest-castle-4k.webp") 55% center / cover no-repeat;
+  filter: saturate(.92) brightness(.72) contrast(1.05);
+  opacity: .86;
+  animation: castle-wallpaper-drift 30s ease-in-out infinite alternate;
   will-change: transform;
 }
 
@@ -42,29 +38,21 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background-image:
-    radial-gradient(2px 2px at 12% 18%, rgba(244, 230, 195, 0.8) 50%, transparent 51%),
-    radial-gradient(2.5px 2.5px at 78% 10%, rgba(225, 176, 71, 0.75) 50%, transparent 51%),
-    radial-gradient(2px 2px at 38% 30%, rgba(232, 160, 180, 0.7) 50%, transparent 51%),
-    radial-gradient(3px 3px at 88% 38%, rgba(244, 230, 195, 0.85) 50%, transparent 51%),
-    radial-gradient(2px 2px at 62% 62%, rgba(225, 176, 71, 0.7) 50%, transparent 51%),
-    radial-gradient(2.5px 2.5px at 18% 75%, rgba(244, 230, 195, 0.75) 50%, transparent 51%),
-    radial-gradient(2px 2px at 90% 82%, rgba(232, 160, 180, 0.7) 50%, transparent 51%),
-    radial-gradient(2.5px 2.5px at 45% 88%, rgba(225, 176, 71, 0.75) 50%, transparent 51%);
-  animation: castle-stardust-twinkle 5s ease-in-out infinite alternate;
-  opacity: 0.9;
+  background:
+    radial-gradient(circle at 72% 44%, transparent 0 12%, rgba(7, 9, 16, .08) 42%, rgba(7, 9, 16, .34) 100%),
+    linear-gradient(180deg, rgba(7, 9, 16, .12), rgba(7, 9, 16, .3));
+  animation: castle-wallpaper-light 9s ease-in-out infinite alternate;
 }
 
-@keyframes castle-aurora-drift {
-  0% { transform: translate3d(0, 0, 0) scale(1) rotate(0deg); }
-  50% { transform: translate3d(-2.5%, 2%, 0) scale(1.03) rotate(1deg); }
-  100% { transform: translate3d(2%, -2.5%, 0) scale(0.98) rotate(-1deg); }
+@keyframes castle-wallpaper-drift {
+  0% { transform: translate3d(-1.5%, 0, 0) scale(1.04); }
+  50% { transform: translate3d(.5%, -1%, 0) scale(1.075); }
+  100% { transform: translate3d(1.5%, .7%, 0) scale(1.055); }
 }
 
-@keyframes castle-stardust-twinkle {
-  0% { opacity: 0.45; transform: translateY(0); }
-  50% { opacity: 0.85; transform: translateY(-5px); }
-  100% { opacity: 0.55; transform: translateY(-10px); }
+@keyframes castle-wallpaper-light {
+  0% { opacity: .78; }
+  100% { opacity: 1; }
 }
 
 :root[data-theme="aurora"] h1,
@@ -116,19 +104,19 @@
 :root[data-theme="aurora"] .projects-grid > article {
   border-radius: 16px;
   border-color: #e1b04726;
-  background: rgba(17, 21, 31, 0.82);
+  background: rgba(17, 21, 31, 0.68);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 18px 44px #05060c66, inset 0 1px 0 #ffffff08;
 }
 :root[data-theme="aurora"] .sidebar {
   border-right-color: #e1b04722;
-  background: linear-gradient(180deg, rgba(22, 26, 38, 0.88) 0%, rgba(16, 19, 28, 0.88) 100%);
+  background: linear-gradient(180deg, rgba(22, 26, 38, 0.76) 0%, rgba(16, 19, 28, 0.72) 100%);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
 :root[data-theme="aurora"] .topbar {
-  background: rgba(15, 17, 25, 0.85);
+  background: rgba(15, 17, 25, 0.7);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
 }
@@ -159,6 +147,7 @@
 }
 
 @media (max-width: 900px) {
+  :root[data-theme="aurora"] body::before { background-position: 69% center; }
   :root[data-theme="aurora"] .brand span { font-size: 19px; }
   :root[data-theme="aurora"] .hero-row h1 { font-size: 34px; }
 }
