@@ -755,6 +755,15 @@ app.post("/api/finance/transactions", async (request, response, next) => {
   }
 });
 
+app.patch("/api/finance/transactions/:id", async (request, response, next) => {
+  try {
+    await request.profileRuntime.financeService.assignTransactionAsset(request.params.id, request.body?.assetId || null);
+    response.json({ finance: financePayload(request.profile.id, request.body?.month || currentMonthParis()) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/finance/transactions/categorize", async (request, response, next) => {
   try {
     const month = request.body?.all ? null : request.body?.month || currentMonthParis();

@@ -1349,3 +1349,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .snapshot-link .ghost { padding: 6px 10px; font-size: 10px; text-decoration: none; text-align: center; }
 .snapshot-text { width: 100%; height: min(48vh, 420px); resize: vertical; padding: 12px; border: 1px solid var(--c-2b332e); border-radius: 8px; background: var(--c-090c0b); color: var(--c-dbe3dd); font: 12px/1.5 ui-monospace, monospace; white-space: pre; overflow: auto; }
 .terminal-controls .text-key { color: var(--c-aab3ad); }
+.transaction-asset { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.transaction-asset span { color: var(--c-68756d); font-size: 9px; }
+.transaction-asset select { height: 30px; padding: 0 8px; border: 1px solid var(--c-303a34); border-radius: 6px; background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 10px; }

@@ -583,6 +583,16 @@ export class FinanceService {
     return { id, ...transaction };
   }
 
+  // Rattachement explicite d'un virement a un actif: le libelle bancaire ne dit pas ou va l'argent.
+  async assignTransactionAsset(id, assetId) {
+    const transaction = this.store.get(id);
+    if (!/^transaction-[a-z0-9-]+$/.test(id) || !transaction) throw new Error("Opération introuvable.");
+    const asset = assetId ? this.store.get(assetId) : null;
+    if (assetId && asset?.moduleType !== "asset") throw new Error("Actif introuvable.");
+    await this.store.set(id, { ...transaction, assetId: assetId || null });
+    return { id, ...this.store.get(id) };
+  }
+
   async removeTransaction(id) {
     if (!/^transaction-[a-z0-9-]+$/.test(id) || !this.store.get(id)) throw new Error("Opération introuvable.");
     await this.store.remove(id);
@@ -836,15 +846,20 @@ export class FinanceService {
         const fallback = normalized(name);
         const matchers = terms.length ? terms : fallback.length >= 3 ? [fallback] : [];
         const since = String(module.amountUpdatedAt || module.createdAt || "").slice(0, 10);
-        const contributions = matchers.length
+        const assigned = round(allTransactions
+          .filter((transaction) => transaction.assetId === id)
+          .reduce((total, transaction) => total - transaction.amount, 0));
+        const matched = matchers.length
           ? round(allTransactions
-            .filter((transaction) => (!since || transaction.date > since) && matchers.some((matcher) => normalized(transaction.description).includes(matcher)))
+            .filter((transaction) => !transaction.assetId && (!since || transaction.date > since) && matchers.some((matcher) => normalized(transaction.description).includes(matcher)))
             .reduce((total, transaction) => total - transaction.amount, 0))
           : 0;
+        const contributions = round(assigned + matched);
         return { id, name, institution, bucket, baseAmount: amount, contributions, amount: round(amount + contributions) };
       });
     const unassignedSavings = round(allTransactions
       .filter((transaction) => transaction.date.startsWith(selectedMonth) && transaction.exclusionReason === "placement" && transaction.amount < 0)
+      .filter((transaction) => !transaction.assetId)
       .filter((transaction) => !assetEntries.some((asset) => {
         const terms = matchTerms(modules.find(({ id }) => id === asset.id)?.transactionMatch);
         const matchers = terms.length ? terms : [normalized(asset.name)];
