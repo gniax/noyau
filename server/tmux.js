@@ -5,6 +5,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+function wait(milliseconds) {
+  return new Promise((resolve) => { setTimeout(resolve, milliseconds); });
+}
 const SESSION_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
 const FORMATS = ["#{session_name}", "#{session_activity}", "#{session_windows}", "#{pane_current_command}", "#{pane_current_path}", "#{pane_pid}"].join("\t");
 
@@ -215,11 +219,14 @@ export class TmuxController {
     }
   }
 
+  // Les interfaces d'agent avalent une entree envoyee dans la foulee du texte: elles la prennent
+  // pour la fin d'un collage. On laisse la saisie se poser avant de valider.
   async submit(id, text) {
     if (!await this.exists(id)) throw new Error("Session introuvable.");
     const data = String(text || "").trim().slice(0, 50_000);
     if (!data) throw new Error("Message vide.");
     await this.run(["send-keys", "-t", id, "-l", data]);
+    await wait(data.length > 200 ? 600 : 350);
     await this.run(["send-keys", "-t", id, "C-m"]);
   }
 

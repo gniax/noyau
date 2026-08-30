@@ -1704,6 +1704,8 @@ sockets.on("connection", (websocket, request) => {
           .then(leaveMobileCopyMode)
           .then(() => setAgentState(request.sessionId, "working"))
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, "-l", data]))
+          // Meme pause que pour une passation: l'agent doit avoir fini d'absorber le texte colle.
+          .then(() => new Promise((resolve) => { setTimeout(resolve, data.length > 200 ? 600 : 350); }))
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, "C-m"]))
           .then(() => websocket.readyState === websocket.OPEN && websocket.send(JSON.stringify({ type: "key-ack", key: "Enter" })))
           .catch(() => {});
