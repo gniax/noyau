@@ -32,5 +32,7 @@ export function agentStatus(session, metadata = {}, promptWaiting = false, now =
     if (storedState === "working" && Number.isFinite(activityAt) && now - activityAt > 30_000) return STATES.available;
     return STATES[storedState];
   }
+  // Ecran lisible sans marqueur de travail: l'agent attend, meme si une phrase est en cours de frappe.
+  if (String(pane || "").trim()) return STATES.available;
   return Number.isFinite(activityAt) && now - activityAt < 15_000 ? STATES.working : STATES.available;
 }

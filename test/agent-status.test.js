@@ -54,3 +54,16 @@ test("Antigravity: le pane suffit a savoir s'il travaille", () => {
   ].join("\n");
   assert.equal(paneAgentState(idle), "available");
 });
+
+test("prompt a moitie tape sans execution: l'agent reste disponible", () => {
+  const pane = [
+    "  Compilation : npx gulp css exécuté avec succès.",
+    "──────",
+    "> tu peux faire",
+    "──────",
+    "                                                     Gemini 3.7 Flash · high",
+  ].join("\n");
+  assert.equal(paneAgentState(pane), null);
+  const session = { assistant: "antigravity", activityAt: new Date().toISOString() };
+  assert.equal(agentStatus(session, {}, false, Date.now(), pane).state, "available");
+});
