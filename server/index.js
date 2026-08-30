@@ -129,11 +129,6 @@ if (!Object.values(store.all()).some((session) => session.core)) {
   if (coreId) await store.set(coreId, { ...coreSession, core: true, autoRestore: true });
 }
 const claudeQuota = new ClaudeQuotaService({ store: providerState });
-const antigravityQuota = new AntigravityQuotaService({
-  store: providerState,
-  binary: installedAssistants.antigravity ? antigravityBinary : null,
-  cwd: workspaceRoot,
-});
 const push = new PushService({ dataDir, defaultProfileId: primaryProfileId });
 await push.load();
 const todoService = new TodoService({
@@ -210,6 +205,11 @@ const installedAssistants = {
   antigravity: path.isAbsolute(antigravityBinary),
   shell: true,
 };
+const antigravityQuota = new AntigravityQuotaService({
+  store: providerState,
+  binary: installedAssistants.antigravity ? antigravityBinary : null,
+  cwd: workspaceRoot,
+});
 await tmux.applyScrollDefaults();
 const restorePlan = await tmux.initializeRestorePlan();
 const restoreResult = await tmux.restorePersisted();
