@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { resolveTrustPrompt } from "./trust-prompt.js";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -178,6 +179,7 @@ export class TmuxController {
       else if (prompt) args.push(String(prompt).slice(0, 50_000));
     }
     await this.run(args);
+    if (assistant !== "shell") void this.acceptTrustPrompt(id).catch(() => {});
 
     const entry = {
       name: String(name || assistant).trim().slice(0, 60) || assistant,
@@ -221,6 +223,22 @@ export class TmuxController {
 
   // Les interfaces d'agent avalent une entree envoyee dans la foulee du texte: elles la prennent
   // pour la fin d'un collage. On laisse la saisie se poser avant de valider.
+  // Autorisation de dossier au demarrage: on lit le menu et on repond oui, sinon l'agent
+  // reste bloque et le prompt de passation n'est jamais traite.
+  async acceptTrustPrompt(id, { attempts = 20, delay = 700 } = {}) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      await wait(delay);
+      const answer = resolveTrustPrompt(await this.captureVisible(id));
+      if (!answer) continue;
+      for (const key of answer.keys) {
+        await this.run(key.literal ? ["send-keys", "-t", id, "-l", key.literal] : ["send-keys", "-t", id, key.key]);
+        await wait(120);
+      }
+      return answer.label || true;
+    }
+    return null;
+  }
+
   async submit(id, text) {
     if (!await this.exists(id)) throw new Error("Session introuvable.");
     const data = String(text || "").trim().slice(0, 50_000);
@@ -240,7 +258,9 @@ export class TmuxController {
       if (yolo) args.push("--dangerously-skip-permissions");
       if (threadId) args.push("--conversation", String(threadId));
       else args.push("--continue");
-      return this.run(args);
+      await this.run(args);
+      void this.acceptTrustPrompt(id).catch(() => {});
+      return undefined;
     }
     const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands[assistant]];
     if (assistant === "codex") {
@@ -254,6 +274,7 @@ export class TmuxController {
       if (threadId) args.push(String(threadId));
     }
     await this.run(args);
+    void this.acceptTrustPrompt(id).catch(() => {});
   }
 
   async kill(id) {
