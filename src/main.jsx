@@ -3233,6 +3233,12 @@ function App() {
   }, [auth]);
 
   const active = sessions.find((session) => session.id === activeId);
+  // Bascule de fournisseur: l'agent repart sous un nouvel identifiant, on suit le fil sans rien faire.
+  useEffect(() => {
+    if (!activeId || active) return;
+    const replacement = sessions.find((session) => session.migratedFrom === activeId);
+    if (replacement) setActiveId(replacement.id);
+  }, [activeId, active, sessions]);
   const editingSession = sessions.find((session) => session.id === editingId);
   const editingProject = projects.find((project) => project.id === projectModalId);
   const orderedSessions = useMemo(() => sortAgents(sessions), [sessions]);

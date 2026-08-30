@@ -1284,24 +1284,19 @@ app.post("/api/hooks/notify", async (request, response, next) => {
       const sourceSession = store.get(sessionId);
       if (sourceSession && lastMessage) {
         try {
-          const target = await tmux.create({
-            name: `${sourceSession.name} · ${assistantLabel(migration.target)}`,
-            assistant: migration.target,
-            cwd: sourceSession.cwd,
-            migratedFrom: sessionId,
-            yolo: Boolean(sourceSession.yolo),
-            projectLogo: Boolean(sourceSession.projectLogo),
-            projectId: sourceSession.projectId || null,
-            profileId: sourceSession.profileId || primaryProfileId,
-            shared: Boolean(sourceSession.shared),
-            favorite: Boolean(sourceSession.favorite),
+          // L'agent change de fournisseur sur place: meme nom, meme projet, l'ancien s'efface.
+          const target = await spawnHandoverSession({
+            sessionId,
+            session: sourceSession,
+            metadata: sourceSession,
+            target: migration.target,
             prompt: `Tu reprends travail d'un autre agent. Utilise ce récapitulatif comme contexte fiable, vérifie état réel du dépôt avant modification, puis attends prochaine demande utilisateur.\n\nRÉCAPITULATIF DE PASSATION:\n${lastMessage}`,
+            replace: true,
           });
-          await store.set(sessionId, { ...store.get(sessionId), migrationState: "complete", migratedTo: target.id });
           migrations.delete(sessionId);
           payload = {
             title: `Contexte passé à ${assistantLabel(migration.target)}`,
-            body: `${sourceSession.name} prêt dans nouvel agent.`,
+            body: `${sourceSession.name} continue avec ${assistantLabel(migration.target)}.`,
             tag: `migration-${target.id}`,
             url: `/?session=${encodeURIComponent(target.id)}&profile=${encodeURIComponent(sourceSession.profileId || primaryProfileId)}`,
             replyUrl: `/?session=${encodeURIComponent(target.id)}&reply=1&profile=${encodeURIComponent(sourceSession.profileId || primaryProfileId)}`,
