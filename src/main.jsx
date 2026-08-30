@@ -2078,7 +2078,13 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       migrationRef.current = false;
       onMigrated(session.migratedTo);
     }
-  }, [session.migrationState, session.migratedTo, onMigrated]);
+    // Bascule en echec: le selecteur redevient utilisable au lieu de rester bloque.
+    if (session.migrationState === "failed" && migrationRef.current) {
+      migrationRef.current = false;
+      setMigrating(false);
+      if (session.migrationError) window.alert(`Bascule impossible: ${session.migrationError}`);
+    }
+  }, [session.migrationState, session.migratedTo, session.migrationError, onMigrated]);
 
   useEffect(() => {
     const viewport = window.visualViewport;
@@ -2305,20 +2311,21 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       terminalNode.current.addEventListener("touchend", touchEnd, { capture: true, passive: false });
       terminalNode.current.addEventListener("touchcancel", cancelTouchScroll, { capture: true, passive: true });
     }
-    // Interface plein ecran: xterm n'a rien a derouler, on fait defiler le pane tmux lui-meme.
+    // La molette fait toujours defiler l'historique du pane. Sans cela, xterm la traduit en
+    // fleches des qu'une interface occupe l'ecran, et l'agent croit qu'on navigue au clavier.
     let wheelRemainder = 0;
     const wheelScroll = (event) => {
-      const buffer = terminal.buffer.active;
-      if (buffer.length > terminal.rows) return;
       if (socketRef.current?.readyState !== WebSocket.OPEN) return;
       event.preventDefault();
-      wheelRemainder += event.deltaY;
-      const steps = Math.trunc(wheelRemainder / 40);
-      if (!steps) return;
-      wheelRemainder -= steps * 40;
-      socketRef.current.send(JSON.stringify({ type: "scroll", direction: steps < 0 ? "up" : "down", count: Math.min(20, Math.abs(steps)) }));
+      event.stopPropagation();
+      const step = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? terminal.rows * 16 : 40;
+      wheelRemainder += event.deltaY / step;
+      const lines = Math.trunc(wheelRemainder);
+      if (!lines) return;
+      wheelRemainder -= lines;
+      socketRef.current.send(JSON.stringify({ type: "scroll", direction: lines < 0 ? "up" : "down", count: Math.min(20, Math.abs(lines) * 3) }));
     };
-    terminalNode.current.addEventListener("wheel", wheelScroll, { passive: false });
+    terminalNode.current.addEventListener("wheel", wheelScroll, { capture: true, passive: false });
     const openKeyboard = () => focusKeyboard();
     terminalNode.current.addEventListener("click", openKeyboard);
     // Sans clavier virtuel, aucun champ n'est focalise (sinon le clavier du systeme surgit):
@@ -2458,7 +2465,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       terminalNode.current?.removeEventListener("touchend", touchEnd, true);
       terminalNode.current?.removeEventListener("touchcancel", cancelTouchScroll, true);
       terminalNode.current?.removeEventListener("click", openKeyboard);
-      terminalNode.current?.removeEventListener("wheel", wheelScroll);
+      terminalNode.current?.removeEventListener("wheel", wheelScroll, true);
       window.removeEventListener("keydown", copyShortcut);
       window.removeEventListener("copy", nativeCopy);
       window.removeEventListener("keydown", captureKey);

@@ -204,6 +204,7 @@ const installedAssistants = {
   antigravity: path.isAbsolute(antigravityBinary),
   shell: true,
 };
+await tmux.applyScrollDefaults();
 const restorePlan = await tmux.initializeRestorePlan();
 const restoreResult = await tmux.restorePersisted();
 if (restorePlan.migrated || restoreResult.restored.length || restoreResult.failed.length) {
@@ -1282,21 +1283,27 @@ app.post("/api/hooks/notify", async (request, response, next) => {
       const migration = migrations.get(sessionId);
       clearTimeout(migration.timer);
       const sourceSession = store.get(sessionId);
-      if (sourceSession && lastMessage) {
+      if (sourceSession) {
         try {
+          // Quota epuise en cours de route: on repart de l'historique de la conversation
+          // plutot que d'annuler la bascule.
+          const recap = usableRecap(lastMessage);
+          const prompt = recap
+            ? `Tu reprends travail d'un autre agent. Utilise ce récapitulatif comme contexte fiable, vérifie état réel du dépôt avant modification, puis attends prochaine demande utilisateur.\n\nRÉCAPITULATIF DE PASSATION:\n${recap}`
+            : (await handoverPrompt({ session: sourceSession, metadata: sourceSession, target: migration.target })).prompt;
           // L'agent change de fournisseur sur place: meme nom, meme projet, l'ancien s'efface.
           const target = await spawnHandoverSession({
             sessionId,
             session: sourceSession,
             metadata: sourceSession,
             target: migration.target,
-            prompt: `Tu reprends travail d'un autre agent. Utilise ce récapitulatif comme contexte fiable, vérifie état réel du dépôt avant modification, puis attends prochaine demande utilisateur.\n\nRÉCAPITULATIF DE PASSATION:\n${lastMessage}`,
+            prompt,
             replace: true,
           });
           migrations.delete(sessionId);
           payload = {
             title: `Contexte passé à ${assistantLabel(migration.target)}`,
-            body: `${sourceSession.name} continue avec ${assistantLabel(migration.target)}.`,
+            body: `${sourceSession.name} continue avec ${assistantLabel(migration.target)}${usableRecap(lastMessage) ? "" : " · repris depuis l'historique"}.`,
             tag: `migration-${target.id}`,
             url: `/?session=${encodeURIComponent(target.id)}&profile=${encodeURIComponent(sourceSession.profileId || primaryProfileId)}`,
             replyUrl: `/?session=${encodeURIComponent(target.id)}&reply=1&profile=${encodeURIComponent(sourceSession.profileId || primaryProfileId)}`,
@@ -1448,6 +1455,14 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
 // Logo de l'agent pour la notification: le navigateur le charge en same-origin avec le cookie.
 // Icone de notification: logo du projet si on en trouve un, sinon l'icone de l'agent lui-meme.
 const ASSISTANT_LABELS = { codex: "Codex", claude: "Claude", antigravity: "Antigravity", shell: "Terminal" };
+// Un agent a bout de quota repond son message de limite au lieu du recapitulatif demande.
+const QUOTA_REPLY = /usage limit|limite d'utilisation|rate limit|quota (atteint|exceeded|depasse|dépassé)|try again (at|in)|upgrade to pro|plan limit|out of credits/i;
+
+function usableRecap(message) {
+  const text = String(message || "").trim();
+  if (text.length < 40 || QUOTA_REPLY.test(text)) return null;
+  return text;
+}
 
 function assistantLabel(assistant) {
   return ASSISTANT_LABELS[assistant] || assistant;

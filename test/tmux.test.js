@@ -30,15 +30,18 @@ test("missing tmux socket is an empty session list", async () => {
 test("unrestricted mode uses agent-specific CLI flag", async () => {
   const saved = [];
   const controller = new TmuxController({ store: { set: async (_id, value) => saved.push(value) }, workspaceRoot: os.tmpdir() });
-  let command = null;
-  controller.run = async (args) => { command = args; return { stdout: "" }; };
+  const commands = [];
+  controller.run = async (args) => { commands.push(args); return { stdout: "" }; };
+  const lastCreation = () => commands.filter((args) => args.includes("new-session")).at(-1);
   await controller.create({ assistant: "codex", cwd: os.tmpdir(), yolo: true });
-  assert.deepEqual(command.slice(command.indexOf("codex")), ["codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false"]);
+  const codexCommand = lastCreation();
+  assert.deepEqual(codexCommand.slice(codexCommand.indexOf("codex")), ["codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false"]);
   assert.equal(saved[0].runningYolo, true);
   assert.equal(saved[0].autoRestore, true);
 
   await controller.create({ assistant: "claude", cwd: os.tmpdir(), yolo: true });
-  assert.deepEqual(command.slice(command.indexOf("claude")), ["claude", "--dangerously-skip-permissions"]);
+  const claudeCommand = lastCreation();
+  assert.deepEqual(claudeCommand.slice(claudeCommand.indexOf("claude")), ["claude", "--dangerously-skip-permissions"]);
 });
 
 test("new agent rejects missing working directory", async () => {

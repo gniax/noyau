@@ -44,6 +44,13 @@ export class TmuxController {
     return execFileAsync(this.binary, args, { maxBuffer: 1024 * 1024 });
   }
 
+  // La molette ne doit jamais devenir des fleches, et l'historique doit valoir la peine d'etre deroule.
+  async applyScrollDefaults() {
+    for (const option of [["alternate-scroll", "off"], ["history-limit", "20000"]]) {
+      await this.run(["set-option", "-g", ...option]).catch(() => {});
+    }
+  }
+
   async list() {
     let stdout = "";
     try {
@@ -71,6 +78,7 @@ export class TmuxController {
           activityAt: new Date(Number(activity) * 1000).toISOString(),
           createdAt: stored?.createdAt || null,
           migrationState: stored?.migrationState || null,
+          migrationError: stored?.migrationError || null,
           migrationTarget: stored?.migrationTarget || null,
           migratedTo: stored?.migratedTo || null,
           migratedFrom: stored?.migratedFrom || null,
@@ -179,6 +187,7 @@ export class TmuxController {
       else if (prompt) args.push(String(prompt).slice(0, 50_000));
     }
     await this.run(args);
+    await this.applyScrollDefaults();
     if (assistant !== "shell") void this.acceptTrustPrompt(id).catch(() => {});
 
     const entry = {
