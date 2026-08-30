@@ -30,6 +30,7 @@ import { EnableBankingService } from "./enable-banking.js";
 import { agentStatus } from "./agent-status.js";
 import { ROOT_FOLDER, TodoService } from "./todo-service.js";
 import { ProfileService } from "./profile-service.js";
+import { QuotaNotifier } from "./quota-notifier.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -284,6 +285,12 @@ const promptWatcher = new PromptWatcher({
   push,
   sessionLabel: (session) => (session.projectId ? projects.get(session.projectId)?.name : null) || session.name,
   sessionIcon: (sessionId) => notificationIcon(sessionId),
+});
+const quotaNotifier = new QuotaNotifier({
+  push,
+  providerState,
+  profileService,
+  activeDevice: (profileId) => activeDevice(profileId),
 });
 const fileUpload = multer({
   storage: multer.memoryStorage(),
@@ -894,6 +901,7 @@ app.post("/api/quotas/refresh", async (_request, response, next) => {
       usage.latestCodexRateWindows().catch(() => []),
     ]);
     if (codexWindows.length) await providerState.set("codex", { windows: codexWindows, updatedAt: new Date().toISOString() });
+    void quotaNotifier.check().catch(() => {});
     const codex = providerState.get("codex");
     response.json({
       quotas: {
@@ -950,7 +958,10 @@ app.delete("/api/finance/recurring/:id", async (request, response, next) => {
 app.post("/api/hooks/claude-statusline", async (request, response, next) => {
   try {
     const quota = parseClaudeRateLimits(request.body?.rate_limits);
-    if (quota) await providerState.set("claude", quota);
+    if (quota) {
+      await providerState.set("claude", quota);
+      void quotaNotifier.check().catch(() => {});
+    }
     response.status(204).end();
   } catch (error) {
     next(error);
@@ -1837,11 +1848,15 @@ if (secureServer) {
 promptWatcher.start();
 claudeQuota.start();
 antigravityQuota.start();
+quotaNotifier.start();
 
 // Releve Codex periodique: les quotas se renouvellent meme quand aucun agent ne parle.
 async function refreshCodexQuota() {
   const windows = await usage.latestCodexRateWindows().catch(() => []);
-  if (windows.length) await providerState.set("codex", { windows, updatedAt: new Date().toISOString() });
+  if (windows.length) {
+    await providerState.set("codex", { windows, updatedAt: new Date().toISOString() });
+    void quotaNotifier.check().catch(() => {});
+  }
 }
 void refreshCodexQuota();
 setInterval(() => { refreshCodexQuota().catch(() => {}); }, 5 * 60 * 1000).unref();

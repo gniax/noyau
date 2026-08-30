@@ -30,5 +30,7 @@ test("profile service creates and updates safe profile settings", async () => {
   assert.equal(profile.todoFile, "/tmp/noyau/profiles/camille-martin/TO DO.md");
   const updated = await service.update(profile.id, { todoFile: "/vault/camille/TO DO.md", todoMountUri: "smb://nas/partage" });
   assert.equal(updated.todoFile, "/vault/camille/TO DO.md");
+  const notified = await service.update(profile.id, { quotaResetNotify: { codex: false, claude: true, antigravity: true } });
+  assert.deepEqual(notified.quotaResetNotify, { codex: false, claude: true, antigravity: true });
   await assert.rejects(() => service.update(profile.id, { todoFile: "relative.md" }), /absolu requis/);
 });

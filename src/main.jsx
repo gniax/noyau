@@ -2016,6 +2016,23 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
     try { return localStorage.getItem(CONFIRM_KEY) || "on"; } catch { return "on"; }
   });
 
+  const activeProfile = profiles.find((item) => item.id === profileId) || profiles[0];
+  const quotaNotify = activeProfile?.quotaResetNotify || { codex: true, claude: true, antigravity: false };
+
+  async function toggleQuotaReset(providerKey) {
+    const current = quotaNotify;
+    const next = { ...current, [providerKey]: !current[providerKey] };
+    try {
+      await api(`/api/profiles/${encodeURIComponent(profileId || activeProfile?.id || "principal")}`, {
+        method: "PATCH",
+        body: JSON.stringify({ quotaResetNotify: next }),
+      });
+      if (onProfilesChanged) await onProfilesChanged();
+    } catch (error) {
+      window.alert(`Erreur mise à jour réglages: ${error.message}`);
+    }
+  }
+
   function chooseConfirm(value) {
     setConfirmMode(value);
     try { localStorage.setItem(CONFIRM_KEY, value); } catch { /* stockage optionnel */ }
@@ -2042,6 +2059,39 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
       <section className="hero-row"><div><p className="eyebrow">APPLICATION</p><h1>Réglages.</h1><p className="muted">Alertes et accès appareil.</p></div></section>
       <section className="panel settings-list">
         <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>Fin réponse, attente validation, migration terminée.</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
+        <article>
+          <span className="setting-symbol">⚡</span>
+          <div>
+            <strong>Alertes reset quotas</strong>
+            <small>Notification push dès qu'un quota se réinitialise.</small>
+          </div>
+          <div className="quota-reset-toggles">
+            <button
+              type="button"
+              className={`quota-toggle-btn ${quotaNotify.codex ? "active" : ""}`}
+              onClick={() => toggleQuotaReset("codex")}
+              title="Alerte reset pour Codex"
+            >
+              Codex <b>{quotaNotify.codex ? "ON" : "OFF"}</b>
+            </button>
+            <button
+              type="button"
+              className={`quota-toggle-btn ${quotaNotify.claude ? "active" : ""}`}
+              onClick={() => toggleQuotaReset("claude")}
+              title="Alerte reset pour Claude"
+            >
+              Claude <b>{quotaNotify.claude ? "ON" : "OFF"}</b>
+            </button>
+            <button
+              type="button"
+              className={`quota-toggle-btn ${quotaNotify.antigravity ? "active" : ""}`}
+              onClick={() => toggleQuotaReset("antigravity")}
+              title="Alerte reset pour Antigravity"
+            >
+              Antigravity <b>{quotaNotify.antigravity ? "ON" : "OFF"}</b>
+            </button>
+          </div>
+        </article>
         <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
         <article><span className="setting-symbol">✓</span><div><strong>Confirmations</strong><small>{confirmMode === "off" ? "Redémarrage et changement de fournisseur immédiats" : "Demandées avant redémarrage et changement de fournisseur"} · suppressions toujours confirmées</small></div><select className="setting-select" value={confirmMode} onChange={(event) => chooseConfirm(event.target.value)} aria-label="Confirmations"><option value="on">Demander</option><option value="off">Sans confirmation</option></select></article>

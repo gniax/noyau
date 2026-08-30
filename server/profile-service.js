@@ -25,6 +25,17 @@ function mountUri(value) {
   return raw;
 }
 
+const DEFAULT_QUOTA_RESET_NOTIFY = { codex: true, claude: true, antigravity: false };
+
+function cleanQuotaResetNotify(value, fallback = DEFAULT_QUOTA_RESET_NOTIFY) {
+  const current = value && typeof value === "object" ? value : fallback;
+  return {
+    codex: typeof current?.codex === "boolean" ? current.codex : Boolean(fallback?.codex),
+    claude: typeof current?.claude === "boolean" ? current.claude : Boolean(fallback?.claude),
+    antigravity: typeof current?.antigravity === "boolean" ? current.antigravity : Boolean(fallback?.antigravity),
+  };
+}
+
 export class ProfileService {
   constructor({ store, dataDir, primaryTodoFile, primaryTodoMountUri = null, primaryName = "Noyau" }) {
     this.store = store;
@@ -43,8 +54,8 @@ export class ProfileService {
     if (!entries.length) {
       const now = new Date().toISOString();
       await this.store.setMany([
-        ["principal", { name: this.primaryName, theme: "noyau", primary: true, todoFile: this.primaryTodoFile, todoMountUri: this.primaryTodoMountUri, createdAt: now, updatedAt: now }],
-        ["guest", { name: "Invité", theme: "aurora", primary: false, todoFile: this.profileTodoFile("guest"), todoMountUri: null, createdAt: now, updatedAt: now }],
+        ["principal", { name: this.primaryName, theme: "noyau", primary: true, todoFile: this.primaryTodoFile, todoMountUri: this.primaryTodoMountUri, quotaResetNotify: cleanQuotaResetNotify(), createdAt: now, updatedAt: now }],
+        ["guest", { name: "Invité", theme: "aurora", primary: false, todoFile: this.profileTodoFile("guest"), todoMountUri: null, quotaResetNotify: cleanQuotaResetNotify(), createdAt: now, updatedAt: now }],
       ]);
       return { created: 2, migrated: 0 };
     }
@@ -56,6 +67,7 @@ export class ProfileService {
       primary: id === primaryId,
       todoFile: todoFile(profile.todoFile, id === primaryId ? this.primaryTodoFile : this.profileTodoFile(id)),
       todoMountUri: mountUri(profile.todoMountUri),
+      quotaResetNotify: cleanQuotaResetNotify(profile.quotaResetNotify),
       updatedAt: profile.updatedAt || new Date().toISOString(),
     }]);
     await this.store.setMany(updates);
@@ -92,6 +104,7 @@ export class ProfileService {
       primary: false,
       todoFile: todoFile(input.todoFile, this.profileTodoFile(id)),
       todoMountUri: mountUri(input.todoMountUri),
+      quotaResetNotify: cleanQuotaResetNotify(input.quotaResetNotify),
       createdAt: now,
       updatedAt: now,
     };
@@ -112,6 +125,7 @@ export class ProfileService {
       theme,
       todoFile: input.todoFile === undefined ? current.todoFile : todoFile(input.todoFile, this.profileTodoFile(id)),
       todoMountUri: input.todoMountUri === undefined ? current.todoMountUri : mountUri(input.todoMountUri),
+      quotaResetNotify: input.quotaResetNotify === undefined ? cleanQuotaResetNotify(current.quotaResetNotify) : cleanQuotaResetNotify(input.quotaResetNotify, current.quotaResetNotify),
       updatedAt: new Date().toISOString(),
     };
     await this.store.set(id, next);
@@ -119,4 +133,4 @@ export class ProfileService {
   }
 }
 
-export { PROFILE_ID, THEMES, cleanName, slug };
+export { PROFILE_ID, THEMES, cleanName, cleanQuotaResetNotify, slug };
