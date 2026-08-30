@@ -2084,6 +2084,11 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       fontSize: 13,
       fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
       scrollback: touchTerminal ? 0 : 5000,
+      // Les agents activent le suivi de souris: sans ces options, un clic part dans l'agent
+      // au lieu de selectionner. Option+glisser (macOS) et clic droit reprennent la main.
+      macOptionClickForcesSelection: true,
+      rightClickSelectsWord: true,
+      altClickMovesCursor: false,
       theme: terminalTheme(),
     });
     const fit = new FitAddon();
