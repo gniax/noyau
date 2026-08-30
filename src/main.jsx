@@ -1984,6 +1984,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
   const [connected, setConnected] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
+  const snapshotRef = React.useRef(null);
   const [oskEnabled, setOskEnabled] = useState(wantsOnScreenKeyboard);
   const [ctrl, setCtrl] = useState(false);
   const [alt, setAlt] = useState(false);
@@ -2242,13 +2243,16 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
       event.preventDefault();
       send(event.key);
     };
+    const inField = (node) => node instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName) || node.isContentEditable);
     const copyShortcut = (event) => {
       const wantsCopy = (event.metaKey && event.key.toLowerCase() === "c") || (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "c");
-      if (!wantsCopy || !terminalRef.current?.hasSelection?.()) return;
+      if (!wantsCopy || inField(event.target) || !window.getSelection()?.isCollapsed || !terminalRef.current?.hasSelection?.()) return;
       event.preventDefault();
       copyTerminal();
     };
     const nativeCopy = (event) => {
+      // Une copie faite dans un champ ou dans le panneau texte appartient au navigateur.
+      if (inField(event.target) || !window.getSelection()?.isCollapsed) return;
       const selection = terminalRef.current?.getSelection?.();
       if (!selection || !event.clipboardData) return;
       event.clipboardData.setData("text/plain", selection);
@@ -2587,9 +2591,10 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
                 <a className="ghost" href={link} target="_blank" rel="noreferrer">Ouvrir</a>
               </div>
             ))}
-            <textarea className="snapshot-text" value={snapshot.text} readOnly spellCheck="false" onFocus={(event) => event.target.setSelectionRange(0, 0)} />
+            <textarea className="snapshot-text" ref={snapshotRef} value={snapshot.text} readOnly spellCheck="false" />
             <div className="modal-actions">
               <button className="ghost" onClick={() => setSnapshot(null)}>Fermer</button>
+              <button className="ghost" onClick={() => { snapshotRef.current?.focus(); snapshotRef.current?.select(); }}>Tout sélectionner</button>
               <button className="primary" onClick={() => copyText(snapshot.text)}>Tout copier</button>
             </div>
           </section>
