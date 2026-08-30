@@ -15,17 +15,56 @@
 
 :root[data-theme="aurora"] body {
   font-family: var(--castle-body);
-  /* Ciel de nuit du chateau: lueur de foyer en bas, etoiles en haut, brume au centre. */
-  background:
-    radial-gradient(1.5px 1.5px at 12% 14%, #f4e6c355 50%, transparent 51%),
-    radial-gradient(1.5px 1.5px at 71% 8%, #f4e6c344 50%, transparent 51%),
-    radial-gradient(1.5px 1.5px at 38% 26%, #f4e6c333 50%, transparent 51%),
-    radial-gradient(2px 2px at 86% 31%, #f4e6c33a 50%, transparent 51%),
-    radial-gradient(1.5px 1.5px at 55% 47%, #f4e6c32e 50%, transparent 51%),
-    radial-gradient(circle at 78% 108%, #e1b04726 0, transparent 46%),
-    radial-gradient(circle at 8% -8%, #6f9fc41f 0, transparent 42%),
-    var(--bg);
+  background: var(--bg);
   background-attachment: fixed;
+}
+
+:root[data-theme="aurora"] body::before {
+  content: "";
+  position: fixed;
+  inset: -30%;
+  width: 160%;
+  height: 160%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 650px 500px at 78% 88%, rgba(225, 176, 71, 0.09) 0%, transparent 65%),
+    radial-gradient(ellipse 600px 480px at 15% 15%, rgba(111, 159, 196, 0.08) 0%, transparent 65%),
+    radial-gradient(ellipse 500px 400px at 80% 25%, rgba(232, 160, 180, 0.07) 0%, transparent 60%),
+    radial-gradient(ellipse 550px 450px at 25% 80%, rgba(155, 142, 196, 0.06) 0%, transparent 60%);
+  animation: castle-aurora-drift 28s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+:root[data-theme="aurora"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1.5px 1.5px at 15% 20%, rgba(244, 230, 195, 0.55) 50%, transparent 51%),
+    radial-gradient(2px 2px at 75% 12%, rgba(225, 176, 71, 0.5) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 40% 35%, rgba(232, 160, 180, 0.45) 50%, transparent 51%),
+    radial-gradient(2.5px 2.5px at 85% 40%, rgba(244, 230, 195, 0.6) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 60% 65%, rgba(225, 176, 71, 0.4) 50%, transparent 51%),
+    radial-gradient(2px 2px at 22% 78%, rgba(244, 230, 195, 0.45) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 88% 85%, rgba(232, 160, 180, 0.4) 50%, transparent 51%),
+    radial-gradient(2px 2px at 48% 90%, rgba(225, 176, 71, 0.45) 50%, transparent 51%);
+  animation: castle-stardust-twinkle 7s ease-in-out infinite alternate;
+  opacity: 0.8;
+}
+
+@keyframes castle-aurora-drift {
+  0% { transform: translate3d(0, 0, 0) scale(1) rotate(0deg); }
+  50% { transform: translate3d(-2.5%, 2%, 0) scale(1.03) rotate(1deg); }
+  100% { transform: translate3d(2%, -2.5%, 0) scale(0.98) rotate(-1deg); }
+}
+
+@keyframes castle-stardust-twinkle {
+  0% { opacity: 0.45; transform: translateY(0); }
+  50% { opacity: 0.85; transform: translateY(-5px); }
+  100% { opacity: 0.55; transform: translateY(-10px); }
 }
 
 :root[data-theme="aurora"] h1,
@@ -96,6 +135,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root[data-theme="aurora"] .mark { animation: none; }
+  :root[data-theme="aurora"] body::before,
+  :root[data-theme="aurora"] body::after { animation: none; }
 }
 
 @media (max-width: 900px) {

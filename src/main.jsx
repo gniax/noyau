@@ -2199,7 +2199,6 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
     // sur un poste souris-clavier, xterm garde sa saisie native, plus fiable.
     const captureMode = (TOUCH_MODE || coarsePointer) && !oskEnabled;
     const terminal = new Terminal({
-      allowTransparency: true,
       cursorBlink: true,
       disableStdin: touchTerminal || captureMode,
       fontSize: 13,
@@ -2210,10 +2209,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       macOptionClickForcesSelection: true,
       rightClickSelectsWord: true,
       altClickMovesCursor: false,
-      theme: {
-        ...terminalTheme(),
-        background: "transparent",
-      },
+      theme: terminalTheme(),
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
