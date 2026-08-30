@@ -234,7 +234,7 @@ export class TmuxController {
   // pour la fin d'un collage. On laisse la saisie se poser avant de valider.
   // Autorisation de dossier au demarrage: on lit le menu et on repond oui, sinon l'agent
   // reste bloque et le prompt de passation n'est jamais traite.
-  async acceptTrustPrompt(id, { attempts = 20, delay = 700 } = {}) {
+  async acceptTrustPrompt(id, { attempts = 60, delay = 700 } = {}) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       await wait(delay);
       const answer = resolveTrustPrompt(await this.captureVisible(id));

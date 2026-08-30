@@ -1,12 +1,13 @@
 // Au premier lancement dans un dossier, les CLI demandent une autorisation avant tout travail.
 // L'ordre des reponses varie d'un agent a l'autre: on lit le menu au lieu de le supposer.
 const TRUST_QUESTIONS = [
-  /do you trust (the files in )?th(is|e) (folder|directory|workspace|repo)/i,
-  /trust the files in this folder/i,
-  /allow [\w .]+ to (work|run|operate) in this (folder|directory|workspace)/i,
-  /trust this (workspace|project|directory)/i,
+  // Formulations connues: Claude "files in this folder", Antigravity "contents of this project",
+  // Codex "trust this folder". On accepte toute question de confiance courte.
+  /do you trust\b[^?\n]{0,80}\?/i,
+  /trust (the (files|contents)[^?\n]{0,40}|this (folder|directory|workspace|project|repo))/i,
+  /allow [\w .]+ to (work|run|operate) in this (folder|directory|workspace|project)/i,
   /faites-vous confiance/i,
-  /autoriser l'acc[eè]s (a|à) ce dossier/i,
+  /autoriser l'acc[eè]s (a|à) ce (dossier|projet)/i,
 ];
 const YES_OPTION = /\b(yes|oui|trust|proceed|continue|allow|autoriser|approuver|accepter)\b/i;
 const NO_OPTION = /\b(no|non|exit|quit|cancel|annuler|refuser|don'?t|ne pas)\b/i;
@@ -25,7 +26,8 @@ export function detectsTrustQuestion(pane) {
 // Retourne les touches a envoyer pour accepter, ou null si l'ecran ne pose pas la question.
 export function resolveTrustPrompt(pane) {
   if (!detectsTrustQuestion(pane)) return null;
-  const lines = optionLines(pane).filter((line) => !TRUST_QUESTIONS.some((pattern) => pattern.test(line)));
+  // On ecarte la question elle-meme, jamais les reponses: "Yes, I trust this folder" en est une.
+  const lines = optionLines(pane).filter((line) => !/\?\s*$/.test(line) && !/do you trust/i.test(line));
 
   const numbered = lines
     .map((line) => line.match(NUMBERED_OPTION))

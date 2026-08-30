@@ -33,3 +33,16 @@ test("un ecran ordinaire n'est jamais valide automatiquement", () => {
   assert.equal(resolveTrustPrompt("● Prêt. Que veux-tu faire ?"), null);
   assert.equal(resolveTrustPrompt("Do you trust this folder?\n  1. No, exit"), null);
 });
+
+test("ecran reel d'Antigravity: le curseur est deja sur le oui", () => {
+  const pane = [
+    "Accessing workspace:",
+    "/home/user/projects/atlas",
+    "Do you trust the contents of this project?",
+    "Antigravity CLI requires permission to read, edit, and execute files here.",
+    "> Yes, I trust this folder",
+    "  No, exit",
+    "  ↑/↓ Navigate · enter Confirm",
+  ].join("\n");
+  assert.deepEqual(resolveTrustPrompt(pane).keys, [{ key: "C-m" }]);
+});
