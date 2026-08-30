@@ -21,6 +21,7 @@ import { ProjectLogoService } from "./project-logo.js";
 import { agentNotificationTitle, PromptWatcher } from "./prompt-watcher.js";
 import { HandoverService } from "./handover.js";
 import { SessionReaper } from "./session-reaper.js";
+import { AntigravityQuotaService } from "./antigravity-quota.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { ModuleService } from "./module-service.js";
 import { FinanceService } from "./finance-service.js";
@@ -128,6 +129,11 @@ if (!Object.values(store.all()).some((session) => session.core)) {
   if (coreId) await store.set(coreId, { ...coreSession, core: true, autoRestore: true });
 }
 const claudeQuota = new ClaudeQuotaService({ store: providerState });
+const antigravityQuota = new AntigravityQuotaService({
+  store: providerState,
+  binary: installedAssistants.antigravity ? antigravityBinary : null,
+  cwd: workspaceRoot,
+});
 const push = new PushService({ dataDir, defaultProfileId: primaryProfileId });
 await push.load();
 const todoService = new TodoService({
@@ -882,8 +888,9 @@ app.delete("/api/finance/banking/connections/:bankId", async (request, response,
 
 app.post("/api/quotas/refresh", async (_request, response, next) => {
   try {
-    const [, codexWindows] = await Promise.all([
+    const [, , codexWindows] = await Promise.all([
       claudeQuota.refresh().catch((error) => console.error(`Quota Claude: ${error.message}`)),
+      antigravityQuota.refresh().catch((error) => console.error(`Quota Antigravity: ${error.message}`)),
       usage.latestCodexRateWindows().catch(() => []),
     ]);
     if (codexWindows.length) await providerState.set("codex", { windows: codexWindows, updatedAt: new Date().toISOString() });
@@ -894,6 +901,7 @@ app.post("/api/quotas/refresh", async (_request, response, next) => {
           ? refreshExpiredQuota({ remainingPercent: codex.windows[0].remainingPercent, resetsAt: codex.windows[0].resetsAt, windowMinutes: codex.windows[0].windowMinutes, windows: codex.windows })
           : null,
         claude: refreshExpiredQuota(providerState.get("claude")) || null,
+        antigravity: refreshExpiredQuota(providerState.get("antigravity")) || null,
       },
     });
   } catch (error) {
@@ -1374,6 +1382,7 @@ app.get("/api/sessions", async (request, response, next) => {
       quotas: {
         codex: codexQuota.length ? refreshExpiredQuota({ remainingPercent: codexQuota[0].remainingPercent, resetsAt: codexQuota[0].resetsAt, windowMinutes: codexQuota[0].windowMinutes, windows: codexQuota }) : null,
         claude: refreshExpiredQuota(providerState.get("claude")) || null,
+        antigravity: refreshExpiredQuota(providerState.get("antigravity")) || null,
       },
     });
   } catch (error) {
@@ -1827,6 +1836,7 @@ if (secureServer) {
 
 promptWatcher.start();
 claudeQuota.start();
+antigravityQuota.start();
 
 // Releve Codex periodique: les quotas se renouvellent meme quand aucun agent ne parle.
 async function refreshCodexQuota() {
