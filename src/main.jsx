@@ -430,7 +430,6 @@ function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
 }
 
 function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile }) {
-  const castleTheme = profiles.find((item) => item.id === profileId)?.theme === "aurora";
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><Mark /><span>Noyau</span><button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button></div>
@@ -442,7 +441,6 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         <button className={!activeId && ["finances", "finance-transactions", "finance-agent", "finance-modules"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
         <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
       </nav>
-      {castleTheme && <a className="castle-icon-credit" href="https://icons8.com" target="_blank" rel="noreferrer">Icônes par Icons8</a>}
       <div className="sidebar-title"><span>AGENTS</span><button onClick={onNew} aria-label="Nouvelle session">+</button></div>
       <div className="session-list">
         {sessions.map((session) => (
@@ -3241,6 +3239,7 @@ function App() {
         if (!version || disposed) return;
         const known = localStorage.getItem(VERSION_KEY);
         if (known && known !== version) {
+          if (document.fullscreenElement) return;
           localStorage.setItem(VERSION_KEY, version);
           await purgeClient();
           // Une mise a jour ne doit pas fermer la conversation ouverte: on garde la destination courante.
@@ -3255,17 +3254,12 @@ function App() {
     check();
     timer = setInterval(check, 60000);
     document.addEventListener("visibilitychange", check);
-    return () => { disposed = true; clearInterval(timer); document.removeEventListener("visibilitychange", check); };
+    document.addEventListener("fullscreenchange", check);
+    return () => { disposed = true; clearInterval(timer); document.removeEventListener("visibilitychange", check); document.removeEventListener("fullscreenchange", check); };
   }, []);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
-    let reloading = false;
-    const refresh = () => {
-      if (reloading) return;
-      reloading = true;
-      location.reload();
-    };
     // Notification ouverte alors que l'app tourne deja: iOS ne navigue pas, on route en interne.
     const receiveNavigation = (url) => {
       const target = new URL(url, location.origin);
@@ -3292,17 +3286,15 @@ function App() {
       } catch { /* pas de cache disponible */ }
     };
     const receiveUpdate = (event) => {
-      if (event.data?.type === "NOYAU_UPDATE") return refresh();
       if (event.data?.type === "NOYAU_NAVIGATE" && event.data.url) receiveNavigation(event.data.url);
     };
-    navigator.serviceWorker.addEventListener("controllerchange", refresh);
+    // Le controle de version gere seul le rechargement pour eviter les boucles a l'activation du worker.
     navigator.serviceWorker.addEventListener("message", receiveUpdate);
     navigator.serviceWorker.register("/sw.js").then((registration) => registration.update()).catch(() => {});
     consumePending();
     const wake = () => document.visibilityState === "visible" && consumePending();
     document.addEventListener("visibilitychange", wake);
     return () => {
-      navigator.serviceWorker.removeEventListener("controllerchange", refresh);
       navigator.serviceWorker.removeEventListener("message", receiveUpdate);
       document.removeEventListener("visibilitychange", wake);
     };
@@ -3360,12 +3352,8 @@ function App() {
     setEditingId(null);
     setProjectModalId(null);
     setMenu(false);
-    setSessions([]);
-    setProjects([]);
-    setModules([]);
-    setModuleProposals([]);
     history.replaceState({}, "", appPath());
-    await Promise.all([refresh(), refreshProfiles()]);
+    await refresh();
   }
 
   async function enableNotifications() {

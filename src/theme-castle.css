@@ -1,4 +1,4 @@
-/* Chateau ambulant: typographie, decor et emojis propres au profil. Le theme Noyau reste intact. */
+/* Chateau ambulant: typographie et decor propres au profil. Le theme Noyau reste intact. */
 @font-face { font-family: "Cormorant Garamond"; src: url("/fonts/cormorant-garamond-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
 @font-face { font-family: "Cormorant Garamond"; src: url("/fonts/cormorant-garamond-600-italic.woff2") format("woff2"); font-weight: 600; font-style: italic; font-display: swap; }
 @font-face { font-family: "Caveat"; src: url("/fonts/caveat-600.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
@@ -93,22 +93,19 @@
   filter: drop-shadow(0 2px 3px #05060c88);
   transition: transform .18s ease, filter .18s ease;
 }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(1) > span { background-image: url("/icons/guest/home.png"); }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(2) > span { background-image: url("/icons/guest/projects.png"); }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(3) > span { background-image: url("/icons/guest/todos.png"); }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(4) > span { background-image: url("/icons/guest/wallet.png"); }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(5) > span { background-image: url("/icons/guest/settings.png"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(1) > span { background-image: url("/icons/guest/castle.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(2) > span { background-image: url("/icons/guest/projects.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(3) > span { background-image: url("/icons/guest/todos.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(4) > span { background-image: url("/icons/guest/wallet.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(5) > span { background-image: url("/icons/guest/settings.svg"); }
 :root[data-theme="aurora"] .main-nav button:hover > span,
 :root[data-theme="aurora"] .main-nav button.active > span { transform: translateY(-1px) scale(1.08); filter: drop-shadow(0 3px 5px #e1b04755); }
 :root[data-theme="aurora"] .main-nav .nav-settings-icon svg { display: none; }
 :root[data-theme="aurora"] .main-nav button { border-radius: 12px; font-size: 14px; }
 
-:root[data-theme="aurora"] .castle-icon-credit { display: block; margin: 7px 12px 0 49px; color: #9a927f; font-size: 8px; text-decoration: none; }
-:root[data-theme="aurora"] .castle-icon-credit:hover { color: var(--castle-brass); }
-
 :root[data-theme="aurora"] .profile-chip { border-radius: 22px; border-color: #e1b04755; }
 :root[data-theme="aurora"] .profile-chip strong::before { content: "🎀 "; }
-:root[data-theme="aurora"] .profile-chip > span { font-size: 0; background: rgba(244, 230, 195, .12) url("/icons/guest/totoro.png") center / 27px no-repeat; }
+:root[data-theme="aurora"] .profile-chip > span { background: linear-gradient(140deg, #e1b047, #c98b6e); color: #241c10; }
 
 :root[data-theme="aurora"] .panel,
 :root[data-theme="aurora"] .modal,
@@ -123,6 +120,12 @@
   -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 18px 44px #05060c66, inset 0 1px 0 #ffffff08;
 }
+:root[data-theme="aurora"] .agents-panel,
+:root[data-theme="aurora"] .project-preview,
+:root[data-theme="aurora"] .agent-group,
+:root[data-theme="aurora"] .project-card { overflow: hidden; }
+:root[data-theme="aurora"] .project-todos,
+:root[data-theme="aurora"] .project-modules { border-radius: 12px; border-color: #e1b04726; }
 :root[data-theme="aurora"] .sidebar {
   border-right-color: #e1b04722;
   background: linear-gradient(180deg, rgba(22, 26, 38, 0.76) 0%, rgba(16, 19, 28, 0.72) 100%);
@@ -136,19 +139,6 @@
 }
 :root[data-theme="aurora"] button.primary { border-radius: 20px; background: linear-gradient(140deg, #e6bb59, #c98b4a); color: #241c10; border-color: #e1b04766; font-weight: 700; }
 :root[data-theme="aurora"] button.ghost { border-radius: 20px; }
-
-:root[data-theme="aurora"] .mark {
-  width: 35px;
-  height: 35px;
-  border: 0;
-  border-radius: 0;
-  background: url("/icons/guest/totoro.png") center / contain no-repeat;
-  filter: drop-shadow(0 3px 7px rgba(225, 176, 71, .35));
-}
-:root[data-theme="aurora"] .mark i,
-:root[data-theme="aurora"] .mark b {
-  display: none;
-}
 
 :root[data-theme="aurora"] .finance-empty::before,
 :root[data-theme="aurora"] .empty-small::before { content: "🌙 "; }
