@@ -430,6 +430,7 @@ function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
 }
 
 function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile }) {
+  const castleTheme = profiles.find((item) => item.id === profileId)?.theme === "aurora";
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><Mark /><span>Noyau</span><button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button></div>
@@ -441,6 +442,7 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         <button className={!activeId && ["finances", "finance-transactions", "finance-agent", "finance-modules"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
         <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
       </nav>
+      {castleTheme && <a className="castle-icon-credit" href="https://icons8.com" target="_blank" rel="noreferrer">Icônes par Icons8</a>}
       <div className="sidebar-title"><span>AGENTS</span><button onClick={onNew} aria-label="Nouvelle session">+</button></div>
       <div className="session-list">
         {sessions.map((session) => (
@@ -3344,12 +3346,26 @@ function App() {
     setAuth(false);
   }
 
-  function switchProfile(id) {
+  async function switchProfile(id) {
     if (!id || id === profileId) return;
+    const nextProfile = profiles.find((item) => item.id === id);
+    if (!nextProfile) return;
     try { localStorage.setItem(PROFILE_KEY, id); } catch { /* stockage optionnel */ }
-    applyTheme(profiles.find((item) => item.id === id)?.theme);
-    // Sessions, terminal et caches sont lies au profil: on repart d'une page propre, sans reconnexion.
-    location.assign(appPath());
+    setProfileId(id);
+    applyTheme(nextProfile.theme);
+    applyInstallIdentity(nextProfile);
+    setActiveId(null);
+    setView("dashboard");
+    setModal(false);
+    setEditingId(null);
+    setProjectModalId(null);
+    setMenu(false);
+    setSessions([]);
+    setProjects([]);
+    setModules([]);
+    setModuleProposals([]);
+    history.replaceState({}, "", appPath());
+    await Promise.all([refresh(), refreshProfiles()]);
   }
 
   async function enableNotifications() {

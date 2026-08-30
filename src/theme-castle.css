@@ -28,7 +28,7 @@
   background: url("/backgrounds/guest-castle-4k.webp") 55% center / cover no-repeat;
   filter: saturate(.92) brightness(.72) contrast(1.05);
   opacity: .86;
-  animation: castle-wallpaper-drift 30s ease-in-out infinite alternate;
+  animation: castle-wallpaper-drift 72s linear infinite;
   will-change: transform;
 }
 
@@ -41,18 +41,20 @@
   background:
     radial-gradient(circle at 72% 44%, transparent 0 12%, rgba(7, 9, 16, .08) 42%, rgba(7, 9, 16, .34) 100%),
     linear-gradient(180deg, rgba(7, 9, 16, .12), rgba(7, 9, 16, .3));
-  animation: castle-wallpaper-light 9s ease-in-out infinite alternate;
+  animation: castle-wallpaper-light 18s ease-in-out infinite;
 }
 
 @keyframes castle-wallpaper-drift {
-  0% { transform: translate3d(-1.5%, 0, 0) scale(1.04); }
-  50% { transform: translate3d(.5%, -1%, 0) scale(1.075); }
-  100% { transform: translate3d(1.5%, .7%, 0) scale(1.055); }
+  0%, 100% { transform: translate3d(-1.2%, -.4%, 0) scale(1.055); }
+  20% { transform: translate3d(.2%, -1.2%, 0) scale(1.072); }
+  40% { transform: translate3d(1.25%, -.25%, 0) scale(1.062); }
+  60% { transform: translate3d(.75%, 1%, 0) scale(1.078); }
+  80% { transform: translate3d(-.8%, .85%, 0) scale(1.066); }
 }
 
 @keyframes castle-wallpaper-light {
-  0% { opacity: .78; }
-  100% { opacity: 1; }
+  0%, 100% { opacity: .82; }
+  50% { opacity: 1; }
 }
 
 :root[data-theme="aurora"] h1,
@@ -81,20 +83,32 @@
 :root[data-theme="aurora"] .sidebar-title span { font-size: 14px; color: var(--castle-brass); }
 :root[data-theme="aurora"] .sidebar-title span::after { content: " ✿"; }
 
-/* Chaque entree du menu porte son petit symbole. */
-:root[data-theme="aurora"] .main-nav button > span:first-child { font-size: 0; }
-:root[data-theme="aurora"] .main-nav button > span:first-child::before { font-size: 15px; }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(1) > span::before { content: "🏡"; }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(2) > span::before { content: "📜"; }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(3) > span::before { content: "🌿"; }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(4) > span::before { content: "💛"; }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(5) > span::before { content: "✨"; }
+/* Motifs restent lies a leur action; aucun personnage purement decoratif dans navigation. */
+:root[data-theme="aurora"] .main-nav button > span:first-child {
+  width: 25px;
+  height: 25px;
+  flex: none;
+  font-size: 0;
+  background: center / contain no-repeat;
+  filter: drop-shadow(0 2px 3px #05060c88);
+  transition: transform .18s ease, filter .18s ease;
+}
+:root[data-theme="aurora"] .main-nav button:nth-of-type(1) > span { background-image: url("/icons/guest/home.png"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(2) > span { background-image: url("/icons/guest/projects.png"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(3) > span { background-image: url("/icons/guest/todos.png"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(4) > span { background-image: url("/icons/guest/wallet.png"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(5) > span { background-image: url("/icons/guest/settings.png"); }
+:root[data-theme="aurora"] .main-nav button:hover > span,
+:root[data-theme="aurora"] .main-nav button.active > span { transform: translateY(-1px) scale(1.08); filter: drop-shadow(0 3px 5px #e1b04755); }
 :root[data-theme="aurora"] .main-nav .nav-settings-icon svg { display: none; }
 :root[data-theme="aurora"] .main-nav button { border-radius: 12px; font-size: 14px; }
 
+:root[data-theme="aurora"] .castle-icon-credit { display: block; margin: 7px 12px 0 49px; color: #9a927f; font-size: 8px; text-decoration: none; }
+:root[data-theme="aurora"] .castle-icon-credit:hover { color: var(--castle-brass); }
+
 :root[data-theme="aurora"] .profile-chip { border-radius: 22px; border-color: #e1b04755; }
 :root[data-theme="aurora"] .profile-chip strong::before { content: "🎀 "; }
-:root[data-theme="aurora"] .profile-chip > span { background: linear-gradient(140deg, #e1b047, #c98b6e); color: #241c10; }
+:root[data-theme="aurora"] .profile-chip > span { font-size: 0; background: rgba(244, 230, 195, .12) url("/icons/guest/totoro.png") center / 27px no-repeat; }
 
 :root[data-theme="aurora"] .panel,
 :root[data-theme="aurora"] .modal,
@@ -124,12 +138,16 @@
 :root[data-theme="aurora"] button.ghost { border-radius: 20px; }
 
 :root[data-theme="aurora"] .mark {
-  border-color: var(--castle-brass);
-  box-shadow: 0 0 16px rgba(225, 176, 71, 0.35);
+  width: 35px;
+  height: 35px;
+  border: 0;
+  border-radius: 0;
+  background: url("/icons/guest/totoro.png") center / contain no-repeat;
+  filter: drop-shadow(0 3px 7px rgba(225, 176, 71, .35));
 }
 :root[data-theme="aurora"] .mark i,
 :root[data-theme="aurora"] .mark b {
-  background: var(--castle-brass);
+  display: none;
 }
 
 :root[data-theme="aurora"] .finance-empty::before,
