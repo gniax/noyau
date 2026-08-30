@@ -280,9 +280,33 @@ function formatTokens(value) {
   return String(value);
 }
 
+function providerQuota(quotas, assistant) {
+  if (assistant === "codex") {
+    const window = (quotas?.codex?.windows || [])[0];
+    return window ? { percent: window.remainingPercent, resetsAt: window.resetsAt } : null;
+  }
+  if (assistant === "claude") {
+    const window = quotas?.claude?.fiveHour || quotas?.claude?.sevenDay;
+    return window ? { percent: window.remainingPercent, resetsAt: window.resetsAt } : null;
+  }
+  return null;
+}
+
 function formatReset(value) {
   if (!value || Number.isNaN(new Date(value).getTime())) return "Reset inconnu";
   return `Reset ${new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value))}`;
+}
+
+// Temps restant avant renouvellement: plus parlant qu'une date pour savoir si on peut lancer un agent.
+function resetCountdown(value) {
+  const target = new Date(value).getTime();
+  if (!value || Number.isNaN(target)) return "reset inconnu";
+  const minutes = Math.round((target - Date.now()) / 60_000);
+  if (minutes <= 0) return "renouvelé";
+  if (minutes < 60) return `dans ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `dans ${hours} h${minutes % 60 ? ` ${minutes % 60}` : ""}`;
+  return `dans ${Math.floor(hours / 24)} j ${hours % 24} h`;
 }
 
 function weatherLabel(code) {
@@ -576,7 +600,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
 
       <section className="metrics">
         <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div className="active-agents-content"><small>AGENTS ACTIFS</small><div className="active-agents-data"><div className="active-total-block"><strong className="active-total">{sessions.length}</strong><em>en ligne</em></div><div className="agent-breakdown"><span><b>{codexCount}</b><em>Codex</em></span><span><b>{claudeCount}</b><em>Claude</em></span><span><b>{shellCount}</b><em>Terminal</em></span></div></div><p className="active-agents-footer"><span>{linkedProjects} projet{linkedProjects > 1 ? "s" : ""} lié{linkedProjects > 1 ? "s" : ""}</span><span>{favoriteCount} favori{favoriteCount > 1 ? "s" : ""}</span></p></div></article>
-        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">QUOTAS IA<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); try { await onRefreshQuotas(); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label="Rafraîchir quotas" title="Rafraîchir quotas"><span aria-hidden="true">↻</span></button></small><div className="quota-providers"><div className="quota-codex"><span>CODEX</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{formatReset(item.resetsAt).replace("Reset ", "")}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Aucun agent Codex actif</em></div>}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{formatReset(item.resetsAt).replace("Reset ", "")}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
+        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">QUOTAS IA<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); try { await onRefreshQuotas(); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label="Rafraîchir quotas" title="Rafraîchir quotas"><span aria-hidden="true">↻</span></button></small><div className="quota-providers"><div className="quota-codex"><span>CODEX</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Aucun agent Codex actif</em></div>}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
       </section>
 
       <section className="panel agents-panel">
@@ -1989,7 +2013,7 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
   );
 }
 
-function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
+function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas, assistants }) {
   const terminalNode = React.useRef(null);
   const terminalRef = React.useRef(null);
   const socketRef = React.useRef(null);
@@ -2295,10 +2319,24 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     window.addEventListener("copy", nativeCopy);
     window.addEventListener("keydown", captureKey);
     window.addEventListener("paste", capturePaste);
+    // Les agents demandent le suivi de souris, ce qui detourne tout glisser vers eux.
+    // On retire ces sequences: la selection redevient native sur toutes les plateformes.
+    const MOUSE_TRACKING = /\u001b\[\?(?:1000|1001|1002|1003|1005|1006|1015|1016)[hl]/g;
+    let pendingEscape = "";
+    const withoutMouseTracking = (chunk) => {
+      const data = pendingEscape + chunk;
+      pendingEscape = "";
+      const start = data.lastIndexOf("\u001b[?");
+      if (start >= 0 && data.length - start < 10 && !/[hl]/.test(data.slice(start + 3))) {
+        pendingEscape = data.slice(start);
+        return data.slice(0, start).replace(MOUSE_TRACKING, "");
+      }
+      return data.replace(MOUSE_TRACKING, "");
+    };
     const handleMessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.type === "output") {
-        terminal.write(message.data, () => {
+        terminal.write(withoutMouseTracking(message.data), () => {
           if (snapBottomRef.current) {
             terminal.scrollToBottom();
             snapBottomRef.current = false;
@@ -2573,8 +2611,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
     onKilled();
   }
 
-  async function migrate() {
-    const target = session.assistant === "codex" ? "claude" : "codex";
+  async function migrate(target) {
+    if (!target || target === session.assistant) return;
+    if (!window.confirm(`Basculer « ${session.name} » vers ${assistantMeta[target]?.label || target} ? Le contexte de la conversation est transmis au nouvel agent.`)) return;
     setMigrating(true);
     try {
       const result = await api(`/api/sessions/${session.id}/migrate`, { method: "POST", body: JSON.stringify({ target }) });
@@ -2601,7 +2640,17 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh }) {
         <div className="terminal-identity"><strong><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /><span>{session.name}</span></strong><small>{session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small></div>
         <div className="terminal-actions">
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
-          {["codex", "claude"].includes(session.assistant) && <button className="migrate-link" onClick={migrate} title={migrating ? "Appuie à nouveau pour basculer sans attendre le récap" : "Basculer d'agent en gardant le contexte"}>{migrating ? "Récap… ↻" : `→ ${session.assistant === "codex" ? "Claude" : "Codex"}`}</button>}
+          {["codex", "claude", "antigravity"].includes(session.assistant) && (
+            <label className="provider-switch" title="Changer de fournisseur en gardant le contexte">
+              <select value={session.assistant} onChange={(event) => migrate(event.target.value)} disabled={migrating} aria-label="Fournisseur">
+                {["codex", "claude", "antigravity"].filter((id) => id === session.assistant || assistants?.[id] !== false).map((id) => {
+                  const quota = providerQuota(quotas, id);
+                  return <option value={id} key={id}>{assistantMeta[id].label}{quota ? ` · ${quota.percent}%` : ""}</option>;
+                })}
+              </select>
+              {migrating && <em>…</em>}
+            </label>
+          )}
           {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
         </div>
       </div>
@@ -3243,7 +3292,7 @@ function App() {
             {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} profiles={profiles} profileId={profileId} onSwitchProfile={switchProfile} onProfilesChanged={refreshProfiles} /></>}
           </>
         ) : (
-          <TerminalView session={active} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { setActiveId(id); refresh(); }} onRefresh={refresh} />
+          <TerminalView session={active} quotas={quotas} assistants={assistants} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { setActiveId(id); refresh(); }} onRefresh={refresh} />
         )}
         </ViewBoundary>
       </main>

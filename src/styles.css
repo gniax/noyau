@@ -1352,3 +1352,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .transaction-asset { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; margin-top: 4px; }
 .transaction-asset span { color: var(--c-68756d); font-size: 9px; }
 .transaction-asset select { height: 30px; padding: 0 8px; border: 1px solid var(--c-303a34); border-radius: 6px; background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 10px; }
+.provider-switch { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.provider-switch select { height: 29px; max-width: 140px; padding: 0 6px; border: 1px solid var(--c-3d4d66); border-radius: 5px; background: var(--c-152033); color: var(--c-b7c9ff); font-size: 9px; font-weight: 650; }
+.provider-switch select:disabled { opacity: .55; }
+.provider-switch em { color: var(--green); font-style: normal; font-size: 10px; }

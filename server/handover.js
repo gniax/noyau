@@ -74,8 +74,9 @@ export function extractClaudeMessages(text) {
 }
 
 export function formatHandover({ source, target, cwd, messages }) {
-  const sourceLabel = source === "codex" ? "Codex" : "Claude";
-  const targetLabel = target === "codex" ? "Codex" : "Claude";
+  const labels = { codex: "Codex", claude: "Claude", antigravity: "Antigravity" };
+  const sourceLabel = labels[source] || source;
+  const targetLabel = labels[target] || target;
   const history = messages.map((message) => `[${message.role === "user" ? "utilisateur" : sourceLabel}] ${message.text}`).join("\n");
   return [
     `Tu es ${targetLabel} et tu reprends le travail d'un agent ${sourceLabel} dans ${cwd}.`,

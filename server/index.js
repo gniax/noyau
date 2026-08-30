@@ -1245,7 +1245,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
       if (sourceSession && lastMessage) {
         try {
           const target = await tmux.create({
-            name: `${sourceSession.name} · ${migration.target === "codex" ? "Codex" : "Claude"}`,
+            name: `${sourceSession.name} · ${assistantLabel(migration.target)}`,
             assistant: migration.target,
             cwd: sourceSession.cwd,
             migratedFrom: sessionId,
@@ -1260,7 +1260,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
           await store.set(sessionId, { ...store.get(sessionId), migrationState: "complete", migratedTo: target.id });
           migrations.delete(sessionId);
           payload = {
-            title: `Contexte passé à ${migration.target === "codex" ? "Codex" : "Claude"}`,
+            title: `Contexte passé à ${assistantLabel(migration.target)}`,
             body: `${sourceSession.name} prêt dans nouvel agent.`,
             tag: `migration-${target.id}`,
             url: `/?session=${encodeURIComponent(target.id)}&profile=${encodeURIComponent(sourceSession.profileId || primaryProfileId)}`,
@@ -1409,6 +1409,12 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
 
 // Logo de l'agent pour la notification: le navigateur le charge en same-origin avec le cookie.
 // Icone de notification: logo du projet si on en trouve un, sinon l'icone de l'agent lui-meme.
+const ASSISTANT_LABELS = { codex: "Codex", claude: "Claude", antigravity: "Antigravity", shell: "Terminal" };
+
+function assistantLabel(assistant) {
+  return ASSISTANT_LABELS[assistant] || assistant;
+}
+
 function assistantIcon(assistant) {
   return ["codex", "claude", "shell", "antigravity"].includes(assistant) ? `/agents/${assistant}.png` : null;
 }
@@ -1442,14 +1448,14 @@ async function handoverPrompt({ session, metadata, target }) {
   });
   if (transcript) return { prompt: transcript, history: true };
   return {
-    prompt: `Tu reprends le travail d'un agent ${session.assistant === "codex" ? "Codex" : "Claude"} dans ${session.cwd}. Aucun historique lisible n'a été retrouvé: inspecte le dépôt, le git log et les fichiers modifiés pour comprendre l'état, puis attends la prochaine demande de l'utilisateur.`,
+    prompt: `Tu reprends le travail d'un agent ${assistantLabel(session.assistant)} dans ${session.cwd}. Aucun historique lisible n'a été retrouvé: inspecte le dépôt, le git log et les fichiers modifiés pour comprendre l'état, puis attends la prochaine demande de l'utilisateur.`,
     history: false,
   };
 }
 
 async function spawnHandoverSession({ sessionId, session, metadata, target, prompt, replace = false }) {
   const created = await tmux.create({
-    name: replace ? metadata.name || session.name : `${metadata.name || session.name} · ${target === "codex" ? "Codex" : "Claude"}`,
+    name: replace ? metadata.name || session.name : `${metadata.name || session.name} · ${assistantLabel(target)}`,
     assistant: target,
     cwd: session.cwd,
     migratedFrom: sessionId,
@@ -1471,9 +1477,10 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
   try {
     if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
     const session = (await tmux.list()).find((item) => item.id === request.params.id);
-    if (!session || !["codex", "claude"].includes(session.assistant)) throw new Error("Migration réservée aux agents Codex/Claude.");
+    if (!session || !["codex", "claude", "antigravity"].includes(session.assistant)) throw new Error("Bascule réservée aux agents conversationnels.");
     const target = request.body?.target || (session.assistant === "codex" ? "claude" : "codex");
-    if (!["codex", "claude"].includes(target) || target === session.assistant) throw new Error("Agent cible invalide.");
+    if (!["codex", "claude", "antigravity"].includes(target) || target === session.assistant) throw new Error("Fournisseur cible invalide.");
+    if (installedAssistants[target] === false) throw new Error(`${assistantLabel(target)} n'est pas installé sur ce PC.`);
     const metadata = store.get(session.id) || {};
     const mode = ["auto", "agent", "transcript"].includes(request.body?.mode) ? request.body.mode : "auto";
     const pending = migrations.get(session.id);
@@ -1498,7 +1505,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
         const { prompt } = await handoverPrompt({ session, metadata, target });
         const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt, replace: true });
         await push.send({
-          title: agentNotificationTitle(metadata.projectId ? projects.get(metadata.projectId)?.name : metadata.name, `Contexte repris par ${target === "codex" ? "Codex" : "Claude"}`),
+          title: agentNotificationTitle(metadata.projectId ? projects.get(metadata.projectId)?.name : metadata.name, `Contexte repris par ${assistantLabel(target)}`),
           body: "Passation faite depuis la dernière conversation.",
           tag: `migration-${created.id}`,
           url: `/?session=${encodeURIComponent(created.id)}&profile=${encodeURIComponent(metadata.profileId || primaryProfileId)}`,
@@ -1510,7 +1517,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
     fallbackTimer.unref?.();
     migrations.set(session.id, { target, startedAt: new Date().toISOString(), timer: fallbackTimer });
     await store.set(session.id, { ...store.get(session.id), migrationState: "summarizing", migrationTarget: target, migratedTo: null, agentState: "working", agentStateUpdatedAt: new Date().toISOString() });
-    await tmux.submit(session.id, `Prépare passation vers ${target === "codex" ? "Codex" : "Claude"}. Réponds uniquement avec récapitulatif autonome et compact: objectif, décisions, fichiers modifiés, état actuel, tests, commandes utiles, blocages, prochaines étapes. N'effectue aucune autre action.`);
+    await tmux.submit(session.id, `Prépare passation vers ${assistantLabel(target)}. Réponds uniquement avec récapitulatif autonome et compact: objectif, décisions, fichiers modifiés, état actuel, tests, commandes utiles, blocages, prochaines étapes. N'effectue aucune autre action.`);
     response.status(202).json({ ok: true, state: "summarizing", target });
   } catch (error) {
     migrations.delete(request.params.id);
