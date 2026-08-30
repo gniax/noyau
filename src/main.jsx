@@ -2342,7 +2342,26 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       event.clipboardData.setData("text/plain", selection);
       event.preventDefault();
     };
+    // Coller une image: on l'intercepte avant tout, quel que soit le mode de saisie.
+    const pasteFile = (event) => {
+      if (editableTarget(event.target)) return false;
+      const file = [...(event.clipboardData?.files || [])][0]
+        || [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file").map((item) => item.getAsFile())[0];
+      if (!file) return false;
+      event.preventDefault();
+      // Chemin insere sans validation: tu ajoutes ta consigne autour avant d'envoyer.
+      sendFile(file, { submit: false });
+      return true;
+    };
+    const dropFile = (event) => {
+      const file = event.dataTransfer?.files?.[0];
+      if (!file) return;
+      event.preventDefault();
+      sendFile(file, { submit: false });
+    };
+    const allowDrop = (event) => event.preventDefault();
     const capturePaste = (event) => {
+      if (pasteFile(event)) return;
       if (!captureMode || editableTarget(event.target)) return;
       const text = event.clipboardData?.getData("text");
       if (!text) return;
@@ -2353,6 +2372,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
     window.addEventListener("copy", nativeCopy);
     window.addEventListener("keydown", captureKey);
     window.addEventListener("paste", capturePaste);
+    terminalNode.current.addEventListener("dragover", allowDrop);
+    terminalNode.current.addEventListener("drop", dropFile);
     // Les agents demandent le suivi de souris, ce qui detourne tout glisser vers eux.
     // On retire ces sequences: la selection redevient native sur toutes les plateformes.
     const MOUSE_TRACKING = /\u001b\[\?(?:1000|1001|1002|1003|1005|1006|1015|1016)[hl]/g;
@@ -2427,6 +2448,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       window.removeEventListener("copy", nativeCopy);
       window.removeEventListener("keydown", captureKey);
       window.removeEventListener("paste", capturePaste);
+      terminalNode.current?.removeEventListener("dragover", allowDrop);
+      terminalNode.current?.removeEventListener("drop", dropFile);
       inputDisposable.dispose();
       socket?.close();
       socketRef.current = null;
@@ -2512,9 +2535,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
     };
   }
 
-  async function attachFile(event) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
+  // Une image du presse-papiers ne peut pas traverser tmux: on la depose sur le PC
+  // et on donne son chemin a l'agent, exactement comme une piece jointe.
+  async function sendFile(file, { submit = true } = {}) {
     if (!file) return;
     setUploading(true);
     try {
@@ -2523,13 +2546,22 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       form.append("sessionId", session.id);
       const uploaded = await api("/api/uploads/file", { method: "POST", body: form });
       if (socketRef.current?.readyState !== WebSocket.OPEN) throw new Error("Terminal déconnecté. Réessaie après reconnexion.");
-      socketRef.current.send(JSON.stringify({ type: "submit", data: `${uploaded.image ? "Image" : "Fichier"} joint à examiner : ${uploaded.path}` }));
-      focusKeyboard();
+      socketRef.current.send(JSON.stringify(submit
+        ? { type: "submit", data: `${uploaded.image ? "Image" : "Fichier"} joint à examiner : ${uploaded.path}` }
+        : { type: "input", data: uploaded.path }));
     } catch (error) {
       window.alert(error.message);
     } finally {
       setUploading(false);
     }
+  }
+
+  async function attachFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    await sendFile(file);
+    focusKeyboard();
   }
 
   function sendKeyboardData(data) {
