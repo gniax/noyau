@@ -1476,7 +1476,7 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
 // Icone de notification: logo du projet si on en trouve un, sinon l'icone de l'agent lui-meme.
 const ASSISTANT_LABELS = { codex: "Codex", claude: "Claude", antigravity: "Antigravity", shell: "Terminal" };
 // Un agent a bout de quota repond son message de limite au lieu du recapitulatif demande.
-const QUOTA_REPLY = /usage limit|limite d'utilisation|rate limit|quota (atteint|exceeded|depasse|dépassé)|try again (at|in)|upgrade to pro|plan limit|out of credits/i;
+const QUOTA_REPLY = /usage limit|limite d'utilisation|rate limit|individual quota reached|resource_exhausted|quota (atteint|reached|exceeded|depasse|dépassé)|try again (at|in)|upgrade (to pro|your subscription)|plan limit|out of credits/i;
 
 function usableRecap(message) {
   const text = String(message || "").trim();
@@ -1506,8 +1506,10 @@ async function sourceQuotaRemaining(session, metadata) {
     const info = await usage.get({ ...session, ...metadata }, await tmux.capture(session.id));
     return Number.isFinite(info?.rateRemainingPercent) ? info.rateRemainingPercent : null;
   }
-  const claude = providerState.get("claude");
-  const values = [claude?.fiveHour?.remainingPercent, claude?.sevenDay?.remainingPercent].filter((value) => Number.isFinite(value));
+  const provider = providerState.get(session.assistant);
+  const values = session.assistant === "antigravity"
+    ? (provider?.windows || []).map((window) => window.remainingPercent).filter((value) => Number.isFinite(value))
+    : [provider?.fiveHour?.remainingPercent, provider?.sevenDay?.remainingPercent].filter((value) => Number.isFinite(value));
   return values.length ? Math.min(...values) : null;
 }
 
@@ -1558,9 +1560,11 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
     const mode = ["auto", "agent", "transcript"].includes(request.body?.mode) ? request.body.mode : "auto";
     const pending = migrations.get(session.id);
     const remaining = mode === "agent" ? null : await sourceQuotaRemaining(session, metadata);
+    const paneQuotaExhausted = mode === "auto" && QUOTA_REPLY.test(await tmux.capture(session.id).catch(() => ""));
     // Quota epuise ou recap deja demande sans reponse: on reprend la derniere conversation
     // et l'agent change de type sur place, sans attendre l'agent source.
-    if (mode === "transcript" || pending || (mode === "auto" && Number.isFinite(remaining) && remaining <= QUOTA_EXHAUSTED_PERCENT)) {
+    // Antigravity ne declenche pas hook de fin Noyau: son transcript local est donc toujours la voie immediate.
+    if (mode === "transcript" || pending || (mode === "auto" && (session.assistant === "antigravity" || paneQuotaExhausted || (Number.isFinite(remaining) && remaining <= QUOTA_EXHAUSTED_PERCENT)))) {
       if (pending) {
         clearTimeout(pending.timer);
         migrations.delete(session.id);

@@ -5,6 +5,8 @@ import path from "node:path";
 const MESSAGE_LIMIT = 30;
 const MESSAGE_CHARS = 700;
 const TOTAL_CHARS = 14_000;
+const ANTIGRAVITY_CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i;
+const HANDOVER_REQUEST = /^Prépare passation vers\b/i;
 
 async function readTail(file, bytes = 2 * 1024 * 1024) {
   const handle = await fs.open(file, "r");
@@ -73,6 +75,25 @@ export function extractClaudeMessages(text) {
   return pickTail(messages);
 }
 
+function antigravityUserText(content) {
+  const request = String(content || "").match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i)?.[1] || content;
+  const clean = cleanText(request);
+  return HANDOVER_REQUEST.test(clean) ? "" : clean;
+}
+
+export function extractAntigravityMessages(text) {
+  const messages = jsonLines(text).flatMap((entry) => {
+    if (entry.type === "USER_INPUT") {
+      const clean = antigravityUserText(entry.content);
+      return clean ? [{ role: "user", text: clean }] : [];
+    }
+    if (entry.type !== "PLANNER_RESPONSE" || entry.source !== "MODEL") return [];
+    const clean = cleanText(entry.content);
+    return clean ? [{ role: "assistant", text: clean }] : [];
+  });
+  return pickTail(messages);
+}
+
 export function formatHandover({ source, target, cwd, messages }) {
   const labels = { codex: "Codex", claude: "Claude", antigravity: "Antigravity" };
   const sourceLabel = labels[source] || source;
@@ -89,9 +110,14 @@ export function formatHandover({ source, target, cwd, messages }) {
 }
 
 export class HandoverService {
-  constructor({ codexRoot = path.join(os.homedir(), ".codex", "sessions"), claudeRoot = path.join(os.homedir(), ".claude", "projects") } = {}) {
+  constructor({
+    codexRoot = path.join(os.homedir(), ".codex", "sessions"),
+    claudeRoot = path.join(os.homedir(), ".claude", "projects"),
+    antigravityRoot = path.join(os.homedir(), ".gemini", "antigravity-cli"),
+  } = {}) {
     this.codexRoot = codexRoot;
     this.claudeRoot = claudeRoot;
+    this.antigravityRoot = antigravityRoot;
   }
 
   async newestFile(directory, filter = () => true) {
@@ -145,6 +171,19 @@ export class HandoverService {
     return directory ? this.newestFile(directory) : null;
   }
 
+  async antigravityFile({ cwd }) {
+    if (!cwd) return null;
+    const history = jsonLines(await readTail(path.join(this.antigravityRoot, "history.jsonl")));
+    const conversations = history
+      .filter((entry) => entry.workspace && path.resolve(entry.workspace) === path.resolve(cwd) && ANTIGRAVITY_CONVERSATION_ID.test(entry.conversationId || ""))
+      .sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0));
+    for (const entry of conversations) {
+      const file = path.join(this.antigravityRoot, "brain", entry.conversationId, ".system_generated", "logs", "transcript_full.jsonl");
+      if (await fs.stat(file).then(() => true, () => false)) return file;
+    }
+    return null;
+  }
+
   async messages({ assistant, threadId, agentSessionId, cwd }) {
     try {
       if (assistant === "codex") {
@@ -154,6 +193,10 @@ export class HandoverService {
       if (assistant === "claude") {
         const file = await this.claudeFile({ agentSessionId, cwd });
         return file ? extractClaudeMessages(await readTail(file)) : [];
+      }
+      if (assistant === "antigravity") {
+        const file = await this.antigravityFile({ cwd });
+        return file ? extractAntigravityMessages(await readTail(file)) : [];
       }
     } catch { /* transcript illisible */ }
     return [];
