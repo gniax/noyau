@@ -22,17 +22,17 @@
 :root[data-theme="aurora"] body::before {
   content: "";
   position: fixed;
-  inset: -30%;
-  width: 160%;
-  height: 160%;
+  inset: -25%;
+  width: 150%;
+  height: 150%;
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 650px 500px at 78% 88%, rgba(225, 176, 71, 0.09) 0%, transparent 65%),
-    radial-gradient(ellipse 600px 480px at 15% 15%, rgba(111, 159, 196, 0.08) 0%, transparent 65%),
-    radial-gradient(ellipse 500px 400px at 80% 25%, rgba(232, 160, 180, 0.07) 0%, transparent 60%),
-    radial-gradient(ellipse 550px 450px at 25% 80%, rgba(155, 142, 196, 0.06) 0%, transparent 60%);
-  animation: castle-aurora-drift 28s ease-in-out infinite alternate;
+    radial-gradient(ellipse 750px 600px at 80% 88%, rgba(225, 176, 71, 0.16) 0%, transparent 62%),
+    radial-gradient(ellipse 700px 550px at 15% 15%, rgba(111, 159, 196, 0.14) 0%, transparent 62%),
+    radial-gradient(ellipse 600px 480px at 85% 20%, rgba(232, 160, 180, 0.12) 0%, transparent 58%),
+    radial-gradient(ellipse 650px 500px at 20% 80%, rgba(155, 142, 196, 0.12) 0%, transparent 58%);
+  animation: castle-aurora-drift 22s ease-in-out infinite alternate;
   will-change: transform;
 }
 
@@ -43,16 +43,16 @@
   z-index: 0;
   pointer-events: none;
   background-image:
-    radial-gradient(1.5px 1.5px at 15% 20%, rgba(244, 230, 195, 0.55) 50%, transparent 51%),
-    radial-gradient(2px 2px at 75% 12%, rgba(225, 176, 71, 0.5) 50%, transparent 51%),
-    radial-gradient(1.5px 1.5px at 40% 35%, rgba(232, 160, 180, 0.45) 50%, transparent 51%),
-    radial-gradient(2.5px 2.5px at 85% 40%, rgba(244, 230, 195, 0.6) 50%, transparent 51%),
-    radial-gradient(1.5px 1.5px at 60% 65%, rgba(225, 176, 71, 0.4) 50%, transparent 51%),
-    radial-gradient(2px 2px at 22% 78%, rgba(244, 230, 195, 0.45) 50%, transparent 51%),
-    radial-gradient(1.5px 1.5px at 88% 85%, rgba(232, 160, 180, 0.4) 50%, transparent 51%),
-    radial-gradient(2px 2px at 48% 90%, rgba(225, 176, 71, 0.45) 50%, transparent 51%);
-  animation: castle-stardust-twinkle 7s ease-in-out infinite alternate;
-  opacity: 0.8;
+    radial-gradient(2px 2px at 12% 18%, rgba(244, 230, 195, 0.8) 50%, transparent 51%),
+    radial-gradient(2.5px 2.5px at 78% 10%, rgba(225, 176, 71, 0.75) 50%, transparent 51%),
+    radial-gradient(2px 2px at 38% 30%, rgba(232, 160, 180, 0.7) 50%, transparent 51%),
+    radial-gradient(3px 3px at 88% 38%, rgba(244, 230, 195, 0.85) 50%, transparent 51%),
+    radial-gradient(2px 2px at 62% 62%, rgba(225, 176, 71, 0.7) 50%, transparent 51%),
+    radial-gradient(2.5px 2.5px at 18% 75%, rgba(244, 230, 195, 0.75) 50%, transparent 51%),
+    radial-gradient(2px 2px at 90% 82%, rgba(232, 160, 180, 0.7) 50%, transparent 51%),
+    radial-gradient(2.5px 2.5px at 45% 88%, rgba(225, 176, 71, 0.75) 50%, transparent 51%);
+  animation: castle-stardust-twinkle 5s ease-in-out infinite alternate;
+  opacity: 0.9;
 }
 
 @keyframes castle-aurora-drift {
@@ -79,7 +79,6 @@
 :root[data-theme="aurora"] .hero-row h1 { font-size: 41px; }
 :root[data-theme="aurora"] .hero-row h1::after { content: " ✧"; color: var(--castle-brass); font-size: .55em; vertical-align: super; }
 :root[data-theme="aurora"] .brand span { font-size: 21px; }
-:root[data-theme="aurora"] .brand span::after { content: " 🏰"; font-size: 14px; }
 
 :root[data-theme="aurora"] .eyebrow,
 :root[data-theme="aurora"] .sidebar-title span,
@@ -112,17 +111,38 @@
 :root[data-theme="aurora"] .panel,
 :root[data-theme="aurora"] .modal,
 :root[data-theme="aurora"] .agent-card,
+:root[data-theme="aurora"] .agent-group,
+:root[data-theme="aurora"] .metrics article,
 :root[data-theme="aurora"] .projects-grid > article {
   border-radius: 16px;
   border-color: #e1b04726;
+  background: rgba(17, 21, 31, 0.82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 18px 44px #05060c66, inset 0 1px 0 #ffffff08;
 }
-:root[data-theme="aurora"] .sidebar { border-right-color: #e1b04722; background: linear-gradient(180deg, #161a26 0, #10131c 100%); }
+:root[data-theme="aurora"] .sidebar {
+  border-right-color: #e1b04722;
+  background: linear-gradient(180deg, rgba(22, 26, 38, 0.88) 0%, rgba(16, 19, 28, 0.88) 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+:root[data-theme="aurora"] .topbar {
+  background: rgba(15, 17, 25, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
 :root[data-theme="aurora"] button.primary { border-radius: 20px; background: linear-gradient(140deg, #e6bb59, #c98b4a); color: #241c10; border-color: #e1b04766; font-weight: 700; }
 :root[data-theme="aurora"] button.ghost { border-radius: 20px; }
 
-:root[data-theme="aurora"] .mark { animation: castle-float 5.5s ease-in-out infinite; box-shadow: 0 0 22px #e1b04744; }
-@keyframes castle-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+:root[data-theme="aurora"] .mark {
+  border-color: var(--castle-brass);
+  box-shadow: 0 0 16px rgba(225, 176, 71, 0.35);
+}
+:root[data-theme="aurora"] .mark i,
+:root[data-theme="aurora"] .mark b {
+  background: var(--castle-brass);
+}
 
 :root[data-theme="aurora"] .finance-empty::before,
 :root[data-theme="aurora"] .empty-small::before { content: "🌙 "; }
@@ -134,7 +154,6 @@
 :root[data-theme="aurora"] .shared-chip.own, :root[data-theme="aurora"] .todo-folder-tag { border-color: #e8a0b455; color: var(--castle-rose); }
 
 @media (prefers-reduced-motion: reduce) {
-  :root[data-theme="aurora"] .mark { animation: none; }
   :root[data-theme="aurora"] body::before,
   :root[data-theme="aurora"] body::after { animation: none; }
 }
