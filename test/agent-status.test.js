@@ -67,3 +67,19 @@ test("prompt a moitie tape sans execution: l'agent reste disponible", () => {
   const session = { assistant: "antigravity", activityAt: new Date().toISOString() };
   assert.equal(agentStatus(session, {}, false, Date.now(), pane).state, "available");
 });
+
+test("fin de tour Claude: l'etoile d'un recapitulatif n'est pas du travail", () => {
+  const pane = [
+    "  Travail non commité en cours : certify.ts, engrave.ts, certify.test.ts",
+    "✻ Worked for 17s · done 15:08",
+    "※ recap: Goal: hand off Codex work in atlas.",
+    "──────",
+    "❯ ",
+    "──────",
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents",
+  ].join("\n");
+  assert.equal(paneAgentState(pane), "available");
+
+  const spinning = ["✻ Cooking… (12s · esc to interrupt)", "❯ "].join("\n");
+  assert.equal(paneAgentState(spinning), "working");
+});
