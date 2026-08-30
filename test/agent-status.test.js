@@ -33,3 +33,24 @@ test("a stale working state is corrected by the pane", () => {
   const idle = { agentState: "working", agentStateUpdatedAt: new Date(Date.now() - 10 * 60_000).toISOString() };
   assert.equal(agentStatus({ ...session, activityAt: new Date(Date.now() - 5 * 60_000).toISOString() }, idle, false, Date.now(), "").state, "available");
 });
+
+test("Antigravity: le pane suffit a savoir s'il travaille", () => {
+  const working = [
+    "● Bash(node ../scripts/gen-flow-browser.mjs --inspect)",
+    "⣻  Running command...",
+    "──────",
+    ">",
+    "──────",
+    "esc to cancel                                        Gemini 3.7 Flash · high",
+  ].join("\n");
+  assert.equal(paneAgentState(working), "working");
+
+  const idle = [
+    "  Aucune modification n'a été effectuée. Je suis prêt pour votre prochaine instruction.",
+    "──────",
+    ">",
+    "──────",
+    "? for shortcuts                                      Gemini 3.7 Flash · high",
+  ].join("\n");
+  assert.equal(paneAgentState(idle), "available");
+});

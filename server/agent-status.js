@@ -5,7 +5,7 @@ const STATES = {
 };
 
 // Marqueurs de travail: compteur de duree du TUI, sortie d'outil en cours, rappel d'interruption.
-const WORKING_HINT = /((esc|échap|ctrl-c)[^\n]{0,24}(to )?(interrupt|interrompre)|⎿\s*(running|exécution)|\(\s*\d+\s*(h|m|s)[^)\n]{0,24}·|^[✻✽✢✳✶*⠋⠙⠹]\s+\S+…)/im;
+const WORKING_HINT = /((esc|échap|ctrl-c)[^\n]{0,24}(to )?(interrupt|interrompre|cancel|annuler)|⎿\s*(running|exécution)|\(\s*\d+\s*(h|m|s)[^)\n]{0,24}·|^[✻✽✢✳✶*⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]\s+\S+|running command|thought for \d|thinking…)/im;
 // Marqueurs de repos: composer vide, fin de tour, pied de page inactif.
 const IDLE_HINT = /(ask codex to do anything|worked for \d|\b(gpt|claude|o\d)[\w.-]*\s+(minimal|low|medium|high|xhigh)\s*·|\? for shortcuts)/i;
 
