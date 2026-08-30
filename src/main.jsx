@@ -2364,8 +2364,11 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       event.preventDefault();
     };
     // Coller une image: on l'intercepte avant tout, quel que soit le mode de saisie.
+    // xterm garde le focus sur sa propre zone de saisie: un collage d'image y arrive aussi,
+    // on ne l'ignore que dans les champs de l'application (modales, formulaires).
+    const inTerminal = (node) => node instanceof HTMLElement && node.closest(".terminal-frame, .terminal-controls");
     const pasteFile = (event) => {
-      if (editableTarget(event.target)) return false;
+      if (editableTarget(event.target) && !inTerminal(event.target)) return false;
       const file = [...(event.clipboardData?.files || [])][0]
         || [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file").map((item) => item.getAsFile())[0];
       if (!file) return false;
@@ -2582,7 +2585,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    await sendFile(file);
+    // Chemin insere sans validation: la consigne s'ecrit autour avant d'envoyer.
+    await sendFile(file, { submit: false });
     focusKeyboard();
   }
 
