@@ -1356,3 +1356,4 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .provider-switch select { height: 29px; max-width: 140px; padding: 0 6px; border: 1px solid var(--c-3d4d66); border-radius: 5px; background: var(--c-152033); color: var(--c-b7c9ff); font-size: 9px; font-weight: 650; }
 .provider-switch select:disabled { opacity: .55; }
 .provider-switch em { color: var(--green); font-style: normal; font-size: 10px; }
+.quota-providers { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }

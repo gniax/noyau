@@ -83,6 +83,15 @@ async function commandPath(name) {
   }
 }
 
+// Un outil peut s'installer sous plusieurs noms: on retient le premier reellement present.
+async function firstCommandPath(names) {
+  for (const name of names) {
+    const found = await commandPath(name);
+    if (path.isAbsolute(found)) return found;
+  }
+  return names[0];
+}
+
 const accessToken = await getAccessToken();
 const store = new SessionStore(path.join(dataDir, "sessions.json"));
 await store.load();
@@ -158,7 +167,7 @@ const enableBanking = new EnableBankingService({ store: bankingStore, finance: f
 financeService.setAggregatorConfigured(enableBanking.configured());
 const codexBinary = process.env.CODEX_BIN || (await commandPath("codex"));
 const claudeBinary = process.env.CLAUDE_BIN || (await commandPath("claude"));
-const antigravityBinary = process.env.ANTIGRAVITY_BIN || (await commandPath("antigravity"));
+const antigravityBinary = process.env.ANTIGRAVITY_BIN || (await firstCommandPath(["antigravity", "agy"]));
 const tmux = new TmuxController({
   store,
   workspaceRoot,

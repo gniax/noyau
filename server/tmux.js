@@ -21,7 +21,7 @@ export function classifyAssistant(command, storedAssistant) {
   if (storedAssistant) return storedAssistant;
   if (command.includes("claude")) return "claude";
   if (command.includes("codex")) return "codex";
-  if (command.includes("antigravity")) return "antigravity";
+  if (command.includes("antigravity") || /\bagy\b/.test(command)) return "antigravity";
   return "shell";
 }
 
