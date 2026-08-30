@@ -46,9 +46,9 @@ export class TmuxController {
 
   // La molette ne doit jamais devenir des fleches, et l'historique doit valoir la peine d'etre deroule.
   async applyScrollDefaults() {
-    for (const option of [["alternate-scroll", "off"], ["history-limit", "20000"]]) {
-      await this.run(["set-option", "-g", ...option]).catch(() => {});
-    }
+    // alternate-scroll est une option de fenetre: sans -w, tmux continue d'envoyer des fleches.
+    await this.run(["set-option", "-wg", "alternate-scroll", "off"]).catch(() => {});
+    await this.run(["set-option", "-g", "history-limit", "20000"]).catch(() => {});
   }
 
   async list() {
