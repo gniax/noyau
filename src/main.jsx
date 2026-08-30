@@ -31,7 +31,21 @@ function profileCacheKey(key) {
 }
 
 const ROOT_FOLDER = "root";
+const DEVICE_KEY = "noyau:device";
 const CONFIRM_KEY = "noyau:confirm";
+
+// Identite locale de l'appareil: elle relie la presence a l'abonnement push de cet ecran.
+function deviceId() {
+  try {
+    const known = localStorage.getItem(DEVICE_KEY);
+    if (known) return known;
+    const created = `device-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+    localStorage.setItem(DEVICE_KEY, created);
+    return created;
+  } catch {
+    return "device-volatile";
+  }
+}
 const OSK_KEY = "noyau:osk";
 
 // Confirmations d'app (redemarrage, changement de fournisseur): desactivables par appareil.
@@ -2798,7 +2812,7 @@ function NewSessionModal({ projects, sessions, assistants, onClose, onCreated })
           <input id="cwd" list="agent-directories" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="/home/user/projects/mon-projet" autoComplete="off" spellCheck="false" />
           <datalist id="agent-directories">{[...new Set(sessions.map((session) => session.cwd).filter(Boolean))].map((directory) => <option value={directory} key={directory} />)}</datalist>
           <p className="form-hint">Chemin existant sur ce PC. Vide = dossier projets par défaut. Projet sert seulement au classement.</p>
-          {["codex", "claude"].includes(assistant) && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{assistant === "codex" ? "Codex --yolo" : "Claude --dangerously-skip-permissions"}</small></span></label>}
+          {assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{assistant === "codex" ? "Codex --yolo" : `${assistantMeta[assistant]?.label} --dangerously-skip-permissions`}</small></span></label>}
           <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Cherche logo/icon dans dossier projet</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
           {error && <p className="form-error">{error}</p>}
@@ -2854,7 +2868,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
           </>}
           <label htmlFor="edit-project">Projet</label>
           <select id="edit-project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
-          {session.assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{session.assistant === "codex" ? "Codex --yolo" : "Claude --dangerously-skip-permissions"}</small></span></label>}
+          {session.assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{session.assistant === "codex" ? "Codex --yolo" : `${assistantMeta[session.assistant]?.label} --dangerously-skip-permissions`}</small></span></label>}
           <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Remplace icône agent si logo trouvé</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Partager l’agent</strong><small>Visible et utilisable depuis les autres profils</small></span></label>
@@ -3064,9 +3078,10 @@ function App() {
     return () => window.removeEventListener("keydown", detect);
   }, []);
 
+  // Tant que cet ecran est au premier plan, il est aux commandes: les alertes lui reviennent.
   useEffect(() => {
-    if (!auth || !activeId) return undefined;
-    const ping = () => document.visibilityState === "visible" && api("/api/presence", { method: "POST", body: JSON.stringify({ sessionId: activeId }) }).catch(() => {});
+    if (!auth) return undefined;
+    const ping = () => document.visibilityState === "visible" && api("/api/presence", { method: "POST", body: JSON.stringify({ sessionId: activeId, deviceId: deviceId() }) }).catch(() => {});
     ping();
     const timer = setInterval(ping, 30_000);
     document.addEventListener("visibilitychange", ping);
@@ -3238,7 +3253,7 @@ function App() {
           userVisibleOnly: true,
           applicationServerKey: applicationServerKey(publicKey),
         });
-        await api("/api/notifications/subscribe", { method: "POST", body: JSON.stringify({ subscription: subscription.toJSON() }) });
+        await api("/api/notifications/subscribe", { method: "POST", body: JSON.stringify({ subscription: subscription.toJSON(), deviceId: deviceId() }) });
       }
       await register();
       setPermission("active");

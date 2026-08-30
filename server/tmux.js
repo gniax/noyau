@@ -128,6 +128,9 @@ export class TmuxController {
           if (entry.agentSessionId) args.push(String(entry.agentSessionId));
         } else if (entry.assistant === "antigravity") {
           args.push(this.commands.antigravity, ...this.antigravityArgs);
+          if (entry.yolo) args.push("--dangerously-skip-permissions");
+          if (entry.agentSessionId) args.push("--conversation", String(entry.agentSessionId));
+          else args.push("--continue");
         }
         await this.run(args);
         live.add(id);
@@ -165,7 +168,10 @@ export class TmuxController {
         args.push("-c", "check_for_update_on_startup=false");
       }
       if (assistant === "claude" && unrestricted) args.push("--dangerously-skip-permissions");
-      if (prompt) args.push(String(prompt).slice(0, 50_000));
+      if (assistant === "antigravity" && unrestricted) args.push("--dangerously-skip-permissions");
+      // Antigravity attend son prompt derriere une option, pas en argument libre.
+      if (prompt && assistant === "antigravity") args.push("--prompt-interactive", String(prompt).slice(0, 50_000));
+      else if (prompt) args.push(String(prompt).slice(0, 50_000));
     }
     await this.run(args);
 
@@ -222,8 +228,13 @@ export class TmuxController {
     const workingDirectory = path.resolve(cwd || this.workspaceRoot);
     // Un terminal n'a pas de conversation a reprendre: on relance simplement le shell.
     if (assistant === "shell") return this.run(["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory]);
-    // Antigravity: pas de reprise documentee, on relance l'agent tel quel.
-    if (assistant === "antigravity") return this.run(["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands.antigravity, ...this.antigravityArgs]);
+    if (assistant === "antigravity") {
+      const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands.antigravity, ...this.antigravityArgs];
+      if (yolo) args.push("--dangerously-skip-permissions");
+      if (threadId) args.push("--conversation", String(threadId));
+      else args.push("--continue");
+      return this.run(args);
+    }
     const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands[assistant]];
     if (assistant === "codex") {
       args.push("--no-alt-screen");

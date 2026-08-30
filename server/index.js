@@ -138,14 +138,26 @@ const usage = new UsageService();
 const projectLogos = new ProjectLogoService();
 const migrations = new Map();
 const notificationTestCursor = new Map();
-// Presence: tant qu'un ecran regarde un agent, ses alertes restent sur cet ecran.
+// Presence: on sait quel appareil est aux commandes, et quel agent il regarde.
 const presence = new Map();
 const PRESENCE_TTL = 90_000;
 
-function watchingSession(sessionId) {
-  if (!sessionId) return false;
-  const seen = presence.get(sessionId);
-  return Boolean(seen && Date.now() - seen < PRESENCE_TTL);
+function livePresence(profileId) {
+  const now = Date.now();
+  for (const [id, seen] of presence) if (now - seen.at > PRESENCE_TTL) presence.delete(id);
+  return [...presence.entries()]
+    .filter(([, seen]) => seen.profileId === profileId)
+    .sort(([, left], [, right]) => right.at - left.at)
+    .map(([deviceId, seen]) => ({ deviceId, ...seen }));
+}
+
+function watchingSession(profileId, sessionId) {
+  return livePresence(profileId).some((seen) => seen.sessionId && seen.sessionId === sessionId);
+}
+
+// Appareil actif: il capte seul les alertes; sans appareil actif, tout le monde est prevenu.
+function activeDevice(profileId) {
+  return livePresence(profileId)[0]?.deviceId || null;
 }
 const weatherCache = new Map();
 const moduleService = new ModuleService({
@@ -259,7 +271,8 @@ const handover = new HandoverService();
 const MIGRATION_FALLBACK_MS = 90 * 1000;
 const QUOTA_EXHAUSTED_PERCENT = 5;
 const promptWatcher = new PromptWatcher({
-  shouldNotify: (sessionId) => !watchingSession(sessionId),
+  shouldNotify: (sessionId, profileId) => !watchingSession(profileId || primaryProfileId, sessionId),
+  sessionDevice: (session) => activeDevice(session.profileId || primaryProfileId),
   tmux,
   push,
   sessionLabel: (session) => (session.projectId ? projects.get(session.projectId)?.name : null) || session.name,
@@ -646,10 +659,10 @@ app.use("/api", async (request, response, next) => {
 app.get("/api/config", (_request, response) => response.json({ workspaceRoot }));
 
 app.post("/api/presence", (request, response) => {
-  const sessionId = request.body?.sessionId;
-  const now = Date.now();
-  for (const [id, seen] of presence) if (now - seen > PRESENCE_TTL) presence.delete(id);
-  if (sessionId && validSessionId(sessionId)) presence.set(sessionId, now);
+  const deviceId = String(request.body?.deviceId || "").slice(0, 64);
+  const sessionId = validSessionId(String(request.body?.sessionId || "")) ? request.body.sessionId : null;
+  if (deviceId) presence.set(deviceId, { at: Date.now(), sessionId, profileId: request.profile.id });
+  livePresence(request.profile.id);
   response.status(204).end();
 });
 
@@ -1183,7 +1196,7 @@ app.get("/api/notifications", (_request, response) => {
 
 app.post("/api/notifications/subscribe", async (request, response, next) => {
   try {
-    await push.subscribe(request.body?.subscription, request.profile.id);
+    await push.subscribe(request.body?.subscription, request.profile.id, String(request.body?.deviceId || "").slice(0, 64) || null);
     response.status(201).json({ ok: true });
   } catch (error) {
     next(error);
@@ -1307,8 +1320,10 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     payload.url ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&profile=${encodeURIComponent(notificationProfileId)}` : "/";
     payload.replyUrl ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&reply=1&profile=${encodeURIComponent(notificationProfileId)}` : payload.url;
     payload.actions = [{ action: "reply", title: "Répondre" }];
-    // Prompt lance depuis un ecran qui regarde l'agent: inutile de sonner ailleurs.
-    const devices = watchingSession(sessionId) ? 0 : await push.send(payload, notificationProfileId);
+    // Ecran ouvert sur cet agent: rien a annoncer. Sinon, seul l'appareil aux commandes sonne.
+    const devices = watchingSession(notificationProfileId, sessionId)
+      ? 0
+      : await push.send(payload, notificationProfileId, activeDevice(notificationProfileId));
     response.json({ sent: true, devices });
     if (permissionRestart?.threadId) schedulePermissionRestart(sessionId, permissionRestart);
   } catch (error) {
@@ -1397,7 +1412,7 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     if (!session?.managed || !current) throw new Error("Session Noyau introuvable.");
     const name = request.body?.name === undefined ? current.name : String(request.body.name).trim().slice(0, 60);
     if (!name) throw new Error("Nom requis.");
-    const yolo = ["codex", "claude"].includes(session.assistant)
+    const yolo = ["codex", "claude", "antigravity"].includes(session.assistant)
       ? (request.body?.yolo === undefined ? Boolean(current.yolo) : Boolean(request.body.yolo))
       : false;
     const projectLogo = request.body?.projectLogo === undefined ? Boolean(current.projectLogo) : Boolean(request.body.projectLogo);
@@ -1414,7 +1429,7 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
       return response.json({ session: { ...created, logoUrl: logoUrl(created) }, switched: true, history, restarted: true, pending: false });
     }
     let next = { ...current, name, yolo, projectLogo, projectId, favorite, shared };
-    const permissionChanged = ["codex", "claude"].includes(session.assistant) && yolo !== Boolean(current.runningYolo);
+    const permissionChanged = ["codex", "claude", "antigravity"].includes(session.assistant) && yolo !== Boolean(current.runningYolo);
     let restarted = false;
     if (permissionChanged) {
       let threadId = session.assistant === "codex" ? current.threadId : current.agentSessionId;

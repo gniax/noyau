@@ -35,18 +35,19 @@ export class PushService {
   }
 
   // Un appareil appartient a un profil: les alertes d'un compte ne partent jamais sur le telephone de l'autre.
-  async subscribe(subscription, profileId = null) {
+  async subscribe(subscription, profileId = null, deviceId = null) {
     if (!this.valid(subscription)) throw new Error("Abonnement push invalide.");
-    const entry = { ...subscription, profileId: profileId || this.defaultProfileId };
+    const entry = { ...subscription, profileId: profileId || this.defaultProfileId, deviceId: deviceId || null };
     const existing = this.subscriptions.findIndex((item) => item.endpoint === subscription.endpoint);
     if (existing >= 0) this.subscriptions[existing] = entry;
     else this.subscriptions.push(entry);
     await this.persist();
   }
 
-  devices(profileId = null) {
-    if (!profileId) return this.subscriptions;
-    return this.subscriptions.filter((item) => (item.profileId || this.defaultProfileId) === profileId);
+  devices(profileId = null, deviceId = null) {
+    const scoped = profileId ? this.subscriptions.filter((item) => (item.profileId || this.defaultProfileId) === profileId) : this.subscriptions;
+    // Un appareil est aux commandes: les alertes ne partent que sur celui-la.
+    return deviceId ? scoped.filter((item) => item.deviceId === deviceId) : scoped;
   }
 
   async unsubscribe(endpoint) {
@@ -54,10 +55,10 @@ export class PushService {
     await this.persist();
   }
 
-  async send(payload, profileId = null) {
+  async send(payload, profileId = null, deviceId = null) {
     const expired = new Set();
     const results = await Promise.allSettled(
-      this.devices(profileId).map(async (subscription) => {
+      this.devices(profileId, deviceId).map(async (subscription) => {
         try {
           await webpush.sendNotification(subscription, JSON.stringify(payload), { TTL: 3600, urgency: "high" });
           return true;
