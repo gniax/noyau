@@ -31,7 +31,17 @@ function profileCacheKey(key) {
 }
 
 const ROOT_FOLDER = "root";
+const CONFIRM_KEY = "noyau:confirm";
 const OSK_KEY = "noyau:osk";
+
+// Confirmations d'app (redemarrage, changement de fournisseur): desactivables par appareil.
+// Les actions destructrices gardent toujours leur garde-fou.
+function confirmAction(message) {
+  try {
+    if (localStorage.getItem(CONFIRM_KEY) === "off") return true;
+  } catch { /* stockage optionnel */ }
+  return window.confirm(message);
+}
 const PHYSICAL_KEY = "noyau:physical-keyboard";
 
 // Clavier virtuel: "auto" le retient des qu'un vrai clavier a servi sur cet appareil.
@@ -1982,6 +1992,14 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
   const [refreshing, setRefreshing] = useState(false);
   const [versionInfo, setVersionInfo] = useState(null);
   const [osk, setOsk] = useState(oskMode);
+  const [confirmMode, setConfirmMode] = useState(() => {
+    try { return localStorage.getItem(CONFIRM_KEY) || "on"; } catch { return "on"; }
+  });
+
+  function chooseConfirm(value) {
+    setConfirmMode(value);
+    try { localStorage.setItem(CONFIRM_KEY, value); } catch { /* stockage optionnel */ }
+  }
 
   function chooseOsk(value) {
     setOsk(value);
@@ -2006,6 +2024,7 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
         <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>Fin réponse, attente validation, migration terminée.</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
         <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
+        <article><span className="setting-symbol">✓</span><div><strong>Confirmations</strong><small>{confirmMode === "off" ? "Redémarrage et changement de fournisseur immédiats" : "Demandées avant redémarrage et changement de fournisseur"} · suppressions toujours confirmées</small></div><select className="setting-select" value={confirmMode} onChange={(event) => chooseConfirm(event.target.value)} aria-label="Confirmations"><option value="on">Demander</option><option value="off">Sans confirmation</option></select></article>
         <article><span className="setting-symbol">⌨</span><div><strong>Clavier virtuel</strong><small>Réglage propre à cet appareil · {osk === "auto" ? (wantsOnScreenKeyboard() ? "ouvert au toucher ici" : "désactivé ici (clavier physique ou PC)") : osk === "always" ? "toujours ouvert au toucher" : "jamais ouvert"}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label="Clavier virtuel"><option value="auto">Automatique</option><option value="always">Toujours</option><option value="never">Jamais</option></select></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexion privée</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : "Ouvre version HTTPS via VPN"}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
       </section>
@@ -2593,7 +2612,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
 
   // Redemarrage: le pane repart avec la meme conversation, la connexion terminal se remet toute seule.
   async function restart() {
-    if (restarting || !window.confirm("Redémarrer l'agent en reprenant la conversation en cours ?")) return;
+    if (restarting || !confirmAction("Redémarrer l'agent en reprenant la conversation en cours ?")) return;
     setRestarting(true);
     try {
       const result = await api(`/api/sessions/${session.id}/restart`, { method: "POST" });
@@ -2614,7 +2633,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
 
   async function migrate(target) {
     if (!target || target === session.assistant) return;
-    if (!window.confirm(`Basculer « ${session.name} » vers ${assistantMeta[target]?.label || target} ? Le contexte de la conversation est transmis au nouvel agent.`)) return;
+    if (!confirmAction(`Basculer « ${session.name} » vers ${assistantMeta[target]?.label || target} ? Le contexte de la conversation est transmis au nouvel agent.`)) return;
     setMigrating(true);
     try {
       const result = await api(`/api/sessions/${session.id}/migrate`, { method: "POST", body: JSON.stringify({ target }) });
@@ -3044,6 +3063,15 @@ function App() {
     window.addEventListener("keydown", detect);
     return () => window.removeEventListener("keydown", detect);
   }, []);
+
+  useEffect(() => {
+    if (!auth || !activeId) return undefined;
+    const ping = () => document.visibilityState === "visible" && api("/api/presence", { method: "POST", body: JSON.stringify({ sessionId: activeId }) }).catch(() => {});
+    ping();
+    const timer = setInterval(ping, 30_000);
+    document.addEventListener("visibilitychange", ping);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", ping); };
+  }, [auth, activeId]);
 
   useEffect(() => {
     if (!auth) return;

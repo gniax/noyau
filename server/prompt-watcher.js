@@ -27,7 +27,8 @@ export function agentNotificationTitle(label, text) {
 }
 
 export class PromptWatcher {
-  constructor({ tmux, push, interval = 2500, sessionLabel = (session) => session.name, sessionIcon = async () => null }) {
+  constructor({ tmux, push, interval = 2500, sessionLabel = (session) => session.name, sessionIcon = async () => null, shouldNotify = () => true }) {
+    this.shouldNotify = shouldNotify;
     this.tmux = tmux;
     this.push = push;
     this.interval = interval;
@@ -64,6 +65,8 @@ export class PromptWatcher {
         }
         if (this.waiting.has(session.id)) return;
         this.waiting.add(session.id);
+        // Ecran deja ouvert sur cet agent: la demande de validation est visible sans notification.
+        if (!this.shouldNotify(session.id)) return;
         try {
           await this.push.send({
             title: agentNotificationTitle(this.sessionLabel(session), "Codex attend validation"),

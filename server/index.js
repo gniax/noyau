@@ -138,6 +138,15 @@ const usage = new UsageService();
 const projectLogos = new ProjectLogoService();
 const migrations = new Map();
 const notificationTestCursor = new Map();
+// Presence: tant qu'un ecran regarde un agent, ses alertes restent sur cet ecran.
+const presence = new Map();
+const PRESENCE_TTL = 90_000;
+
+function watchingSession(sessionId) {
+  if (!sessionId) return false;
+  const seen = presence.get(sessionId);
+  return Boolean(seen && Date.now() - seen < PRESENCE_TTL);
+}
 const weatherCache = new Map();
 const moduleService = new ModuleService({
   workspaceRoot,
@@ -250,6 +259,7 @@ const handover = new HandoverService();
 const MIGRATION_FALLBACK_MS = 90 * 1000;
 const QUOTA_EXHAUSTED_PERCENT = 5;
 const promptWatcher = new PromptWatcher({
+  shouldNotify: (sessionId) => !watchingSession(sessionId),
   tmux,
   push,
   sessionLabel: (session) => (session.projectId ? projects.get(session.projectId)?.name : null) || session.name,
@@ -634,6 +644,14 @@ app.use("/api", async (request, response, next) => {
 });
 
 app.get("/api/config", (_request, response) => response.json({ workspaceRoot }));
+
+app.post("/api/presence", (request, response) => {
+  const sessionId = request.body?.sessionId;
+  const now = Date.now();
+  for (const [id, seen] of presence) if (now - seen > PRESENCE_TTL) presence.delete(id);
+  if (sessionId && validSessionId(sessionId)) presence.set(sessionId, now);
+  response.status(204).end();
+});
 
 app.get("/api/profiles", (request, response) => {
   response.json({ profiles: profileService.list(), activeProfileId: request.profile.id, primaryProfileId });
@@ -1289,7 +1307,8 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     payload.url ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&profile=${encodeURIComponent(notificationProfileId)}` : "/";
     payload.replyUrl ||= sessionId && validSessionId(sessionId) ? `/?session=${encodeURIComponent(sessionId)}&reply=1&profile=${encodeURIComponent(notificationProfileId)}` : payload.url;
     payload.actions = [{ action: "reply", title: "Répondre" }];
-    const devices = await push.send(payload, notificationProfileId);
+    // Prompt lance depuis un ecran qui regarde l'agent: inutile de sonner ailleurs.
+    const devices = watchingSession(sessionId) ? 0 : await push.send(payload, notificationProfileId);
     response.json({ sent: true, devices });
     if (permissionRestart?.threadId) schedulePermissionRestart(sessionId, permissionRestart);
   } catch (error) {
