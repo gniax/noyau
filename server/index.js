@@ -267,6 +267,9 @@ function currentMonthParis() {
   return `${parts.year}-${parts.month}`;
 }
 
+const SAVINGS_ACCOUNT = /livret|\blep\b|\bldds?\b|\bpel\b|\bcel\b|epargne|épargne/i;
+const INVESTED_ACCOUNT = /\bpea\b|assurance vie|compte titres|\btitres\b|bourse|\bper\b/i;
+
 function financePayload(profileId, month = currentMonthParis()) {
   const runtime = profileRuntimes.get(profileId);
   if (!runtime) throw new Error("Profil finances indisponible.");
@@ -276,6 +279,37 @@ function financePayload(profileId, month = currentMonthParis()) {
     .filter((account) => Number.isFinite(account.balance) && account.balanceType !== "OTHR" && !/carte|livret|\blep\b|\bpea\b|epargne|assurance vie|compte titres/i.test(account.name))
     .map((account) => ({ bank: connection.bankName, name: account.name, balance: account.balance, currency: account.currency, balanceAt: account.balanceAt })));
   const currentCash = Math.round(currentAccounts.reduce((total, account) => total + account.balance, 0) * 100) / 100;
+  // Les livrets et placements suivent les soldes reels: un virement vers le LEP se voit sans saisie manuelle.
+  const savingsAccounts = status.connections.flatMap((connection) => connection.accounts
+    .filter((account) => Number.isFinite(account.balance) && account.balanceType !== "OTHR" && (SAVINGS_ACCOUNT.test(account.name) || INVESTED_ACCOUNT.test(account.name)))
+    .map((account) => ({
+      id: `bank-${connection.bankName}-${account.name}`.replace(/\s+/g, "-").toLowerCase(),
+      name: account.name,
+      institution: connection.bankName,
+      amount: account.balance,
+      bucket: INVESTED_ACCOUNT.test(account.name) ? "invested" : "liquid",
+      balanceAt: account.balanceAt,
+      source: "banque",
+    })));
+  const bankAssets = {
+    liquid: Math.round(savingsAccounts.filter(({ bucket }) => bucket === "liquid").reduce((total, account) => total + account.amount, 0) * 100) / 100,
+    invested: Math.round(savingsAccounts.filter(({ bucket }) => bucket === "invested").reduce((total, account) => total + account.amount, 0) * 100) / 100,
+  };
+  const manualAssets = payload.summary.assets.entries.filter((asset) => !savingsAccounts.some((account) => account.name.toLowerCase() === asset.name.toLowerCase()));
+  const assetEntries = [...savingsAccounts, ...manualAssets];
+  const assets = savingsAccounts.length
+    ? {
+        liquid: Math.round((bankAssets.liquid + manualAssets.filter(({ bucket }) => bucket === "liquid").reduce((total, asset) => total + asset.amount, 0)) * 100) / 100,
+        invested: Math.round((bankAssets.invested + manualAssets.filter(({ bucket }) => bucket === "invested").reduce((total, asset) => total + asset.amount, 0)) * 100) / 100,
+        total: Math.round(assetEntries.reduce((total, asset) => total + asset.amount, 0) * 100) / 100,
+        entries: assetEntries,
+        source: "banque",
+      }
+    : { ...payload.summary.assets, source: "modules" };
+  // Ce qui est parti vers l'epargne ce mois-ci, transferts internes compris.
+  const savedThisMonth = Math.round(payload.transactions
+    .filter((item) => item.date.startsWith(month) && item.excluded && item.exclusionReason === "placement" && item.amount < 0)
+    .reduce((total, item) => total + Math.abs(item.amount), 0) * 100) / 100;
   const expectedIncomeRemaining = month === currentMonthParis() ? Math.max(0, Math.round((payload.summary.inferredIncome - payload.summary.recordedSalary) * 100) / 100) : 0;
   const forecastBalance = Math.round((currentCash + expectedIncomeRemaining - payload.summary.remainingPlannedExpenses) * 100) / 100;
   const cashSafeToSpend = Math.max(0, Math.round((forecastBalance - payload.summary.safetyBuffer - payload.summary.protectedSavings) * 100) / 100);
@@ -286,7 +320,7 @@ function financePayload(profileId, month = currentMonthParis()) {
   const lastSyncAt = status.connections.map((connection) => connection.lastSyncAt).filter(Boolean).sort().at(-1) || null;
   return {
     ...payload,
-    summary: { ...payload.summary, currentCash, currentAccounts, expectedIncomeRemaining, forecastBalance, safeToSpend, dailyAllowance, warnings },
+    summary: { ...payload.summary, currentCash, currentAccounts, savingsAccounts, assets, savedThisMonth, expectedIncomeRemaining, forecastBalance, safeToSpend, dailyAllowance, warnings },
     banking: { ...payload.banking, status, lastSyncAt, autoSync: runtime.enableBanking.store.get(AUTO_SYNC_KEY) || null },
   };
 }

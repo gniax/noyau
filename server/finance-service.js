@@ -376,9 +376,12 @@ export class FinanceService {
       updatedAt: new Date().toISOString(),
     };
     if (moduleType === "asset") {
+      const amount = money(input.amount ?? existing?.amount ?? 0, "Montant actif");
       return {
         ...common,
-        amount: money(input.amount ?? existing?.amount ?? 0, "Montant actif"),
+        amount,
+        // Repere de depart: les versements posterieurs viennent s'ajouter au montant saisi.
+        amountUpdatedAt: amount === existing?.amount ? existing?.amountUpdatedAt || existing?.createdAt || common.createdAt : new Date().toISOString(),
         bucket: ["liquid", "invested"].includes(input.bucket ?? existing?.bucket) ? input.bucket ?? existing.bucket : "liquid",
         institution: String(input.institution ?? existing?.institution ?? "").trim().slice(0, 80),
         transactionMatch: String(input.transactionMatch ?? existing?.transactionMatch ?? "").trim().slice(0, 240),
@@ -824,10 +827,32 @@ export class FinanceService {
     const dataConfidence = history.length >= 3 ? "high" : history.length >= 2 ? "medium" : "low";
     const essentialBase = round([...ESSENTIAL_CATEGORY_IDS].reduce((total, id) => total + Math.max(settings.budgets[id], categoryPlans[id].historicalAverage, spentByCategory[id]), 0));
     const emergencyTarget = round(essentialBase * settings.emergencyMonths);
+    // Un actif suit les versements qui lui correspondent: un virement vers le LEP le fait monter.
     const assetEntries = modules
       .filter(({ moduleType, enabled }) => moduleType === "asset" && enabled !== false)
-      .map(({ id, name, institution, amount, bucket }) => ({ id, name, institution, amount, bucket }));
+      .map((module) => {
+        const { id, name, institution, amount, bucket } = module;
+        const terms = matchTerms(module.transactionMatch);
+        const fallback = normalized(name);
+        const matchers = terms.length ? terms : fallback.length >= 3 ? [fallback] : [];
+        const since = String(module.amountUpdatedAt || module.createdAt || "").slice(0, 10);
+        const contributions = matchers.length
+          ? round(allTransactions
+            .filter((transaction) => (!since || transaction.date > since) && matchers.some((matcher) => normalized(transaction.description).includes(matcher)))
+            .reduce((total, transaction) => total - transaction.amount, 0))
+          : 0;
+        return { id, name, institution, bucket, baseAmount: amount, contributions, amount: round(amount + contributions) };
+      });
+    const unassignedSavings = round(allTransactions
+      .filter((transaction) => transaction.date.startsWith(selectedMonth) && transaction.exclusionReason === "placement" && transaction.amount < 0)
+      .filter((transaction) => !assetEntries.some((asset) => {
+        const terms = matchTerms(modules.find(({ id }) => id === asset.id)?.transactionMatch);
+        const matchers = terms.length ? terms : [normalized(asset.name)];
+        return matchers.some((matcher) => matcher.length >= 3 && normalized(transaction.description).includes(matcher));
+      }))
+      .reduce((total, transaction) => total + Math.abs(transaction.amount), 0));
     const assets = {
+      unassignedSavings,
       liquid: round(assetEntries.filter(({ bucket }) => bucket === "liquid").reduce((total, asset) => total + asset.amount, 0)),
       invested: round(assetEntries.filter(({ bucket }) => bucket === "invested").reduce((total, asset) => total + asset.amount, 0)),
       total: round(assetEntries.reduce((total, asset) => total + asset.amount, 0)),
@@ -912,6 +937,7 @@ export class FinanceService {
     if (incomeSource === "history") warnings.push({ id: "income-estimate", tone: "info", title: "Salaire estimé", detail: `Base prudente sur ${incomeHistoryMonths} mois: ${inferredIncome.toFixed(2)} €.` });
     if (history.length < 2) warnings.push({ id: "history", tone: "info", title: "Projection provisoire", detail: "Importe 2 à 3 mois pour fiabiliser reste dépensable et épargne." });
     if (income > 0 && expenses > income) warnings.push({ id: "deficit", tone: "danger", title: "Mois déficitaire", detail: `${round(expenses - income).toFixed(2)} € au-dessus revenus.` });
+    if (assets.unassignedSavings > 0) warnings.push({ id: "unassigned-savings", tone: "warning", title: "Versements épargne non rattachés", detail: `${assets.unassignedSavings.toFixed(2)} € placés ce mois sans actif correspondant. Ajoute le motif du virement sur l'actif concerné dans Budget · Modules.` });
     if (settings.savingsGoal > protectedSavings) warnings.push({ id: "savings", tone: "warning", title: "Objectif épargne trop haut", detail: `${protectedSavings.toFixed(2)} € soutenables selon dépenses et réserve actuelles.` });
     if (income > 0 && safeToSpend === 0) warnings.push({ id: "safe-spend", tone: "danger", title: "Pause dépenses libres", detail: "Revenus restants réservés aux charges, imprévus et épargne soutenable." });
     for (const envelope of spendingEnvelopes) {

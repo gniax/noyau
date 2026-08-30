@@ -1154,8 +1154,8 @@ function FinanceView({ onView }) {
       </details>
 
       <details className="panel finance-assets foldable">
-        <summary className="panel-head"><div><h3>Actifs suivis</h3><p>Épargne disponible et placements bloqués, hors comptes courants</p></div><b className="asset-split"><span>{euro(summary.assets.liquid)} dispo</span><em>{euro(summary.assets.invested)} investi</em></b><i>›</i></summary>
-        <div>{summary.assets.entries.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{asset.bucket === "liquid" ? "Disponible" : "Investi · non mobilisable"}{asset.institution ? ` · ${asset.institution}` : ""}</small></span><b>{euro(asset.amount)}</b></article>)}{!summary.assets.entries.length && <p className="finance-empty">Aucun actif configuré.</p>}</div>
+        <summary className="panel-head"><div><h3>Actifs suivis</h3><p>{summary.assets.source === "banque" ? "Soldes réels des livrets et placements" : "Épargne disponible et placements bloqués, hors comptes courants"}{summary.savedThisMonth > 0 ? ` · ${euro(summary.savedThisMonth)} placés ce mois` : ""}</p></div><b className="asset-split"><span>{euro(summary.assets.liquid)} dispo</span><em>{euro(summary.assets.invested)} investi</em></b><i>›</i></summary>
+        <div>{summary.assets.entries.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{asset.bucket === "liquid" ? "Disponible" : "Investi · non mobilisable"}{asset.institution ? ` · ${asset.institution}` : ""}{asset.source === "banque" ? " · solde bancaire" : ""}{asset.contributions ? ` · ${asset.contributions > 0 ? "+" : "−"}${euro(Math.abs(asset.contributions))} depuis la saisie` : ""}</small></span><b>{euro(asset.amount)}</b></article>)}{!summary.assets.entries.length && <p className="finance-empty">Aucun actif configuré.</p>}</div>
         <footer><button className="ghost" onClick={() => onView("finance-modules")}>Gérer modules</button></footer>
       </details>
 
