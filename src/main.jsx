@@ -698,6 +698,29 @@ function ModuleKnowledge({ module, onConfigured }) {
   const [error, setError] = useState("");
   const [token, setToken] = useState("");
   const [pageUrl, setPageUrl] = useState("");
+  const [pages, setPages] = useState([]);
+  const [selectedRoot, setSelectedRoot] = useState("");
+  const [showConfig, setShowConfig] = useState(false);
+
+  const notion = module.knowledge?.provider === "notion";
+  const configured = module.knowledge?.status?.configured;
+
+  const loadPages = useCallback(async () => {
+    if (!notion) return;
+    try {
+      const result = await api(`/api/modules/${encodeURIComponent(module.id)}/knowledge/pages`);
+      setPages(result.pages || []);
+      if (module.knowledge?.status?.rootPageId) {
+        setSelectedRoot(module.knowledge.status.rootPageId);
+      }
+    } catch { /* ignore */ }
+  }, [module.id, notion, module.knowledge?.status?.rootPageId]);
+
+  useEffect(() => {
+    if (open && notion && configured) {
+      loadPages();
+    }
+  }, [open, notion, configured, loadPages]);
 
   async function load(folder = null, nextStack = stack) {
     setBusy(true);
@@ -709,6 +732,7 @@ function ModuleKnowledge({ module, onConfigured }) {
       setStack(nextStack);
       setPreview(null);
       setOpen(true);
+      if (notion) loadPages();
     } catch (reason) {
       setError(reason.message);
       setOpen(true);
@@ -739,11 +763,14 @@ function ModuleKnowledge({ module, onConfigured }) {
     try {
       const body = {};
       if (token.trim()) body.token = token.trim();
+      if (selectedRoot) body.rootPageId = selectedRoot;
       if (pageUrl.trim()) body.pageUrl = pageUrl.trim();
       await api(`/api/modules/${encodeURIComponent(module.id)}/knowledge/config`, { method: "PATCH", body: JSON.stringify(body) });
       setToken("");
+      setPageUrl("");
+      setShowConfig(false);
       await onConfigured?.();
-      await load();
+      await load(null, []);
     } catch (reason) {
       setError(reason.message);
       setOpen(true);
@@ -753,21 +780,74 @@ function ModuleKnowledge({ module, onConfigured }) {
   }
 
   if (!module.knowledge) return null;
-  const notion = module.knowledge.provider === "notion";
-  const configured = module.knowledge.status?.configured;
-  const scoped = module.knowledge.status?.scoped;
+  const rootLabel = module.knowledge.status?.rootPageName
+    ? `Racine : ${module.knowledge.status.rootPageName}`
+    : module.knowledge.status?.rootPageId
+      ? "Page racine connectée"
+      : configured
+        ? "Toutes les pages"
+        : null;
+
   return <>
-    <button className="primary" onClick={() => open ? setOpen(false) : (notion && !configured ? setOpen(true) : load())}>{open ? "Fermer contenu" : module.knowledge.label}</button>
+    <button className="primary" onClick={() => open ? setOpen(false) : (notion && !configured ? (setOpen(true), setShowConfig(true)) : load())}>
+      {open ? "Fermer contenu" : module.knowledge.label}
+    </button>
     {open && <section className="module-knowledge">
-      {notion && (!configured || !scoped) && <form className="module-knowledge-config" onSubmit={configureNotion}>
-        <strong>{configured ? "Partager page Atlas avec intégration, puis détecter" : "Connecter Notion"}</strong>
-        {!configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Token ntn_…" autoComplete="off" required />}
-        <input value={pageUrl} onChange={(event) => setPageUrl(event.target.value)} placeholder="URL page Atlas (optionnel si titre exact)" />
-        <button className="primary" disabled={busy}>{busy ? "Détection…" : configured ? "Détecter page" : "Enregistrer localement"}</button>
+      {notion && (showConfig || !configured) && <form className="module-knowledge-config" onSubmit={configureNotion}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <strong>{configured ? "Réglages Notion & Page racine" : "Connecter Notion"}</strong>
+          {configured && <button type="button" className="ghost" onClick={() => setShowConfig(false)}>Fermer</button>}
+        </div>
+        {!configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Token Notion ntn_…" autoComplete="off" required />}
+        {pages.length > 0 && (
+          <label style={{ display: "grid", gap: "4px" }}>
+            <span style={{ fontSize: "10px", color: "var(--c-a0aaa2)" }}>Choisir la page racine :</span>
+            <select value={selectedRoot} onChange={(event) => setSelectedRoot(event.target.value)}>
+              <option value="all">Toutes les pages partagées ({pages.length})</option>
+              {pages.map((page) => (
+                <option value={page.id} key={page.id}>{page.name}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <input value={pageUrl} onChange={(event) => setPageUrl(event.target.value)} placeholder="Ou coller URL de page Notion…" />
+        {configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Nouveau token Notion (optionnel)…" autoComplete="off" />}
+        <button className="primary" disabled={busy}>{busy ? "Enregistrement…" : "Enregistrer et appliquer"}</button>
       </form>}
-      {(!notion || configured) && <>
-        <header><button disabled={!stack.length || busy} onClick={() => { const next = stack.slice(0, -1); load(next.at(-1) || null, next); }}>←</button><strong>{stack.at(-1)?.name || (notion ? "Pages Notion" : "Drive Atlas")}</strong><button onClick={() => load(stack.at(-1) || null, stack)} disabled={busy} aria-label="Rafraîchir">↻</button></header>
-        {!preview ? <div className="module-knowledge-list">{items.map((item) => <button key={item.id} onClick={() => openItem(item)}><i>{item.kind === "folder" ? "▸" : item.kind === "page" ? "N" : "·"}</i><span><strong>{item.name}</strong><small>{item.kind}{item.modified ? ` · ${item.modified}` : ""}</small></span><b>{item.kind === "folder" ? "›" : "↗"}</b></button>)}{!items.length && !busy && <span>Aucun contenu visible.</span>}</div> : <div className="module-knowledge-preview"><header><strong>{preview.name}</strong><a href={preview.url} target="_blank" rel="noreferrer">Ouvrir ↗</a></header><pre>{preview.content.slice(0, 30_000)}</pre>{preview.truncated && <small>Page tronquée par Notion.</small>}<button onClick={() => setPreview(null)}>← Fichiers</button></div>}
+
+      {(!notion || configured) && !showConfig && <>
+        <header>
+          <button disabled={!stack.length || busy} onClick={() => { const next = stack.slice(0, -1); load(next.at(-1) || null, next); }}>←</button>
+          <strong title={stack.at(-1)?.name || rootLabel || (notion ? "Pages Notion" : "Drive Atlas")}>
+            {stack.at(-1)?.name || (notion ? (rootLabel || "Pages Notion") : "Drive Atlas")}
+          </strong>
+          <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
+            {notion && <button type="button" onClick={() => (loadPages(), setShowConfig(true))} title="Changer la page racine ou le token" aria-label="Réglages">⚙</button>}
+            <button onClick={() => load(stack.at(-1) || null, stack)} disabled={busy} aria-label="Rafraîchir">↻</button>
+          </div>
+        </header>
+        {!preview ? (
+          <div className="module-knowledge-list">
+            {items.map((item) => (
+              <button key={item.id} onClick={() => openItem(item)}>
+                <i>{item.kind === "folder" ? "▸" : item.kind === "page" ? "N" : "·"}</i>
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>{item.kind === "folder" ? "dossier / sous-pages" : "page"}{item.modified ? ` · ${item.modified.slice(0, 10)}` : ""}</small>
+                </span>
+                <b>{item.kind === "folder" ? "›" : "↗"}</b>
+              </button>
+            ))}
+            {!items.length && !busy && <span>Aucun contenu visible.</span>}
+          </div>
+        ) : (
+          <div className="module-knowledge-preview">
+            <header><strong>{preview.name}</strong><a href={preview.url} target="_blank" rel="noreferrer">Ouvrir ↗</a></header>
+            <pre>{preview.content.slice(0, 30_000)}</pre>
+            {preview.truncated && <small>Page tronquée par Notion.</small>}
+            <button onClick={() => setPreview(null)}>← Liste</button>
+          </div>
+        )}
       </>}
       {busy && <small className="module-knowledge-loading">Chargement…</small>}
       {error && <small className="module-knowledge-error">{error}</small>}

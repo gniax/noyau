@@ -21,13 +21,20 @@ test("Notion page id accepts URL and service never returns token", async () => {
   const store = new MemoryStore();
   const responses = [
     { name: "Noyau" },
-    { results: [{ object: "page", id: "01234567-89ab-cdef-0123-456789abcdef", url: "https://notion.so/page", properties: { title: { type: "title", title: [{ plain_text: "Atlas" }] } } }] },
+    { results: [{ object: "page", id: "01234567-89ab-cdef-0123-456789abcdef", url: "https://notion.so/page", properties: { title: { type: "title", title: [{ plain_text: "Piano App" }] } } }] },
     { id: "01234567-89ab-cdef-0123-456789abcdef" },
   ];
   const fetchImpl = async () => ({ ok: true, json: async () => responses.shift() });
   const service = new KnowledgeService({ configStore: store, fetchImpl });
-  const status = await service.configureNotion("module--notion", { token: "ntn_abcdefghijklmnopqrstuvwxyz123456" });
-  assert.deepEqual(status, { configured: true, scoped: true, label: "Page Atlas connectée", integrationName: "Noyau" });
+  const status = await service.configureNotion("module--notion", { token: "ntn_abcdefghijklmnopqrstuvwxyz123456", rootPageId: "0123456789abcdef0123456789abcdef" });
+  assert.deepEqual(status, {
+    configured: true,
+    scoped: true,
+    label: "Racine : Piano App",
+    rootPageId: "0123456789abcdef0123456789abcdef",
+    rootPageName: "Piano App",
+    integrationName: "Noyau",
+  });
   assert.equal(status.token, undefined);
 });
 
@@ -43,4 +50,20 @@ test("Notion scope includes descendants but excludes unrelated pages", () => {
     { id: "3123456789abcdef0123456789abcdef", parentId: null },
   ];
   assert.deepEqual(service.scopedNotionPages(pages, root).map(({ id }) => id), [root, child, grandchild]);
+});
+
+test("Notion availablePages returns all shared pages from search", async () => {
+  const store = new MemoryStore({ "module--notion": { token: "ntn_12345678901234567890" } });
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({
+      results: [
+        { object: "page", id: "11111111-1111-1111-1111-111111111111", properties: { title: { type: "title", title: [{ plain_text: "Root" }] } } },
+      ],
+    }),
+  });
+  const service = new KnowledgeService({ configStore: store, fetchImpl });
+  const pages = await service.availablePages("module--notion");
+  assert.equal(pages.length, 1);
+  assert.equal(pages[0].name, "Root");
 });

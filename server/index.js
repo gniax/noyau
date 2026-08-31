@@ -1173,12 +1173,23 @@ app.get("/api/modules/:id/knowledge/content", async (request, response, next) =>
   }
 });
 
+app.get("/api/modules/:id/knowledge/pages", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    const module = moduleService.get(request.params.id);
+    if (module.knowledge?.provider !== "notion") throw new Error("Configuration indisponible.");
+    response.json({ pages: await knowledgeService.availablePages(module.id, { token: request.query.token }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.patch("/api/modules/:id/knowledge/config", async (request, response, next) => {
   try {
     if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
     const module = moduleService.get(request.params.id);
     if (module.knowledge?.provider !== "notion") throw new Error("Configuration indisponible.");
-    response.json({ status: await knowledgeService.configureNotion(module.id, { token: request.body?.token, pageUrl: request.body?.pageUrl }) });
+    response.json({ status: await knowledgeService.configureNotion(module.id, { token: request.body?.token, rootPageId: request.body?.rootPageId, pageUrl: request.body?.pageUrl }) });
   } catch (error) {
     next(error);
   }

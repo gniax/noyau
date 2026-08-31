@@ -134,20 +134,49 @@ export class KnowledgeService {
     return this.configStore.get(moduleId) || {};
   }
 
-  async configureNotion(moduleId, { token, pageUrl } = {}) {
+  async availablePages(moduleId, { token } = {}) {
+    const config = this.config(moduleId);
+    const useToken = String(token || config.token || "").trim();
+    if (!useToken) return [];
+    return this.notionPages(useToken, "");
+  }
+
+  async configureNotion(moduleId, { token, rootPageId, pageUrl } = {}) {
     const current = this.config(moduleId);
     const nextToken = String(token || current.token || "").trim();
     const identity = await notionRequest(nextToken, "/users/me", { fetchImpl: this.fetchImpl });
-    let rootPageId = pageUrl === undefined ? current.rootPageId || null : notionId(pageUrl);
-    if (pageUrl && !rootPageId) throw new Error("URL page Notion invalide.");
-    if (!rootPageId) {
-      const pages = await this.notionPages(nextToken, "Atlas");
-      rootPageId = pages.find((page) => page.name.toLocaleLowerCase("fr-FR") === "atlas")?.id || null;
+    const allPages = await this.notionPages(nextToken, "");
+
+    let targetRootId = current.rootPageId || null;
+    let targetRootName = current.rootPageName || null;
+
+    if (pageUrl !== undefined && pageUrl !== "") {
+      const parsedId = notionId(pageUrl);
+      if (!parsedId) throw new Error("URL page Notion invalide.");
+      targetRootId = parsedId;
+    } else if (rootPageId !== undefined) {
+      if (!rootPageId || rootPageId === "all") {
+        targetRootId = null;
+        targetRootName = null;
+      } else {
+        targetRootId = notionId(rootPageId);
+      }
     }
-    if (rootPageId) await notionRequest(nextToken, `/pages/${rootPageId}`, { fetchImpl: this.fetchImpl });
+
+    if (targetRootId) {
+      const found = allPages.find((p) => p.id === targetRootId);
+      if (found) {
+        targetRootName = found.name;
+      } else {
+        const page = await notionRequest(nextToken, `/pages/${targetRootId}`, { fetchImpl: this.fetchImpl });
+        targetRootName = notionTitle(page);
+      }
+    }
+
     await this.configStore.set(moduleId, {
       token: nextToken,
-      rootPageId,
+      rootPageId: targetRootId,
+      rootPageName: targetRootName,
       integrationName: identity.name || identity.bot?.owner?.workspace?.name || "Intégration Notion",
       updatedAt: new Date().toISOString(),
     });
@@ -157,10 +186,21 @@ export class KnowledgeService {
   status(module) {
     if (module.knowledge?.provider === "google-drive-public") return { configured: true, scoped: true, label: "Lecture publique active" };
     const config = this.config(module.id);
+    const configured = Boolean(config.token);
+    const scoped = configured;
+    const label = !config.token
+      ? "Token requis"
+      : config.rootPageName
+        ? `Racine : ${config.rootPageName}`
+        : config.rootPageId
+          ? "Page racine connectée"
+          : "Toutes les pages connectées";
     return {
-      configured: Boolean(config.token),
-      scoped: Boolean(config.rootPageId),
-      label: !config.token ? "Token requis" : config.rootPageId ? "Page Atlas connectée" : "Partage page requis",
+      configured,
+      scoped,
+      label,
+      rootPageId: config.rootPageId || null,
+      rootPageName: config.rootPageName || null,
       integrationName: config.integrationName || null,
     };
   }
@@ -197,9 +237,26 @@ export class KnowledgeService {
       const config = this.config(module.id);
       if (!config.token) throw new Error("Connexion Notion requise.");
       const pages = await this.notionPages(config.token, "");
-      const scoped = this.scopedNotionPages(pages, config.rootPageId)
-        .filter((item) => !query || item.name.toLocaleLowerCase("fr-FR").includes(String(query).toLocaleLowerCase("fr-FR")));
-      return { id: config.rootPageId || "notion", items: scoped };
+      const scoped = this.scopedNotionPages(pages, config.rootPageId);
+      const parentId = folderId ? notionId(folderId) : null;
+      let visible = scoped;
+      if (parentId) {
+        visible = scoped.filter((item) => item.parentId === parentId);
+      } else if (config.rootPageId) {
+        const children = scoped.filter((item) => item.parentId === config.rootPageId);
+        visible = children.length ? children : scoped.filter((item) => item.id === config.rootPageId);
+      } else {
+        const allIds = new Set(scoped.map((p) => p.id));
+        visible = scoped.filter((item) => !item.parentId || !allIds.has(item.parentId));
+      }
+      const parentIds = new Set(scoped.map((item) => item.parentId).filter(Boolean));
+      const items = (query ? scoped : visible)
+        .filter((item) => !query || item.name.toLocaleLowerCase("fr-FR").includes(String(query).toLocaleLowerCase("fr-FR")))
+        .map((item) => ({
+          ...item,
+          kind: parentIds.has(item.id) ? "folder" : "page",
+        }));
+      return { id: parentId || config.rootPageId || "notion", items };
     }
     throw new Error("Source connaissances inconnue.");
   }
