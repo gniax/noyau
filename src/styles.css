@@ -760,7 +760,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .module-device-build-status { font-size: 8px; padding: 6px 8px; border-radius: 5px; background: var(--c-111613); border: 1px solid var(--c-242b27); color: var(--c-aab3ad); line-height: 1.4; word-break: break-word; }
 .module-device-build-status.installed { color: var(--green); border-color: var(--c-4d6b33); background: var(--c-b8ff5e-0c); }
 .module-device-build-status.error { color: var(--c-df8087); border-color: var(--c-583034); }
-.module-device-build-status.running { color: var(--module-accent); border-color: color-mix(in srgb,var(--module-accent) 35%,var(--c-253029)); }
+.module-device-build-status.running { color: var(--module-accent); border-color: color-mix(in srgb,var(--module-accent) 35%,var(--c-253029)); display: flex; align-items: center; gap: 7px; }
+.module-build-spinner { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--module-accent); border-top-color: transparent; animation: spin 0.75s linear infinite; flex: none; }
+.module-build-timer { margin-left: auto; font-family: ui-monospace, monospace; font-size: 7.5px; opacity: .85; background: var(--c-ffffff-08); padding: 1px 5px; border-radius: 3px; }
 .module-build-list { display: grid; gap: 5px; margin-top: 4px; }
 .module-build-item { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 6px 10px; padding: 6px 8px; border: 1px solid var(--c-242b27); border-radius: 5px; background: var(--c-0c100e); font-size: 8px; }
 .module-build-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--c-cad3cd); font-family: ui-monospace, monospace; }

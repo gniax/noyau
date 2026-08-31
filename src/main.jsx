@@ -864,12 +864,28 @@ function formatFileSize(bytes) {
 
 function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
   const [busy, setBusy] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const deviceBuild = module.deviceBuild;
   if (!deviceBuild) return null;
   const isAndroid = deviceBuild.platform === "android";
   const platformName = isAndroid ? "Android (APK)" : "iOS (IPA)";
   const run = deviceBuild.run;
   const isRunning = run && ["queued", "building", "installing"].includes(run.state);
+
+  useEffect(() => {
+    if (!isRunning || (!run?.startedAt && !run?.requestedAt)) return;
+    const start = new Date(run.startedAt || run.requestedAt).getTime();
+    const update = () => setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [isRunning, run?.startedAt, run?.requestedAt]);
+
+  const formatElapsed = (sec) => {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
+  };
 
   async function startBuild() {
     if (busy || isRunning) return;
@@ -907,7 +923,7 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
           <button
             className="ghost"
             onClick={refreshLatest}
-            disabled={busy}
+            disabled={busy || isRunning}
             title="Rechercher et synchroniser le dernier build dans le projet"
           >
             {busy ? "…" : "Rafraîchir"}
@@ -917,19 +933,23 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
             onClick={startBuild}
             disabled={busy || isRunning}
           >
-            {isRunning ? "Build en cours…" : busy ? "Lancement…" : "Installer dernier build sur device"}
+            {isRunning ? `Build en cours… (${formatElapsed(elapsed)})` : busy ? "Lancement…" : "Installer dernier build sur device"}
           </button>
         </div>
       </div>
       {run && (
         <div className={`module-device-build-status ${statusClass}`}>
-          {run.state === "installed" && `✓ Installé sur ${run.device?.serial || "l'appareil"}${run.output ? ` · ${run.output}` : ""}`}
-          {run.state === "download-ready" && `APK prête au téléchargement · ${run.output || ""}`}
-          {run.state === "installation-requested" && `IPA prête · ${run.output || "Demande transmise à l'agent."}`}
-          {run.state === "building" && `Production en cours (${run.agent?.name || "agent"}) · ${run.output || ""}`}
-          {run.state === "queued" && `En attente (${run.agent?.name || "agent"})…`}
-          {run.state === "installing" && `Installation en cours sur l'appareil…`}
-          {run.state === "error" && `Erreur build: ${run.output || "échec"}`}
+          {isRunning && <span className="module-build-spinner" />}
+          <span>
+            {run.state === "installed" && `✓ Installé sur ${run.device?.serial || "l'appareil"}${run.output ? ` · ${run.output}` : ""}`}
+            {run.state === "download-ready" && `APK prête au téléchargement · ${run.output || ""}`}
+            {run.state === "installation-requested" && `IPA prête · ${run.output || "Demande transmise à l'agent."}`}
+            {run.state === "building" && `Production en cours (${run.agent?.name || "agent"}) · ${run.output || ""}`}
+            {run.state === "queued" && `En attente (${run.agent?.name || "agent"})…`}
+            {run.state === "installing" && `Installation en cours sur l'appareil…`}
+            {run.state === "error" && `Erreur build: ${run.output || "échec"}`}
+          </span>
+          {isRunning && <span className="module-build-timer">{formatElapsed(elapsed)}</span>}
         </div>
       )}
       {(deviceBuild.builds || []).length > 0 && (
