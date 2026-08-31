@@ -53,3 +53,36 @@ test("Claude Design tool refuse agent d'un autre projet", async () => {
   });
   await assert.rejects(() => tool.run({ callerSessionId: "caller", prompt: "test" }), /Aucun agent Claude Design actif/);
 });
+
+test("Claude Design tool fonctionne avec cwd quand projectId est absent", async () => {
+  let now = 1_000;
+  let submitted = "";
+  const store = new MemoryStore({
+    caller: { cwd: "/home/user/projects/testapp" },
+    design: { name: "Studio", cwd: "/home/user/projects/testapp", agentState: "available", agentStateUpdatedAt: new Date(0).toISOString(), response: "ancienne" },
+  });
+  const tmux = {
+    async list() {
+      return [{ id: "design", name: "Studio", assistant: "claude-design", managed: true, activityAt: new Date(0).toISOString() }];
+    },
+    async capture() { return "Claude ready"; },
+    async submit(_id, prompt) { submitted = prompt; },
+  };
+  const tool = new ClaudeDesignTool({
+    tmux,
+    store,
+    readResponse: async (metadata) => metadata.response || "",
+    now: () => now,
+    wait: async () => {
+      now += 1_000;
+      await store.set("design", { ...store.get("design"), agentState: "available", agentStateUpdatedAt: new Date(now).toISOString(), response: "assets générés" });
+    },
+    pollInterval: 1,
+    timeout: 5_000,
+  });
+  const result = await tool.run({ callerSessionId: "caller", prompt: "Génère images logo" });
+  assert.equal(submitted, "Génère images logo");
+  assert.equal(result.sessionId, "design");
+  assert.equal(result.response, "assets générés");
+});
+

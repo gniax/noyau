@@ -5,16 +5,30 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataDir = path.resolve(process.env.NOYAU_DATA_DIR || path.join(root, ".data"));
-const callerSessionId = process.env.NOYAU_SESSION_ID;
+let callerSessionId = process.env.NOYAU_SESSION_ID;
 const prompt = process.argv.slice(2).join(" ").trim();
 
 try {
-  if (!callerSessionId) throw new Error("NOYAU_SESSION_ID absent: outil disponible depuis agent lancé par Noyau.");
   if (!prompt) throw new Error("Usage: node scripts/claude-design-tool.mjs DEMANDE");
   const [token, sessions] = await Promise.all([
     fs.readFile(path.join(dataDir, "access-token"), "utf8").then((value) => value.trim()),
     fs.readFile(path.join(dataDir, "sessions.json"), "utf8").then(JSON.parse),
   ]);
+
+  if (!callerSessionId) {
+    const cwd = path.resolve(process.cwd());
+    const candidates = Object.entries(sessions).filter(([, s]) => {
+      if (!s?.cwd || s.assistant === "claude-design") return false;
+      const scwd = path.resolve(s.cwd);
+      return cwd === scwd || cwd.startsWith(scwd + path.sep);
+    });
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => Date.parse(b[1].agentStateUpdatedAt || 0) - Date.parse(a[1].agentStateUpdatedAt || 0));
+      callerSessionId = candidates[0][0];
+    }
+  }
+
+  if (!callerSessionId) throw new Error("NOYAU_SESSION_ID absent: outil disponible depuis agent lancé par Noyau.");
   const profileId = sessions[callerSessionId]?.profileId || "";
   const response = await fetch("http://127.0.0.1:4242/api/agent-tools/claude-design", {
     method: "POST",

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { agentStatus } from "./agent-status.js";
 
 function sleep(milliseconds) {
@@ -16,12 +17,14 @@ export class ClaudeDesignTool {
     this.reserved = new Set();
   }
 
-  async candidates(projectId, excludeSessionId) {
+  async candidates(projectId, excludeSessionId, callerCwd = null) {
     const sessions = (await this.tmux.list()).filter((session) => {
       const metadata = this.store.get(session.id);
+      const sameProject = (projectId && metadata?.projectId === projectId)
+        || (!projectId && callerCwd && metadata?.cwd && path.resolve(metadata.cwd) === path.resolve(callerCwd));
       return session.managed
         && session.assistant === "claude-design"
-        && metadata?.projectId === projectId
+        && sameProject
         && session.id !== excludeSessionId
         && !this.reserved.has(session.id);
     });
@@ -38,8 +41,8 @@ export class ClaudeDesignTool {
     const task = String(prompt || "").trim().slice(0, 30_000);
     if (!task) throw new Error("Demande Claude Design requise.");
     const caller = this.store.get(callerSessionId);
-    if (!caller?.projectId) throw new Error("Agent appelant sans projet Noyau.");
-    const { sessions, ready } = await this.candidates(caller.projectId, callerSessionId);
+    if (!caller?.projectId && !caller?.cwd) throw new Error("Agent appelant sans projet Noyau.");
+    const { sessions, ready } = await this.candidates(caller.projectId, callerSessionId, caller.cwd);
     if (!sessions.length) throw new Error("Aucun agent Claude Design actif dans ce projet.");
     if (!ready.length) throw new Error("Agent Claude Design occupé. Réessaie après sa tâche actuelle.");
 
