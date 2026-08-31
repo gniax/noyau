@@ -867,8 +867,9 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
   const [elapsed, setElapsed] = useState(0);
   const deviceBuild = module.deviceBuild;
   if (!deviceBuild) return null;
-  const isAndroid = deviceBuild.platform === "android";
-  const platformName = isAndroid ? "Android (APK)" : "iOS (IPA)";
+  const platforms = deviceBuild.platforms || (deviceBuild.platform ? [deviceBuild.platform] : ["android", "ios"]);
+  const hasAndroid = platforms.includes("android");
+  const hasIos = platforms.includes("ios");
   const run = deviceBuild.run;
   const isRunning = run && ["queued", "building", "installing"].includes(run.state);
 
@@ -887,12 +888,13 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
     return `${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
   };
 
-  async function startBuild() {
+  async function startBuild(platform) {
     if (busy || isRunning) return;
-    if (!window.confirm(`Lancer la production du build ${isAndroid ? "APK" : "IPA"} par un agent disponible ?`)) return;
-    setBusy(true);
+    const label = platform === "ios" ? "IPA (iOS)" : "APK (Android)";
+    if (!window.confirm(`Lancer la production du build ${label} par un agent disponible ?`)) return;
+    setBusy(platform);
     try {
-      await onBuild?.(module.id);
+      await onBuild?.(module.id, platform);
     } finally {
       setBusy(false);
     }
@@ -900,7 +902,7 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
 
   async function refreshLatest() {
     if (busy) return;
-    setBusy(true);
+    setBusy("refresh");
     try {
       const res = await onRefreshBuilds?.(module.id);
       if (res?.imported) {
@@ -918,34 +920,47 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
   return (
     <section className="module-device-build">
       <div className="module-device-build-head">
-        <strong>Build {platformName}</strong>
+        <strong>Builds & Appareils</strong>
         <div className="module-device-build-actions">
           <button
             className="ghost"
             onClick={refreshLatest}
-            disabled={busy || isRunning}
-            title="Rechercher et synchroniser le dernier build dans le projet"
+            disabled={!!busy || isRunning}
+            title="Rechercher et synchroniser les derniers builds du projet"
           >
-            {busy ? "…" : "Rafraîchir"}
+            {busy === "refresh" ? "…" : "Rafraîchir"}
           </button>
-          <button
-            className="primary"
-            onClick={startBuild}
-            disabled={busy || isRunning}
-          >
-            {isRunning ? `Build en cours… (${formatElapsed(elapsed)})` : busy ? "Lancement…" : "Installer dernier build sur device"}
-          </button>
+          {hasAndroid && (
+            <button
+              className="primary"
+              onClick={() => startBuild("android")}
+              disabled={!!busy || isRunning}
+              title="Produire et installer APK Android sur device"
+            >
+              {isRunning && run?.platform === "android" ? `APK en cours… (${formatElapsed(elapsed)})` : busy === "android" ? "Lancement…" : "Installer APK"}
+            </button>
+          )}
+          {hasIos && (
+            <button
+              className={hasAndroid ? "secondary" : "primary"}
+              onClick={() => startBuild("ios")}
+              disabled={!!busy || isRunning}
+              title="Produire build IPA iOS pour appareil"
+            >
+              {isRunning && run?.platform === "ios" ? `IPA en cours… (${formatElapsed(elapsed)})` : busy === "ios" ? "Lancement…" : "Produire IPA"}
+            </button>
+          )}
         </div>
       </div>
       {run && (
         <div className={`module-device-build-status ${statusClass}`}>
           {isRunning && <span className="module-build-spinner" />}
           <span>
-            {run.state === "installed" && `✓ Installé sur ${run.device?.serial || "l'appareil"}${run.output ? ` · ${run.output}` : ""}`}
+            {run.state === "installed" && `✓ APK installée sur ${run.device?.serial || "l'appareil"}${run.output ? ` · ${run.output}` : ""}`}
             {run.state === "download-ready" && `APK prête au téléchargement · ${run.output || ""}`}
             {run.state === "installation-requested" && `IPA prête · ${run.output || "Demande transmise à l'agent."}`}
-            {run.state === "building" && `Production en cours (${run.agent?.name || "agent"}) · ${run.output || ""}`}
-            {run.state === "queued" && `En attente (${run.agent?.name || "agent"})…`}
+            {run.state === "building" && `Production en cours (${run.platform === "ios" ? "IPA iOS" : "APK Android"} · ${run.agent?.name || "agent"}) · ${run.output || ""}`}
+            {run.state === "queued" && `En attente (${run.platform === "ios" ? "IPA" : "APK"} · ${run.agent?.name || "agent"})…`}
             {run.state === "installing" && `Installation en cours sur l'appareil…`}
             {run.state === "error" && `Erreur build: ${run.output || "échec"}`}
           </span>
@@ -959,6 +974,9 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
               <div>
                 <div className="module-build-name" title={build.name}>{build.name}</div>
                 <div className="module-build-meta">
+                  <span className={`module-build-platform ${build.platform === "ios" ? "ios" : "android"}`}>
+                    {build.platform === "ios" ? "iOS · IPA" : "Android · APK"}
+                  </span>
                   {build.version && <span className="module-build-tag">{build.version}</span>}
                   {build.commit && <span className="module-build-commit">#{build.commit}</span>}
                   <small>{formatFileSize(build.size)}</small>
@@ -3864,7 +3882,7 @@ function App() {
   const toggleModule = (id, enabled) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/toggle`, { method: "PATCH", body: JSON.stringify({ enabled }) });
   const runModuleAction = (id, actionId) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`, { method: "POST" });
   const saveModuleSchedule = (id, scheduleId, time) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/schedules/${encodeURIComponent(scheduleId)}`, { method: "PATCH", body: JSON.stringify({ time }) });
-  const buildModule = (id) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/builds`, { method: "POST" });
+  const buildModule = (id, platform = "android") => moduleRequest(`/api/modules/${encodeURIComponent(id)}/builds`, { method: "POST", body: JSON.stringify({ platform }) });
   const refreshModuleBuilds = (id) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/builds/refresh`, { method: "POST" });
   async function reorderProjects(ids, persist = true) {
     const byId = new Map(projects.map((project) => [project.id, project]));

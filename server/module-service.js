@@ -54,12 +54,20 @@ function knowledgeSource(value) {
 
 function deviceBuildConfig(value, moduleId, projectRoot) {
   if (!value) return null;
-  const platform = String(value.platform || "").toLowerCase();
+  let platforms = [];
+  if (Array.isArray(value.platforms)) {
+    platforms = value.platforms.map((p) => String(p).toLowerCase()).filter((p) => BUILD_PLATFORMS.has(p));
+  } else if (value.platform) {
+    const p = String(value.platform).toLowerCase();
+    if (p === "both" || p === "all") platforms = ["android", "ios"];
+    else if (BUILD_PLATFORMS.has(p)) platforms = [p];
+  }
+  if (!platforms.length) platforms = ["android", "ios"];
   const adbSerial = value.adbSerial ? String(value.adbSerial).trim() : null;
-  if (!BUILD_PLATFORMS.has(platform) || (adbSerial && (platform !== "android" || !ADB_SERIAL_PATTERN.test(adbSerial)))) throw new Error("Build appareil module invalide.");
+  if (adbSerial && !ADB_SERIAL_PATTERN.test(adbSerial)) throw new Error("Build appareil ADB invalide.");
   return {
-    platform,
-    instructions: cleanText(value.instructions, platform === "android" ? "Produire APK signée installable." : "Produire IPA signée installable.", 2000),
+    platforms,
+    instructions: cleanText(value.instructions, "Produire version installable de l'application (APK signée pour Android, IPA pour iOS).", 2000),
     adbSerial,
     outputDirectory: path.join(projectRoot, ".noyau", "builds", moduleId),
   };
@@ -248,7 +256,7 @@ export class ModuleService {
       links: module.links || [],
       knowledge: module.knowledge || null,
       deviceBuild: module.deviceBuild ? {
-        platform: module.deviceBuild.platform,
+        platforms: module.deviceBuild.platforms || ["android", "ios"],
         run: this.buildMonitors.get(module.id)?.run || module.buildRun || null,
         builds,
       } : null,
@@ -359,12 +367,12 @@ export class ModuleService {
 
   async artifactEntries(module) {
     const directory = module.deviceBuild.outputDirectory;
-    const extension = module.deviceBuild.platform === "android" ? ".apk" : ".ipa";
     const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
-    const artifacts = await Promise.all(entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(extension)).map(async (entry) => {
+    const artifacts = await Promise.all(entries.filter((entry) => entry.isFile() && (entry.name.toLowerCase().endsWith(".apk") || entry.name.toLowerCase().endsWith(".ipa"))).map(async (entry) => {
       const file = path.join(directory, entry.name);
       const stat = await fs.stat(file);
       const meta = await this.artifactMeta(file);
+      const isAndroid = entry.name.toLowerCase().endsWith(".apk");
       return {
         id: entry.name,
         name: entry.name,
@@ -374,6 +382,7 @@ export class ModuleService {
         modifiedAtMs: stat.mtimeMs,
         version: meta.version || null,
         commit: meta.commit || null,
+        platform: isAndroid ? "android" : "ios",
       };
     }));
     return artifacts.sort((left, right) => right.modifiedAtMs - left.modifiedAtMs);
@@ -381,14 +390,17 @@ export class ModuleService {
 
   async builds(module) {
     const artifacts = await this.artifactEntries(module);
-    await Promise.all(artifacts.slice(3).map(async (artifact) => {
+    const androids = artifacts.filter((a) => a.platform === "android");
+    const ioses = artifacts.filter((a) => a.platform === "ios");
+    const toDelete = [...androids.slice(3), ...ioses.slice(3)];
+    await Promise.all(toDelete.map(async (artifact) => {
       await fs.unlink(artifact.file).catch(() => {});
       await fs.unlink(`${artifact.file}.meta.json`).catch(() => {});
     }));
-    return artifacts.slice(0, 3).map(({ file: _file, modifiedAtMs: _modifiedAtMs, ...artifact }) => ({
+    const kept = [...androids.slice(0, 3), ...ioses.slice(0, 3)].sort((a, b) => b.modifiedAtMs - a.modifiedAtMs);
+    return kept.map(({ file: _file, modifiedAtMs: _modifiedAtMs, ...artifact }) => ({
       ...artifact,
-      platform: module.deviceBuild.platform,
-      downloadUrl: module.deviceBuild.platform === "android" ? `/api/modules/${encodeURIComponent(module.id)}/builds/${encodeURIComponent(artifact.id)}` : null,
+      downloadUrl: artifact.platform === "android" ? `/api/modules/${encodeURIComponent(module.id)}/builds/${encodeURIComponent(artifact.id)}` : null,
     }));
   }
 
@@ -399,33 +411,36 @@ export class ModuleService {
     if (monitor) monitor.run = run;
   }
 
-  buildPrompt(module) {
-    const kind = module.deviceBuild.platform === "android" ? "APK" : "IPA";
-    const install = module.deviceBuild.platform === "android"
+  buildPrompt(module, targetPlatform = "android") {
+    const kind = targetPlatform === "ios" ? "IPA" : "APK";
+    const install = targetPlatform === "android"
       ? "Noyau tentera ensuite installation ADB; ne lance pas adb install."
       : "IPA ne sera pas proposée par lien. Prépare version signée et installation appareil si configuration projet le permet.";
     return [
       `Demande Noyau: produis dernière version ${kind} installable du projet « ${module.name} ».`,
       `Travaille dans ${module.workingDirectory}.`,
       `Consignes module: ${module.deviceBuild.instructions}`,
-      `Copie artefact final dans ${module.deviceBuild.outputDirectory} avec nom unique finissant par ${kind.toLowerCase()}.`,
-      "Ce dossier sert seulement copie de livraison; garde sorties build originales. Ne supprime aucune version ici: Noyau garde trois dernières.",
+      `Copie artefact final dans ${module.deviceBuild.outputDirectory} avec nom unique finissant par .${kind.toLowerCase()}.`,
+      "Ce dossier sert seulement copie de livraison; garde sorties build originales. Ne supprime aucune version ici: Noyau garde trois dernières de chaque plateforme.",
       install,
       "Termine build et copie avant réponse finale. En cas d'échec, explique erreur exacte dans ta session.",
     ].join("\n");
   }
 
-  async requestBuild(id, { force = false } = {}) {
+  async requestBuild(id, { platform = "android", force = false } = {}) {
     const module = this.get(id);
     if (!module.deviceBuild) throw new Error("Module sans build appareil.");
+    const targetPlatform = String(platform || "android").toLowerCase();
+    if (!BUILD_PLATFORMS.has(targetPlatform)) throw new Error("Plateforme invalide.");
     if (BUILD_RUNNING_STATES.has(module.buildRun?.state) || this.buildMonitors.has(id)) throw new Error("Build déjà en cours.");
 
     const currentCommit = await this.currentCommit(module.workingDirectory);
     const existingBuilds = await this.builds(module);
-    if (!force && currentCommit && existingBuilds.some((b) => b.commit === currentCommit)) {
-      const matching = existingBuilds.find((b) => b.commit === currentCommit);
+    const matchingPlatformBuilds = existingBuilds.filter((b) => b.platform === targetPlatform);
+    if (!force && currentCommit && matchingPlatformBuilds.some((b) => b.commit === currentCommit)) {
+      const matching = matchingPlatformBuilds.find((b) => b.commit === currentCommit);
       const label = [matching.version, currentCommit].filter(Boolean).join(" · ");
-      throw new Error(`Dernier build déjà disponible (${label || "à jour"}).`);
+      throw new Error(`Dernier build ${targetPlatform === "android" ? "APK" : "IPA"} déjà disponible (${label || "à jour"}).`);
     }
 
     const agents = await this.listProjectAgents(module.projectId);
@@ -433,31 +448,32 @@ export class ModuleService {
     if (!agent) throw new Error("Aucun agent disponible dans ce projet.");
     await fs.mkdir(module.deviceBuild.outputDirectory, { recursive: true, mode: 0o700 });
     const before = new Map((await this.artifactEntries(module)).map((artifact) => [artifact.id, artifact.modifiedAtMs]));
-    let run = { state: "queued", requestedAt: new Date().toISOString(), agent: { id: agent.id, name: agent.name }, platform: module.deviceBuild.platform };
+    let run = { state: "queued", requestedAt: new Date().toISOString(), agent: { id: agent.id, name: agent.name }, platform: targetPlatform };
     await this.saveBuildRun(module.id, run);
     try {
-      await this.submitAgent(agent.id, this.buildPrompt(module));
-      run = { ...run, state: "building", startedAt: new Date().toISOString(), output: `${agent.name} produit ${module.deviceBuild.platform === "android" ? "APK" : "IPA"}.` };
+      await this.submitAgent(agent.id, this.buildPrompt(module, targetPlatform));
+      run = { ...run, state: "building", startedAt: new Date().toISOString(), output: `${agent.name} produit ${targetPlatform === "android" ? "APK" : "IPA"}.` };
       await this.saveBuildRun(module.id, run);
     } catch (error) {
       run = { ...run, state: "error", finishedAt: new Date().toISOString(), output: String(error.message || error).slice(-500) };
       await this.saveBuildRun(module.id, run);
       throw error;
     }
-    void this.monitorBuild(module, before, run).catch(() => {});
+    void this.monitorBuild(module, before, run, targetPlatform).catch(() => {});
     return run;
   }
 
-  async monitorBuild(module, before, initialRun) {
+  async monitorBuild(module, before, initialRun, targetPlatform) {
     if (this.buildMonitors.has(module.id)) return;
     const monitor = { run: initialRun };
     this.buildMonitors.set(module.id, monitor);
     try {
       const deadline = Date.now() + this.buildTimeout;
+      const extension = targetPlatform === "ios" ? ".ipa" : ".apk";
       while (Date.now() <= deadline) {
-        const artifact = (await this.artifactEntries(module)).find((candidate) => !before.has(candidate.id) || candidate.modifiedAtMs > before.get(candidate.id));
+        const artifact = (await this.artifactEntries(module)).find((candidate) => candidate.name.toLowerCase().endsWith(extension) && (!before.has(candidate.id) || candidate.modifiedAtMs > before.get(candidate.id)));
         if (artifact) {
-          await this.finishBuild(module, artifact);
+          await this.finishBuild(module, artifact, targetPlatform);
           return;
         }
         await this.sleep(this.buildPollInterval);
@@ -481,7 +497,7 @@ export class ModuleService {
     return { adb, device, devices };
   }
 
-  async finishBuild(module, artifact) {
+  async finishBuild(module, artifact, targetPlatform = "android") {
     const current = this.get(module.id);
     if (!BUILD_RUNNING_STATES.has(current.buildRun?.state)) return current.buildRun;
 
@@ -493,9 +509,10 @@ export class ModuleService {
       createdAt: artifact.createdAt || new Date().toISOString(),
     });
 
-    let run = { ...current.buildRun, state: "installing", artifact: artifact.id, output: "Build reçu. Vérification appareil…" };
+    const isIos = artifact.name.toLowerCase().endsWith(".ipa") || targetPlatform === "ios";
+    let run = { ...current.buildRun, state: "installing", artifact: artifact.id, platform: isIos ? "ios" : "android", output: "Build reçu. Traitement…" };
     await this.saveBuildRun(module.id, run);
-    if (module.deviceBuild.platform === "ios") {
+    if (isIos) {
       run = { ...run, state: "installation-requested", finishedAt: new Date().toISOString(), output: "IPA prête. Demande d'installation transmise à l'agent." };
     } else {
       try {
@@ -521,24 +538,26 @@ export class ModuleService {
     if (!module.deviceBuild) throw new Error("Module sans build appareil.");
     await fs.mkdir(module.deviceBuild.outputDirectory, { recursive: true, mode: 0o700 });
 
-    const extension = module.deviceBuild.platform === "android" ? ".apk" : ".ipa";
     const searchPaths = [
       module.workingDirectory,
       path.join(module.workingDirectory, "android", "app", "build", "outputs", "apk", "release"),
       path.join(module.workingDirectory, "android", "app", "build", "outputs", "apk", "debug"),
       path.join(module.workingDirectory, "build", "outputs", "apk", "release"),
+      path.join(module.workingDirectory, "build", "outputs", "ipa"),
       path.join(module.workingDirectory, "dist"),
+      path.join(module.workingDirectory, "ios", "build"),
     ];
 
     const existing = new Set((await this.artifactEntries(module)).map((a) => a.id));
     const commit = await this.currentCommit(module.workingDirectory);
     const version = await this.currentVersion(module.workingDirectory);
-    let imported = null;
+    let imported = [];
 
     for (const searchDir of searchPaths) {
       const entries = await fs.readdir(searchDir, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
-        if (entry.isFile() && entry.name.toLowerCase().endsWith(extension)) {
+        const lower = entry.name.toLowerCase();
+        if (entry.isFile() && (lower.endsWith(".apk") || lower.endsWith(".ipa"))) {
           const srcFile = path.join(searchDir, entry.name);
           const destFile = path.join(module.deviceBuild.outputDirectory, entry.name);
           const srcStat = await fs.stat(srcFile).catch(() => null);
@@ -552,10 +571,9 @@ export class ModuleService {
                 commit,
                 createdAt: srcStat.mtime.toISOString(),
               });
-              imported = entry.name;
-              break;
+              imported.push(entry.name);
+              existing.add(entry.name);
             } else {
-              // Ensure existing meta is saved if missing
               const meta = await this.artifactMeta(destFile);
               if (!meta.commit && commit) {
                 await this.saveArtifactMeta(destFile, { version: meta.version || version, commit, createdAt: meta.createdAt || srcStat.mtime.toISOString() });
@@ -564,16 +582,15 @@ export class ModuleService {
           }
         }
       }
-      if (imported) break;
     }
 
     const builds = await this.builds(module);
-    return { builds, imported };
+    return { builds, imported: imported.join(", ") || null };
   }
 
   async buildFile(id, buildId) {
     const module = this.get(id);
-    if (module.deviceBuild?.platform !== "android" || path.basename(String(buildId)) !== String(buildId)) throw new Error("Build introuvable.");
+    if (!module.deviceBuild || path.basename(String(buildId)) !== String(buildId)) throw new Error("Build introuvable.");
     const artifact = (await this.artifactEntries(module)).find((candidate) => candidate.id === buildId);
     if (!artifact) throw new Error("Build introuvable.");
     return artifact;

@@ -763,10 +763,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .module-device-build-status.running { color: var(--module-accent); border-color: color-mix(in srgb,var(--module-accent) 35%,var(--c-253029)); display: flex; align-items: center; gap: 7px; }
 .module-build-spinner { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--module-accent); border-top-color: transparent; animation: spin 0.75s linear infinite; flex: none; }
 .module-build-timer { margin-left: auto; font-family: ui-monospace, monospace; font-size: 7.5px; opacity: .85; background: var(--c-ffffff-08); padding: 1px 5px; border-radius: 3px; }
+.module-device-build-head button.secondary { border-color: #3b4252; background: var(--c-171c19); color: #88c0d0; font-size: 8px; font-weight: 650; cursor: pointer; }
 .module-build-list { display: grid; gap: 5px; margin-top: 4px; }
 .module-build-item { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: center; gap: 6px 10px; padding: 6px 8px; border: 1px solid var(--c-242b27); border-radius: 5px; background: var(--c-0c100e); font-size: 8px; }
 .module-build-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--c-cad3cd); font-family: ui-monospace, monospace; }
 .module-build-meta { display: flex; align-items: center; gap: 5px; color: var(--c-728078); font-size: 7.5px; margin-top: 2px; }
+.module-build-platform { padding: 1px 4px; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 7px; font-weight: 700; }
+.module-build-platform.android { background: var(--c-172116); border: 1px solid var(--c-2b3d24); color: var(--green); }
+.module-build-platform.ios { background: #151a28; border: 1px solid #2b3954; color: #88c0d0; }
 .module-build-tag { padding: 1px 4px; border-radius: 3px; background: var(--c-172116); border: 1px solid var(--c-2b3d24); color: var(--green); font-family: ui-monospace, monospace; font-size: 7px; font-weight: 600; }
 .module-build-commit { font-family: ui-monospace, monospace; color: var(--c-8fa093); }
 .module-build-item small { color: var(--c-68726b); white-space: nowrap; font-size: 7.5px; }

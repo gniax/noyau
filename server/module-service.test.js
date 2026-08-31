@@ -138,33 +138,27 @@ test("deviceBuild module normalizes Android and iOS configurations", async () =>
     id: "app-android",
     project: "MyApp",
     deviceBuild: {
-      platform: "android",
+      platforms: ["android"],
       instructions: "Build debug APK",
       adbSerial: "192.168.1.100:5555",
     },
   }, projectRoot, path.join(projectRoot, "android.json"), [["project-myapp", { name: "MyApp" }]]);
 
-  assert.equal(androidModule.deviceBuild.platform, "android");
+  assert.deepEqual(androidModule.deviceBuild.platforms, ["android"]);
   assert.equal(androidModule.deviceBuild.instructions, "Build debug APK");
   assert.equal(androidModule.deviceBuild.adbSerial, "192.168.1.100:5555");
   assert.equal(androidModule.deviceBuild.outputDirectory, path.join(projectRoot, ".noyau", "builds", "app-android"));
 
-  const iosModule = await service.normalize({
-    id: "app-ios",
+  const dualModule = await service.normalize({
+    id: "app-dual",
     project: "MyApp",
     deviceBuild: {
-      platform: "ios",
+      platforms: ["android", "ios"],
     },
-  }, projectRoot, path.join(projectRoot, "ios.json"), [["project-myapp", { name: "MyApp" }]]);
+  }, projectRoot, path.join(projectRoot, "dual.json"), [["project-myapp", { name: "MyApp" }]]);
 
-  assert.equal(iosModule.deviceBuild.platform, "ios");
-  assert.equal(iosModule.deviceBuild.instructions, "Produire IPA signée installable.");
-
-  await assert.rejects(() => service.normalize({
-    id: "app-bad",
-    project: "MyApp",
-    deviceBuild: { platform: "windows" },
-  }, projectRoot, path.join(projectRoot, "bad.json"), [["project-myapp", { name: "MyApp" }]]), /Build appareil module invalide/);
+  assert.deepEqual(dualModule.deviceBuild.platforms, ["android", "ios"]);
+  assert.equal(dualModule.deviceBuild.instructions, "Produire version installable de l'application (APK signée pour Android, IPA pour iOS).");
 });
 
 test("requestBuild rejects when no agent is available in project", async () => {
@@ -320,7 +314,7 @@ test("requestBuild cancels if current commit is already built", async () => {
     },
   });
 
-  await assert.rejects(() => service.requestBuild(id), /Dernier build déjà disponible/);
+  await assert.rejects(() => service.requestBuild(id), /Dernier build.*déjà disponible/);
 });
 
 test("refreshBuilds discovers external build and imports it with metadata", async () => {

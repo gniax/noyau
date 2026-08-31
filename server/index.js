@@ -1201,7 +1201,12 @@ app.post("/api/modules/:id/actions/:actionId", (request, response, next) => {
 app.post("/api/modules/:id/builds", async (request, response, next) => {
   try {
     if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
-    response.status(202).json({ run: await moduleService.requestBuild(request.params.id, { force: request.body?.force === true }) });
+    response.status(202).json({
+      run: await moduleService.requestBuild(request.params.id, {
+        platform: request.body?.platform || "android",
+        force: request.body?.force === true,
+      }),
+    });
   } catch (error) {
     next(error);
   }
