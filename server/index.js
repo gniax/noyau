@@ -173,12 +173,55 @@ const weatherCache = new Map();
 const moduleService = new ModuleService({
   workspaceRoot,
   store: moduleStore,
+  listProjectAgents: async (projectId) => {
+    const sessions = (await tmux.list()).filter((session) => session.projectId === projectId);
+    return Promise.all(sessions.map(async (session) => {
+      const metadata = store.get(session.id) || {};
+      const pane = await tmux.capture(session.id);
+      const status = agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane);
+      return {
+        id: session.id,
+        name: session.name || session.id,
+        state: status?.state || "unknown",
+      };
+    }));
+  },
+  submitAgent: async (sessionId, message) => {
+    await tmux.submit(sessionId, message);
+  },
   onActionComplete: async ({ module, action, result }) => {
     const profileId = projects.get(module.projectId)?.profileId || primaryProfileId;
     await push.send({
       title: `${module.name} · ${result.state === "success" ? "Terminé" : "Erreur"}`,
       body: result.state === "success" ? `${action.label} terminé.` : `${action.label}: ${result.output || "échec"}`,
       tag: `module-${module.id}-${action.id}`,
+      url: `/?view=projects&profile=${encodeURIComponent(profileId)}`,
+    }, profileId);
+  },
+  onBuildComplete: async ({ module, run }) => {
+    const profileId = projects.get(module.projectId)?.profileId || primaryProfileId;
+    const platformLabel = module.deviceBuild?.platform === "android" ? "APK" : "IPA";
+    let title = `${module.name} · Build ${platformLabel}`;
+    let body = "";
+    if (run.state === "installed") {
+      title = `${module.name} · Installé sur appareil`;
+      body = run.output || `Build installé sur ${run.device?.serial || "l'appareil"}.`;
+    } else if (run.state === "download-ready") {
+      title = `${module.name} · APK prête`;
+      body = run.output || "APK prête au téléchargement.";
+    } else if (run.state === "installation-requested") {
+      title = `${module.name} · IPA prête`;
+      body = run.output || "IPA prête. Demande transmise à l'agent.";
+    } else if (run.state === "error") {
+      title = `${module.name} · Échec build ${platformLabel}`;
+      body = run.output || "Erreur pendant la production du build.";
+    } else {
+      body = run.output || "Build terminé.";
+    }
+    await push.send({
+      title,
+      body,
+      tag: `module-${module.id}-build`,
       url: `/?view=projects&profile=${encodeURIComponent(profileId)}`,
     }, profileId);
   },
@@ -1150,6 +1193,34 @@ app.post("/api/modules/:id/actions/:actionId", (request, response, next) => {
   try {
     if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
     response.status(202).json({ run: moduleService.runAction(request.params.id, request.params.actionId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/modules/:id/builds", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    response.status(202).json({ run: await moduleService.requestBuild(request.params.id, { force: request.body?.force === true }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/modules/:id/builds/refresh", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    response.json(await moduleService.refreshBuilds(request.params.id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/modules/:id/builds/:buildId", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    const artifact = await moduleService.buildFile(request.params.id, request.params.buildId);
+    response.download(artifact.file, artifact.name);
   } catch (error) {
     next(error);
   }

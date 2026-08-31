@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ModuleService, parseSystemdShow, timerTime } from "./module-service.js";
+import { ModuleService, parseAdbDevices, parseSystemdShow, timerTime } from "./module-service.js";
 
 class MemoryStore {
   constructor() { this.data = {}; }
@@ -113,3 +113,251 @@ test("module action state persists through completion and service reload", async
   const payload = await reloaded.payload(store.get(id));
   assert.equal(payload.actions[0].run.output, "next template ready");
 });
+
+test("parseAdbDevices parses USB and network devices", () => {
+  const output = `List of devices attached
+emulator-5554	device
+192.168.1.42:5555	device
+offline-device	offline
+unauthorized-device	unauthorized
+`;
+  const devices = parseAdbDevices(output);
+  assert.deepEqual(devices, [
+    { serial: "emulator-5554", network: false },
+    { serial: "192.168.1.42:5555", network: true },
+  ]);
+});
+
+test("deviceBuild module normalizes Android and iOS configurations", async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-build-norm-"));
+  const service = new ModuleService({ workspaceRoot, store: new MemoryStore() });
+  const projectRoot = path.join(workspaceRoot, "my-app");
+  await fs.mkdir(projectRoot, { recursive: true });
+
+  const androidModule = await service.normalize({
+    id: "app-android",
+    project: "MyApp",
+    deviceBuild: {
+      platform: "android",
+      instructions: "Build debug APK",
+      adbSerial: "192.168.1.100:5555",
+    },
+  }, projectRoot, path.join(projectRoot, "android.json"), [["project-myapp", { name: "MyApp" }]]);
+
+  assert.equal(androidModule.deviceBuild.platform, "android");
+  assert.equal(androidModule.deviceBuild.instructions, "Build debug APK");
+  assert.equal(androidModule.deviceBuild.adbSerial, "192.168.1.100:5555");
+  assert.equal(androidModule.deviceBuild.outputDirectory, path.join(projectRoot, ".noyau", "builds", "app-android"));
+
+  const iosModule = await service.normalize({
+    id: "app-ios",
+    project: "MyApp",
+    deviceBuild: {
+      platform: "ios",
+    },
+  }, projectRoot, path.join(projectRoot, "ios.json"), [["project-myapp", { name: "MyApp" }]]);
+
+  assert.equal(iosModule.deviceBuild.platform, "ios");
+  assert.equal(iosModule.deviceBuild.instructions, "Produire IPA signée installable.");
+
+  await assert.rejects(() => service.normalize({
+    id: "app-bad",
+    project: "MyApp",
+    deviceBuild: { platform: "windows" },
+  }, projectRoot, path.join(projectRoot, "bad.json"), [["project-myapp", { name: "MyApp" }]]), /Build appareil module invalide/);
+});
+
+test("requestBuild rejects when no agent is available in project", async () => {
+  const store = new MemoryStore();
+  const id = "project-app--build";
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-build-noagent-"));
+  const outputDirectory = path.join(workspaceRoot, ".noyau", "builds", "build");
+  store.data[id] = {
+    id,
+    projectId: "project-app",
+    name: "App Build",
+    workingDirectory: workspaceRoot,
+    deviceBuild: { platform: "android", instructions: "Build APK", outputDirectory },
+  };
+
+  const service = new ModuleService({
+    workspaceRoot,
+    store,
+    listProjectAgents: async () => [{ id: "agent-1", name: "Codex", state: "working" }],
+  });
+
+  await assert.rejects(() => service.requestBuild(id), /Aucun agent disponible dans ce projet/);
+});
+
+test("requestBuild submits agent and finishes Android build with ADB install", async () => {
+  const store = new MemoryStore();
+  const id = "project-app--build";
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-build-adb-"));
+  const outputDirectory = path.join(workspaceRoot, ".noyau", "builds", "build");
+  await fs.mkdir(outputDirectory, { recursive: true });
+
+  store.data[id] = {
+    id,
+    projectId: "project-app",
+    name: "App Build",
+    workingDirectory: workspaceRoot,
+    deviceBuild: { platform: "android", instructions: "Build APK", outputDirectory },
+  };
+
+  let submittedMessage = "";
+  let buildCompletedRun = null;
+  const executedCommands = [];
+
+  const service = new ModuleService({
+    workspaceRoot,
+    store,
+    listProjectAgents: async () => [{ id: "agent-avail", name: "Codex Agent", state: "available" }],
+    submitAgent: async (agentId, message) => { submittedMessage = message; },
+    findAdb: async () => "/usr/bin/adb",
+    run: async (file, args) => {
+      executedCommands.push([file, ...args]);
+      if (args[0] === "devices") return { stdout: "List of devices attached\ndevice-123\tdevice\n" };
+      if (args.includes("install")) return { stdout: "Success\n" };
+      return { stdout: "" };
+    },
+    onBuildComplete: async ({ run }) => { buildCompletedRun = run; },
+    buildPollInterval: 10,
+    buildTimeout: 1000,
+  });
+
+  const run = await service.requestBuild(id);
+  assert.equal(run.state, "building");
+  assert.match(submittedMessage, /Demande Noyau: produis dernière version APK/);
+
+  // Simulate agent dropping APK
+  const apkPath = path.join(outputDirectory, "app-debug.apk");
+  await fs.writeFile(apkPath, "dummy apk content");
+
+  // Wait for monitor to pick it up
+  let deadline = Date.now() + 1500;
+  while (!buildCompletedRun && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  assert.ok(buildCompletedRun, "onBuildComplete was called");
+  assert.equal(buildCompletedRun.state, "installed");
+  assert.equal(buildCompletedRun.device.serial, "device-123");
+
+  const payload = await service.payload(store.get(id));
+  assert.equal(payload.deviceBuild.builds.length, 1);
+  assert.equal(payload.deviceBuild.builds[0].name, "app-debug.apk");
+  assert.equal(payload.deviceBuild.builds[0].downloadUrl, `/api/modules/${encodeURIComponent(id)}/builds/app-debug.apk`);
+});
+
+test("build retention keeps only 3 latest builds and deletes older ones", async () => {
+  const store = new MemoryStore();
+  const id = "project-app--build";
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-retention-"));
+  const outputDirectory = path.join(workspaceRoot, ".noyau", "builds", "build");
+  await fs.mkdir(outputDirectory, { recursive: true });
+
+  const module = {
+    id,
+    projectId: "project-app",
+    name: "App Build",
+    workingDirectory: workspaceRoot,
+    deviceBuild: { platform: "android", instructions: "Build APK", outputDirectory },
+  };
+  store.data[id] = module;
+
+  // Create 5 build files with stepped timestamps
+  for (let i = 1; i <= 5; i++) {
+    const file = path.join(outputDirectory, `app-v${i}.apk`);
+    await fs.writeFile(file, `content v${i}`);
+    const time = new Date(2026, 0, i, 12, 0, 0);
+    await fs.utimes(file, time, time);
+  }
+
+  const service = new ModuleService({ workspaceRoot, store });
+  const builds = await service.builds(module);
+
+  assert.equal(builds.length, 3);
+  assert.deepEqual(builds.map((b) => b.name), ["app-v5.apk", "app-v4.apk", "app-v3.apk"]);
+
+  const remainingFiles = await fs.readdir(outputDirectory);
+  assert.deepEqual(remainingFiles.sort(), ["app-v3.apk", "app-v4.apk", "app-v5.apk"]);
+
+  // Test buildFile
+  const artifact = await service.buildFile(id, "app-v5.apk");
+  assert.equal(artifact.name, "app-v5.apk");
+
+  // Unsafe buildId rejection
+  await assert.rejects(() => service.buildFile(id, "../../../etc/passwd"), /Build introuvable/);
+  await assert.rejects(() => service.buildFile(id, "missing.apk"), /Build introuvable/);
+});
+
+test("requestBuild cancels if current commit is already built", async () => {
+  const store = new MemoryStore();
+  const id = "project-app--build";
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-dup-check-"));
+  const outputDirectory = path.join(workspaceRoot, ".noyau", "builds", "build");
+  await fs.mkdir(outputDirectory, { recursive: true });
+
+  const apkFile = path.join(outputDirectory, "app-release.apk");
+  await fs.writeFile(apkFile, "apk content");
+  await fs.writeFile(`${apkFile}.meta.json`, JSON.stringify({ version: "v1.0.0", commit: "abcdef1", createdAt: new Date().toISOString() }));
+
+  store.data[id] = {
+    id,
+    projectId: "project-app",
+    name: "App Build",
+    workingDirectory: workspaceRoot,
+    deviceBuild: { platform: "android", instructions: "Build APK", outputDirectory },
+  };
+
+  const service = new ModuleService({
+    workspaceRoot,
+    store,
+    listProjectAgents: async () => [{ id: "agent-1", name: "Codex", state: "available" }],
+    run: async (file, args) => {
+      if (args.includes("rev-parse")) return { stdout: "abcdef1\n" };
+      return { stdout: "" };
+    },
+  });
+
+  await assert.rejects(() => service.requestBuild(id), /Dernier build déjà disponible/);
+});
+
+test("refreshBuilds discovers external build and imports it with metadata", async () => {
+  const store = new MemoryStore();
+  const id = "project-app--build";
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-refresh-"));
+  const outputDirectory = path.join(workspaceRoot, ".noyau", "builds", "build");
+  const distDir = path.join(workspaceRoot, "dist");
+  await fs.mkdir(outputDirectory, { recursive: true });
+  await fs.mkdir(distDir, { recursive: true });
+
+  await fs.writeFile(path.join(workspaceRoot, "package.json"), JSON.stringify({ version: "1.2.3" }));
+  await fs.writeFile(path.join(distDir, "my-app.apk"), "compiled apk data");
+
+  store.data[id] = {
+    id,
+    projectId: "project-app",
+    name: "App Build",
+    workingDirectory: workspaceRoot,
+    deviceBuild: { platform: "android", instructions: "Build APK", outputDirectory },
+  };
+
+  const service = new ModuleService({
+    workspaceRoot,
+    store,
+    run: async (file, args) => {
+      if (args.includes("rev-parse")) return { stdout: "c0ffee7\n" };
+      return { stdout: "" };
+    },
+  });
+
+  const result = await service.refreshBuilds(id);
+  assert.equal(result.imported, "my-app.apk");
+  assert.equal(result.builds.length, 1);
+  assert.equal(result.builds[0].name, "my-app.apk");
+  assert.equal(result.builds[0].version, "v1.2.3");
+  assert.equal(result.builds[0].commit, "c0ffee7");
+});
+
+

@@ -10,6 +10,9 @@ const UNIT_PATTERN = /^[a-zA-Z0-9@_.:-]+\.(?:service|timer)$/;
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const DRIVE_ID_PATTERN = /^[a-zA-Z0-9_-]{10,200}$/;
 const EXECUTABLE_ROOTS = ["/bin/", "/usr/bin/", "/usr/local/bin/"];
+const ADB_SERIAL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}$/;
+const BUILD_PLATFORMS = new Set(["android", "ios"]);
+const BUILD_RUNNING_STATES = new Set(["queued", "building", "installing"]);
 
 function within(root, target) {
   return target === root || target.startsWith(`${root}${path.sep}`);
@@ -49,6 +52,23 @@ function knowledgeSource(value) {
   throw new Error("Source connaissances module invalide.");
 }
 
+function deviceBuildConfig(value, moduleId, projectRoot) {
+  if (!value) return null;
+  const platform = String(value.platform || "").toLowerCase();
+  const adbSerial = value.adbSerial ? String(value.adbSerial).trim() : null;
+  if (!BUILD_PLATFORMS.has(platform) || (adbSerial && (platform !== "android" || !ADB_SERIAL_PATTERN.test(adbSerial)))) throw new Error("Build appareil module invalide.");
+  return {
+    platform,
+    instructions: cleanText(value.instructions, platform === "android" ? "Produire APK signée installable." : "Produire IPA signée installable.", 2000),
+    adbSerial,
+    outputDirectory: path.join(projectRoot, ".noyau", "builds", moduleId),
+  };
+}
+
+export function parseAdbDevices(output) {
+  return String(output || "").split("\n").slice(1).map((line) => line.trim().split(/\s+/)).filter(([serial, state]) => serial && state === "device").map(([serial]) => ({ serial, network: serial.includes(":") }));
+}
+
 function parseSystemdShow(output) {
   const states = [];
   let current = {};
@@ -78,13 +98,21 @@ async function defaultRun(file, args, options = {}) {
 }
 
 export class ModuleService {
-  constructor({ workspaceRoot, store, homeDir = os.homedir(), run = defaultRun, onActionComplete = null }) {
+  constructor({ workspaceRoot, store, homeDir = os.homedir(), run = defaultRun, onActionComplete = null, onBuildComplete = null, listProjectAgents = async () => [], submitAgent = async () => {}, findAdb = null, sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)), buildPollInterval = 2000, buildTimeout = 15 * 60_000 }) {
     this.workspaceRoot = path.resolve(workspaceRoot);
     this.store = store;
     this.homeDir = path.resolve(homeDir);
     this.run = run;
     this.onActionComplete = onActionComplete;
+    this.onBuildComplete = onBuildComplete;
+    this.listProjectAgents = listProjectAgents;
+    this.submitAgent = submitAgent;
+    this.findAdb = findAdb || (() => this.defaultAdbPath());
+    this.sleep = sleep;
+    this.buildPollInterval = buildPollInterval;
+    this.buildTimeout = buildTimeout;
     this.actionRuns = new Map();
+    this.buildMonitors = new Map();
   }
 
   async normalize(raw, projectRoot, manifestPath, projectEntries) {
@@ -100,7 +128,8 @@ export class ModuleService {
     const controlUnits = validateUnits(raw.controlUnits);
     const links = externalLinks(raw.links);
     const knowledge = knowledgeSource(raw.knowledge);
-    if (!controlUnits.length && !links.length && !knowledge) throw new Error("Module sans contrôle, lien ni connaissance.");
+    const deviceBuild = deviceBuildConfig(raw.deviceBuild, raw.id, resolvedRoot);
+    if (!controlUnits.length && !links.length && !knowledge && !deviceBuild) throw new Error("Module sans contrôle, lien, connaissance ni build appareil.");
     const primaryUnit = raw.primaryUnit || controlUnits[0] || null;
     if (primaryUnit && !controlUnits.includes(primaryUnit)) throw new Error("Unité principale module invalide.");
     const schedules = (Array.isArray(raw.schedules) ? raw.schedules : []).slice(0, 12).map((schedule) => {
@@ -137,6 +166,7 @@ export class ModuleService {
       actions,
       links,
       knowledge,
+      deviceBuild,
       setup: raw.setup ? {
         status: raw.setup.status === "required" ? "required" : "ready",
         label: cleanText(raw.setup.label, raw.setup.status === "required" ? "Configuration requise" : "Prêt", 60),
@@ -198,6 +228,12 @@ export class ModuleService {
     const primary = states.find((state) => state.Id === module.primaryUnit);
     const controllable = Boolean(module.controlUnits?.length);
     const setupRequired = module.setup?.status === "required";
+    const builds = module.deviceBuild ? await this.builds(module) : [];
+    if (module.deviceBuild && BUILD_RUNNING_STATES.has(module.buildRun?.state) && !this.buildMonitors.has(module.id)) {
+      const requestedAt = new Date(module.buildRun.requestedAt || 0).getTime();
+      const artifact = builds.find((build) => new Date(build.createdAt).getTime() >= requestedAt);
+      if (artifact) void this.finishBuild(module, artifact).catch(() => {});
+    }
     return {
       id: module.id,
       projectId: module.projectId,
@@ -211,6 +247,11 @@ export class ModuleService {
       setup: module.setup || null,
       links: module.links || [],
       knowledge: module.knowledge || null,
+      deviceBuild: module.deviceBuild ? {
+        platform: module.deviceBuild.platform,
+        run: this.buildMonitors.get(module.id)?.run || module.buildRun || null,
+        builds,
+      } : null,
       schedules: (module.schedules || []).map((schedule) => {
         const state = states.find((item) => item.Id === schedule.unit);
         return { id: schedule.id, label: schedule.label, time: timerTime(state?.TimersCalendar, schedule.defaultTime), active: state?.ActiveState === "active", nextRun: state?.NextElapseUSecRealtime || null };
@@ -225,7 +266,7 @@ export class ModuleService {
     for (const candidate of discovered) {
       const installed = this.store.get(candidate.id);
       if (!installed) continue;
-      const refreshed = { ...candidate, installedAt: installed.installedAt, actionRuns: installed.actionRuns || {} };
+      const refreshed = { ...candidate, installedAt: installed.installedAt, actionRuns: installed.actionRuns || {}, buildRun: installed.buildRun || null };
       if (JSON.stringify(refreshed) !== JSON.stringify(installed)) await this.store.set(candidate.id, refreshed);
     }
     const installed = Object.values(this.store.all()).filter((module) => projectIds.has(module.projectId));
@@ -256,6 +297,283 @@ export class ModuleService {
   async saveActionRun(moduleId, actionId, run) {
     const current = this.get(moduleId);
     await this.store.set(moduleId, { ...current, actionRuns: { ...current.actionRuns, [actionId]: run } });
+  }
+
+  async defaultAdbPath() {
+    const candidates = [
+      "/usr/bin/adb",
+      "/usr/local/bin/adb",
+      "/bin/adb",
+      path.join(this.homeDir, "Android", "Sdk", "platform-tools", "adb"),
+      path.join(this.homeDir, "Library", "Android", "sdk", "platform-tools", "adb"),
+    ];
+    for (const candidate of candidates) {
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isFile()) return candidate;
+      } catch { /* prochain chemin connu */ }
+    }
+    return null;
+  }
+
+  async currentCommit(dir) {
+    try {
+      const { stdout } = await this.run("/usr/bin/git", ["-C", dir, "rev-parse", "--short", "HEAD"], { timeout: 5000 });
+      return stdout.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async currentVersion(dir) {
+    try {
+      const raw = await fs.readFile(path.join(dir, "package.json"), "utf8");
+      const json = JSON.parse(raw);
+      if (json.version) return `v${String(json.version).replace(/^v/, "")}`;
+    } catch { /* pas de package.json */ }
+    try {
+      const raw = await fs.readFile(path.join(dir, "version.json"), "utf8");
+      const json = JSON.parse(raw);
+      if (json.version) return `v${String(json.version).replace(/^v/, "")}`;
+    } catch { /* pas de version.json */ }
+    return null;
+  }
+
+  async artifactMeta(file) {
+    try {
+      const content = await fs.readFile(`${file}.meta.json`, "utf8");
+      return JSON.parse(content);
+    } catch {
+      return {};
+    }
+  }
+
+  async saveArtifactMeta(file, meta) {
+    try {
+      await fs.writeFile(`${file}.meta.json`, JSON.stringify(meta, null, 2), "utf8");
+    } catch { /* ignore metadata write errors */ }
+  }
+
+  async artifactEntries(module) {
+    const directory = module.deviceBuild.outputDirectory;
+    const extension = module.deviceBuild.platform === "android" ? ".apk" : ".ipa";
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+    const artifacts = await Promise.all(entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(extension)).map(async (entry) => {
+      const file = path.join(directory, entry.name);
+      const stat = await fs.stat(file);
+      const meta = await this.artifactMeta(file);
+      return {
+        id: entry.name,
+        name: entry.name,
+        file,
+        size: stat.size,
+        createdAt: meta.createdAt || stat.mtime.toISOString(),
+        modifiedAtMs: stat.mtimeMs,
+        version: meta.version || null,
+        commit: meta.commit || null,
+      };
+    }));
+    return artifacts.sort((left, right) => right.modifiedAtMs - left.modifiedAtMs);
+  }
+
+  async builds(module) {
+    const artifacts = await this.artifactEntries(module);
+    await Promise.all(artifacts.slice(3).map(async (artifact) => {
+      await fs.unlink(artifact.file).catch(() => {});
+      await fs.unlink(`${artifact.file}.meta.json`).catch(() => {});
+    }));
+    return artifacts.slice(0, 3).map(({ file: _file, modifiedAtMs: _modifiedAtMs, ...artifact }) => ({
+      ...artifact,
+      platform: module.deviceBuild.platform,
+      downloadUrl: module.deviceBuild.platform === "android" ? `/api/modules/${encodeURIComponent(module.id)}/builds/${encodeURIComponent(artifact.id)}` : null,
+    }));
+  }
+
+  async saveBuildRun(moduleId, run) {
+    const current = this.get(moduleId);
+    await this.store.set(moduleId, { ...current, buildRun: run });
+    const monitor = this.buildMonitors.get(moduleId);
+    if (monitor) monitor.run = run;
+  }
+
+  buildPrompt(module) {
+    const kind = module.deviceBuild.platform === "android" ? "APK" : "IPA";
+    const install = module.deviceBuild.platform === "android"
+      ? "Noyau tentera ensuite installation ADB; ne lance pas adb install."
+      : "IPA ne sera pas proposée par lien. Prépare version signée et installation appareil si configuration projet le permet.";
+    return [
+      `Demande Noyau: produis dernière version ${kind} installable du projet « ${module.name} ».`,
+      `Travaille dans ${module.workingDirectory}.`,
+      `Consignes module: ${module.deviceBuild.instructions}`,
+      `Copie artefact final dans ${module.deviceBuild.outputDirectory} avec nom unique finissant par ${kind.toLowerCase()}.`,
+      "Ce dossier sert seulement copie de livraison; garde sorties build originales. Ne supprime aucune version ici: Noyau garde trois dernières.",
+      install,
+      "Termine build et copie avant réponse finale. En cas d'échec, explique erreur exacte dans ta session.",
+    ].join("\n");
+  }
+
+  async requestBuild(id, { force = false } = {}) {
+    const module = this.get(id);
+    if (!module.deviceBuild) throw new Error("Module sans build appareil.");
+    if (BUILD_RUNNING_STATES.has(module.buildRun?.state) || this.buildMonitors.has(id)) throw new Error("Build déjà en cours.");
+
+    const currentCommit = await this.currentCommit(module.workingDirectory);
+    const existingBuilds = await this.builds(module);
+    if (!force && currentCommit && existingBuilds.some((b) => b.commit === currentCommit)) {
+      const matching = existingBuilds.find((b) => b.commit === currentCommit);
+      const label = [matching.version, currentCommit].filter(Boolean).join(" · ");
+      throw new Error(`Dernier build déjà disponible (${label || "à jour"}).`);
+    }
+
+    const agents = await this.listProjectAgents(module.projectId);
+    const agent = agents.find((candidate) => candidate.state === "available");
+    if (!agent) throw new Error("Aucun agent disponible dans ce projet.");
+    await fs.mkdir(module.deviceBuild.outputDirectory, { recursive: true, mode: 0o700 });
+    const before = new Map((await this.artifactEntries(module)).map((artifact) => [artifact.id, artifact.modifiedAtMs]));
+    let run = { state: "queued", requestedAt: new Date().toISOString(), agent: { id: agent.id, name: agent.name }, platform: module.deviceBuild.platform };
+    await this.saveBuildRun(module.id, run);
+    try {
+      await this.submitAgent(agent.id, this.buildPrompt(module));
+      run = { ...run, state: "building", startedAt: new Date().toISOString(), output: `${agent.name} produit ${module.deviceBuild.platform === "android" ? "APK" : "IPA"}.` };
+      await this.saveBuildRun(module.id, run);
+    } catch (error) {
+      run = { ...run, state: "error", finishedAt: new Date().toISOString(), output: String(error.message || error).slice(-500) };
+      await this.saveBuildRun(module.id, run);
+      throw error;
+    }
+    void this.monitorBuild(module, before, run).catch(() => {});
+    return run;
+  }
+
+  async monitorBuild(module, before, initialRun) {
+    if (this.buildMonitors.has(module.id)) return;
+    const monitor = { run: initialRun };
+    this.buildMonitors.set(module.id, monitor);
+    try {
+      const deadline = Date.now() + this.buildTimeout;
+      while (Date.now() <= deadline) {
+        const artifact = (await this.artifactEntries(module)).find((candidate) => !before.has(candidate.id) || candidate.modifiedAtMs > before.get(candidate.id));
+        if (artifact) {
+          await this.finishBuild(module, artifact);
+          return;
+        }
+        await this.sleep(this.buildPollInterval);
+      }
+      const run = { ...monitor.run, state: "error", finishedAt: new Date().toISOString(), output: "Build non reçu après 15 minutes. Consulter session agent." };
+      await this.saveBuildRun(module.id, run);
+      await this.onBuildComplete?.({ module, run });
+    } finally {
+      this.buildMonitors.delete(module.id);
+    }
+  }
+
+  async connectedAndroidDevice(module) {
+    const adb = await this.findAdb();
+    if (!adb) return { adb: null, device: null, devices: [] };
+    const serial = module.deviceBuild.adbSerial;
+    if (serial?.includes(":")) await this.run(adb, ["connect", serial], { timeout: 15_000 }).catch(() => {});
+    const { stdout = "" } = await this.run(adb, ["devices"], { timeout: 15_000 });
+    const devices = parseAdbDevices(stdout);
+    const device = serial ? devices.find((candidate) => candidate.serial === serial) || null : devices[0] || null;
+    return { adb, device, devices };
+  }
+
+  async finishBuild(module, artifact) {
+    const current = this.get(module.id);
+    if (!BUILD_RUNNING_STATES.has(current.buildRun?.state)) return current.buildRun;
+
+    const commit = await this.currentCommit(module.workingDirectory);
+    const version = await this.currentVersion(module.workingDirectory);
+    await this.saveArtifactMeta(artifact.file, {
+      version,
+      commit,
+      createdAt: artifact.createdAt || new Date().toISOString(),
+    });
+
+    let run = { ...current.buildRun, state: "installing", artifact: artifact.id, output: "Build reçu. Vérification appareil…" };
+    await this.saveBuildRun(module.id, run);
+    if (module.deviceBuild.platform === "ios") {
+      run = { ...run, state: "installation-requested", finishedAt: new Date().toISOString(), output: "IPA prête. Demande d'installation transmise à l'agent." };
+    } else {
+      try {
+        const { adb, device } = await this.connectedAndroidDevice(module);
+        if (!adb) run = { ...run, state: "download-ready", finishedAt: new Date().toISOString(), output: "ADB absent. APK prête au téléchargement." };
+        else if (!device) run = { ...run, state: "download-ready", finishedAt: new Date().toISOString(), output: "Aucun appareil ADB accessible. APK prête au téléchargement." };
+        else {
+          const { stdout = "", stderr = "" } = await this.run(adb, ["-s", device.serial, "install", "-r", artifact.file], { timeout: 5 * 60_000 });
+          run = { ...run, state: "installed", finishedAt: new Date().toISOString(), device, output: String(stdout || stderr || `Installé sur ${device.serial}`).trim().slice(-500) };
+        }
+      } catch (error) {
+        run = { ...run, state: "error", finishedAt: new Date().toISOString(), output: `${String(error.stderr || error.message || error).trim().slice(-430)} · APK disponible au téléchargement.` };
+      }
+    }
+    await this.saveBuildRun(module.id, run);
+    await this.builds(this.get(module.id));
+    await this.onBuildComplete?.({ module, run });
+    return run;
+  }
+
+  async refreshBuilds(id) {
+    const module = this.get(id);
+    if (!module.deviceBuild) throw new Error("Module sans build appareil.");
+    await fs.mkdir(module.deviceBuild.outputDirectory, { recursive: true, mode: 0o700 });
+
+    const extension = module.deviceBuild.platform === "android" ? ".apk" : ".ipa";
+    const searchPaths = [
+      module.workingDirectory,
+      path.join(module.workingDirectory, "android", "app", "build", "outputs", "apk", "release"),
+      path.join(module.workingDirectory, "android", "app", "build", "outputs", "apk", "debug"),
+      path.join(module.workingDirectory, "build", "outputs", "apk", "release"),
+      path.join(module.workingDirectory, "dist"),
+    ];
+
+    const existing = new Set((await this.artifactEntries(module)).map((a) => a.id));
+    const commit = await this.currentCommit(module.workingDirectory);
+    const version = await this.currentVersion(module.workingDirectory);
+    let imported = null;
+
+    for (const searchDir of searchPaths) {
+      const entries = await fs.readdir(searchDir, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (entry.isFile() && entry.name.toLowerCase().endsWith(extension)) {
+          const srcFile = path.join(searchDir, entry.name);
+          const destFile = path.join(module.deviceBuild.outputDirectory, entry.name);
+          const srcStat = await fs.stat(srcFile).catch(() => null);
+          if (srcStat && srcStat.size > 0) {
+            if (!existing.has(entry.name) || srcFile !== destFile) {
+              if (srcFile !== destFile) {
+                await fs.copyFile(srcFile, destFile);
+              }
+              await this.saveArtifactMeta(destFile, {
+                version,
+                commit,
+                createdAt: srcStat.mtime.toISOString(),
+              });
+              imported = entry.name;
+              break;
+            } else {
+              // Ensure existing meta is saved if missing
+              const meta = await this.artifactMeta(destFile);
+              if (!meta.commit && commit) {
+                await this.saveArtifactMeta(destFile, { version: meta.version || version, commit, createdAt: meta.createdAt || srcStat.mtime.toISOString() });
+              }
+            }
+          }
+        }
+      }
+      if (imported) break;
+    }
+
+    const builds = await this.builds(module);
+    return { builds, imported };
+  }
+
+  async buildFile(id, buildId) {
+    const module = this.get(id);
+    if (module.deviceBuild?.platform !== "android" || path.basename(String(buildId)) !== String(buildId)) throw new Error("Build introuvable.");
+    const artifact = (await this.artifactEntries(module)).find((candidate) => candidate.id === buildId);
+    if (!artifact) throw new Error("Build introuvable.");
+    return artifact;
   }
 
   runAction(id, actionId) {

@@ -855,7 +855,110 @@ function ModuleKnowledge({ module, onConfigured }) {
   </>;
 }
 
-function ProjectModule({ module, onToggle, onAction, onSchedule, onRefresh }) {
+function formatFileSize(bytes) {
+  if (!bytes || Number.isNaN(bytes)) return "";
+  if (bytes < 1024) return `${bytes} o`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+}
+
+function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
+  const [busy, setBusy] = useState(false);
+  const deviceBuild = module.deviceBuild;
+  if (!deviceBuild) return null;
+  const isAndroid = deviceBuild.platform === "android";
+  const platformName = isAndroid ? "Android (APK)" : "iOS (IPA)";
+  const run = deviceBuild.run;
+  const isRunning = run && ["queued", "building", "installing"].includes(run.state);
+
+  async function startBuild() {
+    if (busy || isRunning) return;
+    if (!window.confirm(`Lancer la production du build ${isAndroid ? "APK" : "IPA"} par un agent disponible ?`)) return;
+    setBusy(true);
+    try {
+      await onBuild?.(module.id);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshLatest() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await onRefreshBuilds?.(module.id);
+      if (res?.imported) {
+        window.alert(`Nouveau build importé : ${res.imported}`);
+      } else {
+        window.alert("Builds synchronisés.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const statusClass = run?.state === "installed" ? "installed" : run?.state === "error" ? "error" : isRunning ? "running" : "";
+
+  return (
+    <section className="module-device-build">
+      <div className="module-device-build-head">
+        <strong>Build {platformName}</strong>
+        <div className="module-device-build-actions">
+          <button
+            className="ghost"
+            onClick={refreshLatest}
+            disabled={busy}
+            title="Rechercher et synchroniser le dernier build dans le projet"
+          >
+            {busy ? "…" : "Rafraîchir"}
+          </button>
+          <button
+            className="primary"
+            onClick={startBuild}
+            disabled={busy || isRunning}
+          >
+            {isRunning ? "Build en cours…" : busy ? "Lancement…" : "Installer dernier build sur device"}
+          </button>
+        </div>
+      </div>
+      {run && (
+        <div className={`module-device-build-status ${statusClass}`}>
+          {run.state === "installed" && `✓ Installé sur ${run.device?.serial || "l'appareil"}${run.output ? ` · ${run.output}` : ""}`}
+          {run.state === "download-ready" && `APK prête au téléchargement · ${run.output || ""}`}
+          {run.state === "installation-requested" && `IPA prête · ${run.output || "Demande transmise à l'agent."}`}
+          {run.state === "building" && `Production en cours (${run.agent?.name || "agent"}) · ${run.output || ""}`}
+          {run.state === "queued" && `En attente (${run.agent?.name || "agent"})…`}
+          {run.state === "installing" && `Installation en cours sur l'appareil…`}
+          {run.state === "error" && `Erreur build: ${run.output || "échec"}`}
+        </div>
+      )}
+      {(deviceBuild.builds || []).length > 0 && (
+        <div className="module-build-list">
+          {deviceBuild.builds.map((build) => (
+            <div className="module-build-item" key={build.id}>
+              <div>
+                <div className="module-build-name" title={build.name}>{build.name}</div>
+                <div className="module-build-meta">
+                  {build.version && <span className="module-build-tag">{build.version}</span>}
+                  {build.commit && <span className="module-build-commit">#{build.commit}</span>}
+                  <small>{formatFileSize(build.size)}</small>
+                  <small>· {new Date(build.createdAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
+                </div>
+              </div>
+              {build.downloadUrl ? (
+                <a href={build.downloadUrl} download={build.name} target="_blank" rel="noreferrer">
+                  Télécharger APK
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefreshBuilds, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
   async function toggle() {
@@ -891,12 +994,13 @@ function ProjectModule({ module, onToggle, onAction, onSchedule, onRefresh }) {
       {module.setup && <p className={`module-setup ${module.setup.status}`}><strong>{module.setup.label}</strong>{module.setup.description && <small>{module.setup.description}</small>}</p>}
       <div className="module-schedules">{(module.schedules || []).map((schedule) => <ModuleSchedule key={schedule.id} moduleId={module.id} schedule={schedule} onSave={onSchedule} />)}</div>
       <div className="module-actions"><ModuleKnowledge module={module} onConfigured={onRefresh} />{(module.links || []).map((link) => <a key={link.id} className={link.tone} href={link.url} target="_blank" rel="noreferrer" title={link.description}>{link.label}</a>)}{(module.actions || []).map((action) => <button key={action.id} className={action.tone} onClick={() => actionRun(action)} disabled={busy || action.run?.state === "running"}>{action.run?.state === "running" ? "Exécution…" : action.label}</button>)}</div>
+      {module.deviceBuild && <ModuleDeviceBuild module={module} onBuild={onBuild} onRefreshBuilds={onRefreshBuilds} />}
       {runLabel && <small className={`module-run ${latestRun?.state || "running"}`}>{runLabel}</small>}
     </article>
   );
 }
 
-function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onOpenTodos, onReorder, onRefresh }) {
+function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onModuleBuild, onModuleBuildRefresh, onOpenTodos, onReorder, onRefresh }) {
   // Le cache Todo porte { todos, folders } depuis la refonte par dossier: on accepte les deux formes.
   const [todos, setTodos] = useState(() => {
     const cached = cachedView("todos");
@@ -1000,7 +1104,7 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
                 {!projectTodos.length && <span className="project-empty">Aucune tâche liée.</span>}
                 <button className="project-todo-link" onClick={onOpenTodos}>Ouvrir la liste complète ›</button>
               </div></details>
-              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onRefresh={onRefresh} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
+              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
             </article>
           );
         })}
@@ -1869,19 +1973,19 @@ function extractLinks(rows, width) {
   const safe = /^[A-Za-z0-9%&=_\-.~:/?#[\]@!$'()*+,;]+$/;
   const links = [];
   for (let index = 0; index < rows.length; index += 1) {
-    const match = rows[index].match(/https?:\/\/[^\s"'<>]+/);
-    if (!match) continue;
-    let url = match[0];
-    let cursor = index;
-    while (cursor + 1 < rows.length) {
-      const filled = rows[cursor].replace(/\s+$/, "").length >= width - 4;
-      const next = rows[cursor + 1].trim();
-      if (!filled || next.length < 3 || !safe.test(next)) break;
-      url += next;
-      cursor += 1;
+    const matches = rows[index].matchAll(/https?:\/\/[^\s"'<>)\]]+/g);
+    for (const match of matches) {
+      let url = match[0].replace(/[.,;:)]+$/, "");
+      let cursor = index;
+      while (cursor + 1 < rows.length) {
+        const filled = rows[cursor].replace(/\s+$/, "").length >= width - 4;
+        const next = rows[cursor + 1].trim();
+        if (!filled || next.length < 3 || !safe.test(next)) break;
+        url += next;
+        cursor += 1;
+      }
+      links.push(url.replace(/[.,;:)]+$/, ""));
     }
-    links.push(url);
-    index = cursor;
   }
   return [...new Set(links)];
 }
@@ -2336,6 +2440,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
   const [connected, setConnected] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
+  const [copiedLink, setCopiedLink] = useState(null);
   const snapshotRef = React.useRef(null);
   const [oskEnabled, setOskEnabled] = useState(wantsOnScreenKeyboard);
   const [ctrl, setCtrl] = useState(false);
@@ -3039,13 +3144,26 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
         <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSnapshot(null)}>
           <section className="modal terminal-snapshot">
             <div className="modal-head"><div><p className="eyebrow">TEXTE DE L’ÉCRAN</p><h2>Copier</h2></div><button className="icon-button" onClick={() => setSnapshot(null)}>×</button></div>
-            {snapshot.links.slice(0, 6).map((link) => (
-              <div className="snapshot-link" key={link}>
-                <span>{link}</span>
-                <button className="ghost" onClick={() => copyText(link)}>Copier</button>
-                <a className="ghost" href={link} target="_blank" rel="noreferrer">Ouvrir</a>
+            {snapshot.links?.length > 0 && (
+              <div className="snapshot-links">
+                {snapshot.links.map((link) => (
+                  <div className="snapshot-link" key={link}>
+                    <span title={link}>{link}</span>
+                    <button
+                      className={`ghost ${copiedLink === link ? "copied" : ""}`}
+                      onClick={() => {
+                        copyText(link);
+                        setCopiedLink(link);
+                        setTimeout(() => setCopiedLink(null), 2000);
+                      }}
+                    >
+                      {copiedLink === link ? "Copié !" : "Copier"}
+                    </button>
+                    <a className="ghost" href={link} target="_blank" rel="noreferrer">Ouvrir</a>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
             <textarea className="snapshot-text" ref={snapshotRef} value={snapshot.text} readOnly spellCheck="false" />
             <div className="modal-actions">
               <button className="ghost" onClick={() => setSnapshot(null)}>Fermer</button>
@@ -3672,6 +3790,8 @@ function App() {
   const toggleModule = (id, enabled) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/toggle`, { method: "PATCH", body: JSON.stringify({ enabled }) });
   const runModuleAction = (id, actionId) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`, { method: "POST" });
   const saveModuleSchedule = (id, scheduleId, time) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/schedules/${encodeURIComponent(scheduleId)}`, { method: "PATCH", body: JSON.stringify({ time }) });
+  const buildModule = (id) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/builds`, { method: "POST" });
+  const refreshModuleBuilds = (id) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/builds/refresh`, { method: "POST" });
   async function reorderProjects(ids, persist = true) {
     const byId = new Map(projects.map((project) => [project.id, project]));
     setProjects(ids.map((id) => byId.get(id)).filter(Boolean));
@@ -3695,7 +3815,7 @@ function App() {
         {!active ? (
           <>
             {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onRefreshQuotas={refreshQuotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
-            {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onOpenTodos={() => setView("todos")} onReorder={reorderProjects} onRefresh={refresh} /></>}
+            {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onModuleBuild={buildModule} onModuleBuildRefresh={refreshModuleBuilds} onOpenTodos={() => setView("todos")} onReorder={reorderProjects} onRefresh={refresh} /></>}
             {view === "todos" && <><Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} /><TodosView /></>}
             {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
             {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
