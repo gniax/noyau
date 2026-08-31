@@ -822,6 +822,8 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
   });
   const [todoBusy, setTodoBusy] = useState("");
   const [draggedProject, setDraggedProject] = useState("");
+  const cardRefs = React.useRef(new Map());
+  const dragRef = React.useRef(null);
 
   const loadTodos = useCallback(async () => {
     try {
@@ -845,15 +847,43 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
     }
   }
 
-  function dropProject(targetId) {
-    if (!draggedProject || draggedProject === targetId) return setDraggedProject("");
-    const ids = projects.map((project) => project.id);
-    const from = ids.indexOf(draggedProject);
-    const to = ids.indexOf(targetId);
-    if (from < 0 || to < 0) return setDraggedProject("");
-    ids.splice(to, 0, ids.splice(from, 1)[0]);
+  function startDrag(event, project) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const order = projects.map((p) => p.id);
+    dragRef.current = { pointerId: event.pointerId, id: project.id, order, initialOrder: order };
+    setDraggedProject(project.id);
+  }
+
+  function dragOver(event) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const cards = drag.order.map((id) => ({ id, node: cardRefs.current.get(id) })).filter((c) => c.node);
+    const hovered = cards.find((card) => {
+      const box = card.node.getBoundingClientRect();
+      return event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
+    });
+    if (!hovered || hovered.id === drag.id) return;
+    const nextOrder = drag.order.filter((id) => id !== drag.id);
+    const at = nextOrder.indexOf(hovered.id);
+    nextOrder.splice(at < 0 ? nextOrder.length : at, 0, drag.id);
+    if (nextOrder.join() === drag.order.join()) return;
+    drag.order = nextOrder;
+    onReorder(nextOrder, false);
+  }
+
+  async function endDrag(event) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const finalOrder = [...drag.order];
+    const changed = finalOrder.join() !== drag.initialOrder.join();
+    dragRef.current = null;
     setDraggedProject("");
-    onReorder(ids);
+    if (changed) {
+      await onReorder(finalOrder, true);
+    }
   }
 
   return (
@@ -867,8 +897,12 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
           const projectTodos = todos.filter((todo) => todo.projectId === project.id);
           const openTodos = projectTodos.filter((todo) => !todo.completed);
           return (
-            <article className={`panel project-card ${draggedProject === project.id ? "dragging" : ""}`} key={project.id} onDragOver={(event) => event.preventDefault()} onDrop={() => dropProject(project.id)}>
-              <header><button className="project-drag" draggable onDragStart={(event) => { setDraggedProject(project.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", project.id); }} onDragEnd={() => setDraggedProject("")} title="Glisser pour changer ordre" aria-label={`Déplacer ${project.name}`}>⠿</button><ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={`Projet partagé par ${project.owner?.name || "autre profil"}`}>⇄ {project.owner?.name || "partagé"}</b> : project.shared ? <b className="shared-chip own" title="Projet partagé avec les autres profils">⇄ partagé</b> : null}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
+            <article
+              className={`panel project-card ${draggedProject === project.id ? "dragging" : ""}`}
+              key={project.id}
+              ref={(node) => { if (node) cardRefs.current.set(project.id, node); else cardRefs.current.delete(project.id); }}
+            >
+              <header><button className="project-drag" onPointerDown={(event) => startDrag(event, project)} onPointerMove={dragOver} onPointerUp={endDrag} onPointerCancel={endDrag} title="Glisser pour changer ordre" aria-label={`Déplacer ${project.name}`}>⠿</button><ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={`Projet partagé par ${project.owner?.name || "autre profil"}`}>⇄ {project.owner?.name || "partagé"}</b> : project.shared ? <b className="shared-chip own" title="Projet partagé avec les autres profils">⇄ partagé</b> : null}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
               <p>{agents.length} agent{agents.length > 1 ? "s" : ""} actif{agents.length > 1 ? "s" : ""}</p>
               <div className="project-agents">
                 {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {session.agentStatus?.label || "Disponible"}</small></span><b>›</b></button>)}
@@ -3555,9 +3589,10 @@ function App() {
   const toggleModule = (id, enabled) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/toggle`, { method: "PATCH", body: JSON.stringify({ enabled }) });
   const runModuleAction = (id, actionId) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`, { method: "POST" });
   const saveModuleSchedule = (id, scheduleId, time) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/schedules/${encodeURIComponent(scheduleId)}`, { method: "PATCH", body: JSON.stringify({ time }) });
-  async function reorderProjects(ids) {
+  async function reorderProjects(ids, persist = true) {
     const byId = new Map(projects.map((project) => [project.id, project]));
     setProjects(ids.map((id) => byId.get(id)).filter(Boolean));
+    if (!persist) return;
     try {
       const result = await api("/api/projects/order", { method: "PATCH", body: JSON.stringify({ ids }) });
       setProjects(result.projects || []);
