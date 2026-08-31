@@ -270,8 +270,11 @@ export class ModuleService {
       if (JSON.stringify(refreshed) !== JSON.stringify(installed)) await this.store.set(candidate.id, refreshed);
     }
     const installed = Object.values(this.store.all()).filter((module) => projectIds.has(module.projectId));
+    const payloads = await Promise.all(installed.map((module) => this.payload(module)));
+    payloads.sort((a, b) => (b.deviceBuild ? 1 : 0) - (a.deviceBuild ? 1 : 0));
     const proposals = discovered.filter((candidate) => !this.store.get(candidate.id)).map((candidate) => ({ id: candidate.id, projectId: candidate.projectId, name: candidate.name, description: candidate.description, glyph: candidate.glyph, accent: candidate.accent }));
-    return { modules: await Promise.all(installed.map((module) => this.payload(module))), proposals };
+    proposals.sort((a, b) => (b.id.includes("build") ? 1 : 0) - (a.id.includes("build") ? 1 : 0));
+    return { modules: payloads, proposals };
   }
 
   async setEnabled(id, enabled) {

@@ -1078,8 +1078,12 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
       <div className="projects-grid">
         {projects.map((project) => {
           const agents = sessions.filter((session) => session.projectId === project.id);
-          const projectModules = modules.filter((module) => module.projectId === project.id);
-          const proposals = moduleProposals.filter((module) => module.projectId === project.id);
+          const projectModules = modules
+            .filter((module) => module.projectId === project.id)
+            .sort((a, b) => (b.deviceBuild ? 1 : 0) - (a.deviceBuild ? 1 : 0));
+          const proposals = moduleProposals
+            .filter((module) => module.projectId === project.id)
+            .sort((a, b) => (b.id?.includes("build") ? 1 : 0) - (a.id?.includes("build") ? 1 : 0));
           const projectTodos = todos.filter((todo) => todo.projectId === project.id);
           const openTodos = projectTodos.filter((todo) => !todo.completed);
           return (
