@@ -20,8 +20,23 @@ function cleanText(value, fallback, limit = 120) {
 
 function validateUnits(units) {
   const normalized = [...new Set(Array.isArray(units) ? units : [])];
-  if (!normalized.length || normalized.length > 20 || normalized.some((unit) => !UNIT_PATTERN.test(unit))) throw new Error("Unités systemd module invalides.");
+  if (normalized.length > 20 || normalized.some((unit) => !UNIT_PATTERN.test(unit))) throw new Error("Unités systemd module invalides.");
   return normalized;
+}
+
+function externalLinks(links) {
+  return (Array.isArray(links) ? links : []).slice(0, 12).map((link) => {
+    let url;
+    try { url = new URL(String(link.url || "")); } catch { throw new Error("Lien module invalide."); }
+    if (!MODULE_PATTERN.test(link.id) || url.protocol !== "https:" || url.href.length > 2048) throw new Error("Lien module invalide.");
+    return {
+      id: link.id,
+      label: cleanText(link.label, link.id, 50),
+      description: cleanText(link.description, "", 140),
+      url: url.href,
+      tone: ["primary", "neutral"].includes(link.tone) ? link.tone : "neutral",
+    };
+  });
 }
 
 function parseSystemdShow(output) {
@@ -73,8 +88,10 @@ export class ModuleService {
     const stat = await fs.stat(workingDirectory);
     if (!stat.isDirectory()) throw new Error("Dossier module invalide.");
     const controlUnits = validateUnits(raw.controlUnits);
-    const primaryUnit = raw.primaryUnit || controlUnits[0];
-    if (!controlUnits.includes(primaryUnit)) throw new Error("Unité principale module invalide.");
+    const links = externalLinks(raw.links);
+    if (!controlUnits.length && !links.length) throw new Error("Module sans contrôle ni lien.");
+    const primaryUnit = raw.primaryUnit || controlUnits[0] || null;
+    if (primaryUnit && !controlUnits.includes(primaryUnit)) throw new Error("Unité principale module invalide.");
     const schedules = (Array.isArray(raw.schedules) ? raw.schedules : []).slice(0, 12).map((schedule) => {
       if (!MODULE_PATTERN.test(schedule.id) || !UNIT_PATTERN.test(schedule.unit) || !controlUnits.includes(schedule.unit) || !TIME_PATTERN.test(schedule.defaultTime)) throw new Error("Horaire module invalide.");
       return { id: schedule.id, label: cleanText(schedule.label, schedule.id, 50), unit: schedule.unit, defaultTime: schedule.defaultTime };
@@ -107,6 +124,12 @@ export class ModuleService {
       controlUnits,
       schedules,
       actions,
+      links,
+      setup: raw.setup ? {
+        status: raw.setup.status === "required" ? "required" : "ready",
+        label: cleanText(raw.setup.label, raw.setup.status === "required" ? "Configuration requise" : "Prêt", 60),
+        description: cleanText(raw.setup.description, "", 220),
+      } : null,
     };
   }
 
@@ -149,6 +172,7 @@ export class ModuleService {
   }
 
   async inspect(module) {
+    if (!module.controlUnits?.length) return [];
     try {
       const { stdout } = await this.systemctl(["show", ...module.controlUnits, "--no-pager", "--property=Id,ActiveState,UnitFileState,NextElapseUSecRealtime,TimersCalendar"]);
       return parseSystemdShow(stdout);
@@ -160,6 +184,8 @@ export class ModuleService {
   async payload(module) {
     const states = await this.inspect(module);
     const primary = states.find((state) => state.Id === module.primaryUnit);
+    const controllable = Boolean(module.controlUnits?.length);
+    const setupRequired = module.setup?.status === "required";
     return {
       id: module.id,
       projectId: module.projectId,
@@ -167,13 +193,16 @@ export class ModuleService {
       description: module.description,
       glyph: module.glyph,
       accent: module.accent,
-      enabled: primary?.ActiveState === "active",
-      state: primary?.ActiveState || "unknown",
-      schedules: module.schedules.map((schedule) => {
+      controllable,
+      enabled: controllable ? primary?.ActiveState === "active" : !setupRequired,
+      state: controllable ? primary?.ActiveState || "unknown" : setupRequired ? "setup-required" : "ready",
+      setup: module.setup || null,
+      links: module.links || [],
+      schedules: (module.schedules || []).map((schedule) => {
         const state = states.find((item) => item.Id === schedule.unit);
         return { id: schedule.id, label: schedule.label, time: timerTime(state?.TimersCalendar, schedule.defaultTime), active: state?.ActiveState === "active", nextRun: state?.NextElapseUSecRealtime || null };
       }),
-      actions: module.actions.map(({ id, label, description, confirm, tone }) => ({ id, label, description, confirm, tone, run: this.actionRuns.get(`${module.id}:${id}`) || module.actionRuns?.[id] || null })),
+      actions: (module.actions || []).map(({ id, label, description, confirm, tone }) => ({ id, label, description, confirm, tone, run: this.actionRuns.get(`${module.id}:${id}`) || module.actionRuns?.[id] || null })),
     };
   }
 
@@ -187,6 +216,7 @@ export class ModuleService {
 
   async setEnabled(id, enabled) {
     const module = this.get(id);
+    if (!module.controlUnits?.length) throw new Error("Module sans service contrôlable.");
     await this.systemctl([enabled ? "enable" : "disable", "--now", ...module.controlUnits]);
     return this.payload(module);
   }

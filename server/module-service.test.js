@@ -34,6 +34,38 @@ test("module discovery attaches manifest to project without project root", async
   assert.deepEqual(module.actions[0].command.args, ["daily.js", "next"]);
 });
 
+test("link-only module exposes setup without systemd control", async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-link-module-"));
+  const projectRoot = path.join(workspaceRoot, "noyau");
+  await fs.mkdir(path.join(projectRoot, ".noyau", "modules"), { recursive: true });
+  await fs.writeFile(path.join(projectRoot, ".noyau", "modules", "notion.json"), JSON.stringify({
+    id: "notion",
+    project: "Atlas",
+    name: "Notion",
+    links: [{ id: "setup", label: "Configurer", url: "https://www.notion.so/profile/integrations/internal" }],
+    setup: { status: "required", label: "Connexion requise", description: "Token et page partagée requis." },
+  }));
+  let runs = 0;
+  const service = new ModuleService({ workspaceRoot, store: new MemoryStore(), homeDir: workspaceRoot, run: async () => { runs += 1; return { stdout: "" }; } });
+  const [module] = await service.discover({ "project-atlas": { name: "Atlas", rootPath: null } });
+  const payload = await service.payload(module);
+  assert.equal(payload.controllable, false);
+  assert.equal(payload.enabled, false);
+  assert.equal(payload.state, "setup-required");
+  assert.equal(payload.links[0].url, "https://www.notion.so/profile/integrations/internal");
+  assert.equal(runs, 0);
+});
+
+test("link module rejects non-HTTPS URLs", async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-link-safety-"));
+  const service = new ModuleService({ workspaceRoot, store: new MemoryStore() });
+  await assert.rejects(() => service.normalize({
+    id: "unsafe",
+    project: "Atlas",
+    links: [{ id: "open", url: "javascript:alert(1)" }],
+  }, workspaceRoot, path.join(workspaceRoot, "unsafe.json"), [["project-atlas", { name: "Atlas" }]]), /Lien module invalide/);
+});
+
 test("systemd timer output exposes current schedule", () => {
   const [state] = parseSystemdShow("Id=canva.timer\nActiveState=active\nTimersCalendar={ OnCalendar=*-*-* 18:30:00 Europe/Paris }\n\n");
   assert.equal(state.ActiveState, "active");

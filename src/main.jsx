@@ -709,7 +709,7 @@ function ProjectModule({ module, onToggle, onAction, onSchedule }) {
       setBusy(false);
     }
   }
-  const latestAction = module.actions.filter((action) => action.run).sort((left, right) => String(right.run.startedAt).localeCompare(String(left.run.startedAt)))[0];
+  const latestAction = (module.actions || []).filter((action) => action.run).sort((left, right) => String(right.run.startedAt).localeCompare(String(left.run.startedAt)))[0];
   const latestRun = latestAction?.run;
   const runLabel = latestRun?.state === "running"
     ? `${latestAction.label} · exécution en cours…`
@@ -718,9 +718,10 @@ function ProjectModule({ module, onToggle, onAction, onSchedule }) {
       : latestRun ? `${latestAction.label} · erreur: ${latestRun.output || "échec"}` : actionNotice;
   return (
     <article className="project-module" style={{ "--module-accent": module.accent }}>
-      <header><span className="module-glyph">{module.glyph}</span><div><strong>{module.name}</strong><small>{module.description}</small></div><button className={`module-toggle ${module.enabled ? "enabled" : ""}`} onClick={toggle} disabled={busy} role="switch" aria-checked={module.enabled}><i /><span>{module.enabled ? "Actif" : "Arrêté"}</span></button></header>
-      <div className="module-schedules">{module.schedules.map((schedule) => <ModuleSchedule key={schedule.id} moduleId={module.id} schedule={schedule} onSave={onSchedule} />)}</div>
-      <div className="module-actions">{module.actions.map((action) => <button key={action.id} className={action.tone} onClick={() => actionRun(action)} disabled={busy || action.run?.state === "running"}>{action.run?.state === "running" ? "Exécution…" : action.label}</button>)}</div>
+      <header><span className="module-glyph">{module.glyph}</span><div><strong>{module.name}</strong><small>{module.description}</small></div>{module.controllable ? <button className={`module-toggle ${module.enabled ? "enabled" : ""}`} onClick={toggle} disabled={busy} role="switch" aria-checked={module.enabled}><i /><span>{module.enabled ? "Actif" : "Arrêté"}</span></button> : <span className={`module-status ${module.setup?.status === "required" ? "required" : "ready"}`}>{module.setup?.status === "required" ? "À configurer" : "Prêt"}</span>}</header>
+      {module.setup && <p className={`module-setup ${module.setup.status}`}><strong>{module.setup.label}</strong>{module.setup.description && <small>{module.setup.description}</small>}</p>}
+      <div className="module-schedules">{(module.schedules || []).map((schedule) => <ModuleSchedule key={schedule.id} moduleId={module.id} schedule={schedule} onSave={onSchedule} />)}</div>
+      <div className="module-actions">{(module.links || []).map((link) => <a key={link.id} className={link.tone} href={link.url} target="_blank" rel="noreferrer" title={link.description}>{link.label}</a>)}{(module.actions || []).map((action) => <button key={action.id} className={action.tone} onClick={() => actionRun(action)} disabled={busy || action.run?.state === "running"}>{action.run?.state === "running" ? "Exécution…" : action.label}</button>)}</div>
       {runLabel && <small className={`module-run ${latestRun?.state || "running"}`}>{runLabel}</small>}
     </article>
   );
