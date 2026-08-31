@@ -302,9 +302,8 @@ const quotaNotifier = new QuotaNotifier({
   profileService,
 });
 const codexCapacityRetry = new CodexCapacityRetry({ tmux, providerState });
-const claudeDesignTool = new ClaudeDesignTool({ tmux, store, readResponse: (metadata) => lastClaudeMessage(metadata.transcriptPath) });
+const claudeDesignTool = new ClaudeDesignTool({ claudeBinary, store, projects, workspaceRoot: root });
 const fileUpload = multer({
-  storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024, files: 1 },
 });
 
@@ -1478,9 +1477,12 @@ app.post("/api/sessions", async (request, response, next) => {
 
 app.post("/api/agent-tools/claude-design", async (request, response, next) => {
   try {
-    const callerSessionId = String(request.body?.callerSessionId || "");
-    if (!validSessionId(callerSessionId) || !sessionOwned(request.profile.id, callerSessionId)) throw new Error("Agent appelant introuvable.");
-    response.json(await claudeDesignTool.run({ callerSessionId, prompt: request.body?.prompt }));
+    const callerSessionId = request.body?.callerSessionId ? String(request.body.callerSessionId) : null;
+    if (callerSessionId && (!validSessionId(callerSessionId) || !sessionOwned(request.profile.id, callerSessionId))) {
+      throw new Error("Agent appelant introuvable.");
+    }
+    const cwd = request.body?.cwd ? String(request.body.cwd) : null;
+    response.json(await claudeDesignTool.run({ callerSessionId, cwd, prompt: request.body?.prompt }));
   } catch (error) {
     next(error);
   }

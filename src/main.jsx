@@ -15,6 +15,8 @@ const assistantMeta = {
   antigravity: { label: "Antigravity", glyph: "G", color: "violet" },
   shell: { label: "Terminal", glyph: ">_", color: "blue" },
 };
+const LAUNCHABLE_ASSISTANTS = ["codex", "claude", "antigravity", "shell"];
+
 
 // Cache leger par vue: on repeint la derniere donnee connue puis on rafraichit en fond.
 const viewCache = new Map();
@@ -3059,7 +3061,8 @@ function NewSessionModal({ projects, sessions, assistants, onClose, onCreated })
         <form onSubmit={submit}>
           <label>Type</label>
           <div className="assistant-choice">
-            {Object.entries(assistantMeta).map(([id, meta]) => {
+            {LAUNCHABLE_ASSISTANTS.map((id) => {
+              const meta = assistantMeta[id];
               const missing = assistants?.[id] === false;
               return (
                 <button type="button" className={`${assistant === id ? "selected" : ""} ${missing ? "missing" : ""}`} onClick={() => setAssistant(id)} disabled={missing} title={missing ? `${meta.label} n'est pas installé sur ce PC` : meta.label} key={id}>

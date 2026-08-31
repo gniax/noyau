@@ -1,88 +1,78 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { ClaudeDesignTool } from "./claude-design-tool.js";
 
-class MemoryStore {
-  constructor(data) { this.data = data; }
-  get(id) { return this.data[id] || null; }
-  async set(id, value) { this.data[id] = value; }
+function createMockSpawn({ output = "Maquette et images générées", exitCode = 0, errorOutput = "" } = {}) {
+  let executed = null;
+  const spawnFn = (binary, args, options) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = {
+      end(data) {
+        executed = { binary, args, options, stdin: data };
+        process.nextTick(() => {
+          if (output) child.stdout.emit("data", Buffer.from(output));
+          if (errorOutput) child.stderr.emit("data", Buffer.from(errorOutput));
+          child.emit("close", exitCode);
+        });
+      },
+    };
+    return child;
+  };
+  return { spawnFn, getExecuted: () => executed };
 }
 
-test("Claude Design tool appelle agent disponible du même projet et retourne réponse", async () => {
-  let now = 1_000;
-  let submitted = "";
-  const store = new MemoryStore({
-    caller: { projectId: "project-a" },
-    design: { name: "Studio", projectId: "project-a", agentState: "available", agentStateUpdatedAt: new Date(0).toISOString(), response: "ancienne" },
-    foreign: { projectId: "project-b", agentState: "available" },
-  });
-  const tmux = {
-    async list() {
-      return [
-        { id: "design", name: "Studio", assistant: "claude-design", managed: true, activityAt: new Date(0).toISOString() },
-        { id: "foreign", assistant: "claude-design", managed: true, activityAt: new Date(0).toISOString() },
-      ];
+test("Claude Design tool exécute Claude en direct dans le dossier de l'agent et retourne réponse", async () => {
+  const { spawnFn, getExecuted } = createMockSpawn({ output: "CSS et assets créés dans public/images" });
+  const store = {
+    get(id) {
+      if (id === "agent-1") return { cwd: "/home/user/projects/my-app" };
+      return null;
     },
-    async capture() { return "Claude ready\n? for shortcuts"; },
-    async submit(_id, prompt) { submitted = prompt; },
   };
-  const tool = new ClaudeDesignTool({
-    tmux,
-    store,
-    readResponse: async (metadata) => metadata.response || "",
-    now: () => now,
-    wait: async () => {
-      now += 1_000;
-      await store.set("design", { ...store.get("design"), agentState: "available", agentStateUpdatedAt: new Date(now).toISOString(), response: "maquette créée" });
-    },
-    pollInterval: 1,
-    timeout: 5_000,
-  });
-  const result = await tool.run({ callerSessionId: "caller", prompt: "Crée landing page" });
-  assert.equal(submitted, "Crée landing page");
-  assert.equal(result.sessionId, "design");
-  assert.equal(result.response, "maquette créée");
+  const tool = new ClaudeDesignTool({ claudeBinary: "/usr/bin/claude", store, spawnFn });
+  const result = await tool.run({ callerSessionId: "agent-1", prompt: "Crée landing page sombre" });
+
+  assert.equal(result.success, true);
+  assert.equal(result.response, "CSS et assets créés dans public/images");
+  assert.equal(result.cwd, "/home/user/projects/my-app");
+  const executed = getExecuted();
+  assert.equal(executed.binary, "/usr/bin/claude");
+  assert.equal(executed.options.cwd, "/home/user/projects/my-app");
+  assert.match(executed.stdin, /Crée landing page sombre/);
 });
 
-test("Claude Design tool refuse agent d'un autre projet", async () => {
-  const store = new MemoryStore({ caller: { projectId: "project-a" }, foreign: { projectId: "project-b", agentState: "available" } });
-  const tool = new ClaudeDesignTool({
-    store,
-    tmux: { async list() { return [{ id: "foreign", assistant: "claude-design", managed: true }]; } },
-    readResponse: async () => "",
-  });
-  await assert.rejects(() => tool.run({ callerSessionId: "caller", prompt: "test" }), /Aucun agent Claude Design actif/);
+test("Claude Design tool résout le cwd via projectId quand disponible", async () => {
+  const { spawnFn, getExecuted } = createMockSpawn({ output: "Design prêt" });
+  const store = {
+    get(id) {
+      if (id === "agent-2") return { projectId: "project-1" };
+      return null;
+    },
+  };
+  const projects = {
+    get(id) {
+      if (id === "project-1") return { rootPath: "/home/user/projects/atlas" };
+      return null;
+    },
+  };
+  const tool = new ClaudeDesignTool({ store, projects, spawnFn });
+  const result = await tool.run({ callerSessionId: "agent-2", prompt: "Ajuste le logo" });
+
+  assert.equal(result.cwd, "/home/user/projects/atlas");
+  assert.equal(result.response, "Design prêt");
 });
 
-test("Claude Design tool fonctionne avec cwd quand projectId est absent", async () => {
-  let now = 1_000;
-  let submitted = "";
-  const store = new MemoryStore({
-    caller: { cwd: "/home/user/projects/testapp" },
-    design: { name: "Studio", cwd: "/home/user/projects/testapp", agentState: "available", agentStateUpdatedAt: new Date(0).toISOString(), response: "ancienne" },
-  });
-  const tmux = {
-    async list() {
-      return [{ id: "design", name: "Studio", assistant: "claude-design", managed: true, activityAt: new Date(0).toISOString() }];
-    },
-    async capture() { return "Claude ready"; },
-    async submit(_id, prompt) { submitted = prompt; },
-  };
-  const tool = new ClaudeDesignTool({
-    tmux,
-    store,
-    readResponse: async (metadata) => metadata.response || "",
-    now: () => now,
-    wait: async () => {
-      now += 1_000;
-      await store.set("design", { ...store.get("design"), agentState: "available", agentStateUpdatedAt: new Date(now).toISOString(), response: "assets générés" });
-    },
-    pollInterval: 1,
-    timeout: 5_000,
-  });
-  const result = await tool.run({ callerSessionId: "caller", prompt: "Génère images logo" });
-  assert.equal(submitted, "Génère images logo");
-  assert.equal(result.sessionId, "design");
-  assert.equal(result.response, "assets générés");
+test("Claude Design tool gère les erreurs et retours vides proprement", async () => {
+  const { spawnFn: failSpawn } = createMockSpawn({ exitCode: 1, errorOutput: "Erreur modèle" });
+  const toolFail = new ClaudeDesignTool({ spawnFn: failSpawn, workspaceRoot: "/home/user" });
+  await assert.rejects(() => toolFail.run({ prompt: "test" }), /Erreur modèle/);
+
+  const { spawnFn: emptySpawn } = createMockSpawn({ output: "" });
+  const toolEmpty = new ClaudeDesignTool({ spawnFn: emptySpawn, workspaceRoot: "/home/user" });
+  await assert.rejects(() => toolEmpty.run({ prompt: "test" }), /réponse vide/);
 });
+
 

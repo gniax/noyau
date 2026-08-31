@@ -1,72 +1,63 @@
+import { spawn } from "node:child_process";
 import path from "node:path";
-import { agentStatus } from "./agent-status.js";
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => { setTimeout(resolve, milliseconds); });
-}
+const DESIGN_SYSTEM_PROMPT = "Tu es Claude Design. Traite la demande design/UI/UX/graphisme/images dans ce projet. Modifie ou génère les fichiers directement si nécessaire, puis résume clairement tes actions et les fichiers créés ou modifiés.";
 
 export class ClaudeDesignTool {
-  constructor({ tmux, store, readResponse, timeout = 10 * 60_000, pollInterval = 1_000, wait = sleep, now = () => Date.now() }) {
-    this.tmux = tmux;
+  constructor({ claudeBinary = "claude", store = null, projects = null, workspaceRoot = process.cwd(), timeout = 10 * 60_000, spawnFn = spawn } = {}) {
+    this.claudeBinary = claudeBinary;
     this.store = store;
-    this.readResponse = readResponse;
+    this.projects = projects;
+    this.workspaceRoot = workspaceRoot;
     this.timeout = timeout;
-    this.pollInterval = pollInterval;
-    this.wait = wait;
-    this.now = now;
-    this.reserved = new Set();
+    this.spawnFn = spawnFn;
   }
 
-  async candidates(projectId, excludeSessionId, callerCwd = null) {
-    const sessions = (await this.tmux.list()).filter((session) => {
-      const metadata = this.store.get(session.id);
-      const sameProject = (projectId && metadata?.projectId === projectId)
-        || (!projectId && callerCwd && metadata?.cwd && path.resolve(metadata.cwd) === path.resolve(callerCwd));
-      return session.managed
-        && session.assistant === "claude-design"
-        && sameProject
-        && session.id !== excludeSessionId
-        && !this.reserved.has(session.id);
-    });
-    const ready = [];
-    for (const session of sessions) {
-      const metadata = this.store.get(session.id) || {};
-      const pane = await this.tmux.capture(session.id, 30);
-      if (agentStatus(session, metadata, false, this.now(), pane).state === "available") ready.push(session);
-    }
-    return { sessions, ready };
-  }
-
-  async run({ callerSessionId, prompt }) {
-    const task = String(prompt || "").trim().slice(0, 30_000);
-    if (!task) throw new Error("Demande Claude Design requise.");
-    const caller = this.store.get(callerSessionId);
-    if (!caller?.projectId && !caller?.cwd) throw new Error("Agent appelant sans projet Noyau.");
-    const { sessions, ready } = await this.candidates(caller.projectId, callerSessionId, caller.cwd);
-    if (!sessions.length) throw new Error("Aucun agent Claude Design actif dans ce projet.");
-    if (!ready.length) throw new Error("Agent Claude Design occupé. Réessaie après sa tâche actuelle.");
-
-    const target = ready[0];
-    const baseline = await this.readResponse(this.store.get(target.id) || {});
-    const startedAt = this.now();
-    this.reserved.add(target.id);
-    try {
-      const metadata = this.store.get(target.id) || {};
-      await this.store.set(target.id, { ...metadata, agentState: "working", agentStateUpdatedAt: new Date(startedAt).toISOString() });
-      await this.tmux.submit(target.id, task);
-      while (this.now() - startedAt < this.timeout) {
-        await this.wait(this.pollInterval);
-        const current = this.store.get(target.id) || {};
-        const completedAt = Date.parse(current.agentStateUpdatedAt || "");
-        if (current.agentState !== "available" || !Number.isFinite(completedAt) || completedAt <= startedAt) continue;
-        const response = await this.readResponse(current);
-        if (response && response !== baseline) {
-          return { sessionId: target.id, name: current.name || target.name, projectId: caller.projectId, response };
-        }
+  resolveCwd(callerSessionId, requestedCwd = null) {
+    if (requestedCwd) return path.resolve(requestedCwd);
+    if (callerSessionId && this.store) {
+      const caller = this.store.get(callerSessionId);
+      if (caller?.cwd) return path.resolve(caller.cwd);
+      if (caller?.projectId && this.projects) {
+        const project = this.projects.get(caller.projectId);
+        if (project?.rootPath) return path.resolve(project.rootPath);
       }
-      throw new Error("Claude Design n'a pas terminé avant délai de 10 minutes.");
-    } finally {
-      this.reserved.delete(target.id);
     }
+    return path.resolve(this.workspaceRoot);
+  }
+
+  async run({ callerSessionId = null, cwd = null, prompt }) {
+    const task = String(prompt || "").trim().slice(0, 50_000);
+    if (!task) throw new Error("Demande Claude Design requise.");
+    const targetCwd = this.resolveCwd(callerSessionId, cwd);
+
+    const fullPrompt = `${DESIGN_SYSTEM_PROMPT}\n\nDemande:\n${task}`;
+    const reply = await new Promise((resolve, reject) => {
+      const args = ["-p", "--dangerously-skip-permissions", "--output-format", "text"];
+      const child = this.spawnFn(this.claudeBinary, args, {
+        cwd: targetCwd,
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let output = "";
+      let errorOutput = "";
+      child.stdout.on("data", (chunk) => { output = `${output}${chunk}`.slice(0, 500_000); });
+      child.stderr.on("data", (chunk) => { errorOutput = `${errorOutput}${chunk}`.slice(-8000); });
+      child.on("error", reject);
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        reject(new Error("Claude Design : délai dépassé (10 min)."));
+      }, this.timeout);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code !== 0) return reject(new Error(`Claude Design (${code}): ${errorOutput.trim() || "échec d'exécution"}`));
+        resolve(output.trim());
+      });
+      child.stdin.end(fullPrompt);
+    });
+
+    if (!reply) throw new Error("Claude Design : réponse vide.");
+    return { prompt: task, response: reply, cwd: targetCwd, success: true };
   }
 }
+

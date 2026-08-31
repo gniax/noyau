@@ -15,8 +15,8 @@ try {
     fs.readFile(path.join(dataDir, "sessions.json"), "utf8").then(JSON.parse),
   ]);
 
+  const cwd = path.resolve(process.cwd());
   if (!callerSessionId) {
-    const cwd = path.resolve(process.cwd());
     const candidates = Object.entries(sessions).filter(([, s]) => {
       if (!s?.cwd || s.assistant === "claude-design") return false;
       const scwd = path.resolve(s.cwd);
@@ -28,8 +28,7 @@ try {
     }
   }
 
-  if (!callerSessionId) throw new Error("NOYAU_SESSION_ID absent: outil disponible depuis agent lancé par Noyau.");
-  const profileId = sessions[callerSessionId]?.profileId || "";
+  const profileId = callerSessionId ? sessions[callerSessionId]?.profileId || "" : "";
   const response = await fetch("http://127.0.0.1:4242/api/agent-tools/claude-design", {
     method: "POST",
     signal: AbortSignal.timeout(11 * 60_000),
@@ -38,7 +37,7 @@ try {
       "content-type": "application/json",
       ...(profileId ? { "x-noyau-profile": profileId } : {}),
     },
-    body: JSON.stringify({ callerSessionId, prompt }),
+    body: JSON.stringify({ callerSessionId, cwd, prompt }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `Noyau: erreur ${response.status}`);

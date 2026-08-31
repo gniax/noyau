@@ -9,5 +9,5 @@
 - Run `npm test` and `npm run build` before commit.
 - Conventional commits. No AI attribution/co-author.
 - Never commit `.data`, secrets, certificates, logs, caches, or build output.
-- Inter-agent Claude Design : si demande design/UI/UX/images via Claude Design et agent Claude Design actif dans projet, déléguer via `node scripts/claude-design-tool.mjs "DEMANDE"`.
+- Inter-agent Claude Design : si demande design/UI/UX/images via Claude Design, déléguer directement via `node scripts/claude-design-tool.mjs "DEMANDE"`.
 
