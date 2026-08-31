@@ -354,4 +354,43 @@ test("refreshBuilds discovers external build and imports it with metadata", asyn
   assert.equal(result.builds[0].commit, "c0ffee7");
 });
 
+test("builds deduplicates multiple files with identical commit on same platform", async () => {
+  const store = new MemoryStore();
+  const id = "project-app--build";
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-dedup-"));
+  const outputDirectory = path.join(workspaceRoot, ".noyau", "builds", "build");
+  await fs.mkdir(outputDirectory, { recursive: true });
 
+  const module = {
+    id,
+    projectId: "project-app",
+    name: "App Build",
+    workingDirectory: workspaceRoot,
+    deviceBuild: { platforms: ["android", "ios"], instructions: "Build app", outputDirectory },
+  };
+  store.data[id] = module;
+
+  // Create 2 android APKs with same commit (older app-debug.apk and newer custom named apk)
+  const apk1 = path.join(outputDirectory, "app-debug.apk");
+  const apk2 = path.join(outputDirectory, "atlas-dev.apk");
+  await fs.writeFile(apk1, "apk 1");
+  await fs.writeFile(`${apk1}.meta.json`, JSON.stringify({ version: "v1.0.0", commit: "a1b2c3d" }));
+  const t1 = new Date(2026, 0, 1, 10, 0, 0);
+  await fs.utimes(apk1, t1, t1);
+
+  await fs.writeFile(apk2, "apk 2");
+  await fs.writeFile(`${apk2}.meta.json`, JSON.stringify({ version: "v1.0.0", commit: "a1b2c3d" }));
+  const t2 = new Date(2026, 0, 1, 12, 0, 0);
+  await fs.utimes(apk2, t2, t2);
+
+  const service = new ModuleService({ workspaceRoot, store });
+  const builds = await service.builds(module);
+
+  assert.equal(builds.length, 1);
+  assert.equal(builds[0].name, "atlas-dev.apk");
+
+  // Old duplicate file was pruned
+  const remaining = await fs.readdir(outputDirectory);
+  assert.ok(remaining.includes("atlas-dev.apk"));
+  assert.ok(!remaining.includes("app-debug.apk"));
+});

@@ -390,14 +390,33 @@ export class ModuleService {
 
   async builds(module) {
     const artifacts = await this.artifactEntries(module);
-    const androids = artifacts.filter((a) => a.platform === "android");
-    const ioses = artifacts.filter((a) => a.platform === "ios");
-    const toDelete = [...androids.slice(3), ...ioses.slice(3)];
+    const toDelete = [];
+    const filterPlatform = (platform) => {
+      const list = artifacts.filter((a) => a.platform === platform);
+      const seen = new Set();
+      const deduped = [];
+      for (const artifact of list) {
+        const key = artifact.commit ? `commit-${artifact.commit}` : (artifact.version ? `version-${artifact.version}` : null);
+        if (key && seen.has(key)) {
+          toDelete.push(artifact);
+        } else {
+          if (key) seen.add(key);
+          deduped.push(artifact);
+        }
+      }
+      toDelete.push(...deduped.slice(3));
+      return deduped.slice(0, 3);
+    };
+
+    const androids = filterPlatform("android");
+    const ioses = filterPlatform("ios");
+
     await Promise.all(toDelete.map(async (artifact) => {
       await fs.unlink(artifact.file).catch(() => {});
       await fs.unlink(`${artifact.file}.meta.json`).catch(() => {});
     }));
-    const kept = [...androids.slice(0, 3), ...ioses.slice(0, 3)].sort((a, b) => b.modifiedAtMs - a.modifiedAtMs);
+
+    const kept = [...androids, ...ioses].sort((a, b) => b.modifiedAtMs - a.modifiedAtMs);
     return kept.map(({ file: _file, modifiedAtMs: _modifiedAtMs, ...artifact }) => ({
       ...artifact,
       downloadUrl: artifact.platform === "android" ? `/api/modules/${encodeURIComponent(module.id)}/builds/${encodeURIComponent(artifact.id)}` : null,
