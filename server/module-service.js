@@ -419,7 +419,7 @@ export class ModuleService {
     const kept = [...androids, ...ioses].sort((a, b) => b.modifiedAtMs - a.modifiedAtMs);
     return kept.map(({ file: _file, modifiedAtMs: _modifiedAtMs, ...artifact }) => ({
       ...artifact,
-      downloadUrl: artifact.platform === "android" ? `/api/modules/${encodeURIComponent(module.id)}/builds/${encodeURIComponent(artifact.id)}` : null,
+      downloadUrl: `/api/modules/${encodeURIComponent(module.id)}/builds/${encodeURIComponent(artifact.id)}`,
     }));
   }
 

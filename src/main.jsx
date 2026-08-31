@@ -947,7 +947,7 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
               disabled={!!busy || isRunning}
               title="Produire build IPA iOS pour appareil"
             >
-              {isRunning && run?.platform === "ios" ? `IPA en cours… (${formatElapsed(elapsed)})` : busy === "ios" ? "Lancement…" : "Produire IPA"}
+              {isRunning && run?.platform === "ios" ? `IPA en cours… (${formatElapsed(elapsed)})` : busy === "ios" ? "Lancement…" : "Installer IPA"}
             </button>
           )}
         </div>
@@ -985,7 +985,7 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
               </div>
               {build.downloadUrl ? (
                 <a href={build.downloadUrl} download={build.name} target="_blank" rel="noreferrer">
-                  Télécharger APK
+                  Télécharger {build.platform === "ios" ? "IPA" : "APK"}
                 </a>
               ) : null}
             </div>
