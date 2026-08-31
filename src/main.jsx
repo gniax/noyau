@@ -11,6 +11,7 @@ import { shouldCopyTerminal } from "./terminal-shortcuts.js";
 const assistantMeta = {
   codex: { label: "Codex", glyph: "C", color: "green" },
   claude: { label: "Claude", glyph: "A", color: "orange" },
+  "claude-design": { label: "Claude Design", glyph: "D", color: "orange" },
   antigravity: { label: "Antigravity", glyph: "G", color: "violet" },
   shell: { label: "Terminal", glyph: ">_", color: "blue" },
 };
@@ -310,7 +311,7 @@ function providerQuota(quotas, assistant) {
     const window = (quotas?.codex?.windows || [])[0];
     return window ? { percent: window.remainingPercent, resetsAt: window.resetsAt } : null;
   }
-  if (assistant === "claude") {
+  if (["claude", "claude-design"].includes(assistant)) {
     const window = quotas?.claude?.fiveHour || quotas?.claude?.sevenDay;
     return window ? { percent: window.remainingPercent, resetsAt: window.resetsAt } : null;
   }
@@ -568,7 +569,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
     }
   });
   const codexCount = sessions.filter((session) => session.assistant === "codex").length;
-  const claudeCount = sessions.filter((session) => session.assistant === "claude").length;
+  const claudeCount = sessions.filter((session) => ["claude", "claude-design"].includes(session.assistant)).length;
   const shellCount = sessions.filter((session) => session.assistant === "shell").length;
   const antigravityCount = sessions.filter((session) => session.assistant === "antigravity").length;
   const linkedProjects = new Set(sessions.map((session) => session.projectId).filter(Boolean)).size;
@@ -686,7 +687,93 @@ function ModuleSchedule({ moduleId, schedule, onSave }) {
   return <label className="module-schedule"><span><strong>{schedule.label}</strong><small>{schedule.active ? `Prochain ${nextRun || time}` : "Timer arrêté"}</small></span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} /><button onClick={save} disabled={saving || time === schedule.time}>{saving ? "…" : "OK"}</button></label>;
 }
 
-function ProjectModule({ module, onToggle, onAction, onSchedule }) {
+function ModuleKnowledge({ module, onConfigured }) {
+  const [open, setOpen] = useState(false);
+  const [stack, setStack] = useState([]);
+  const [items, setItems] = useState([]);
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [token, setToken] = useState("");
+  const [pageUrl, setPageUrl] = useState("");
+
+  async function load(folder = null, nextStack = stack) {
+    setBusy(true);
+    setError("");
+    try {
+      const query = folder?.id ? `?folderId=${encodeURIComponent(folder.id)}` : "";
+      const result = await api(`/api/modules/${encodeURIComponent(module.id)}/knowledge${query}`);
+      setItems(result.items || []);
+      setStack(nextStack);
+      setPreview(null);
+      setOpen(true);
+    } catch (reason) {
+      setError(reason.message);
+      setOpen(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openItem(item) {
+    if (item.kind === "folder") return load(item, [...stack, item]);
+    if (!item.readable) return window.open(item.url, "_blank", "noopener,noreferrer");
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api(`/api/modules/${encodeURIComponent(module.id)}/knowledge/content?itemId=${encodeURIComponent(item.id)}&kind=${encodeURIComponent(item.kind)}`);
+      setPreview({ ...item, content: result.content || "", truncated: result.truncated });
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function configureNotion(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const body = {};
+      if (token.trim()) body.token = token.trim();
+      if (pageUrl.trim()) body.pageUrl = pageUrl.trim();
+      await api(`/api/modules/${encodeURIComponent(module.id)}/knowledge/config`, { method: "PATCH", body: JSON.stringify(body) });
+      setToken("");
+      await onConfigured?.();
+      await load();
+    } catch (reason) {
+      setError(reason.message);
+      setOpen(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!module.knowledge) return null;
+  const notion = module.knowledge.provider === "notion";
+  const configured = module.knowledge.status?.configured;
+  const scoped = module.knowledge.status?.scoped;
+  return <>
+    <button className="primary" onClick={() => open ? setOpen(false) : (notion && !configured ? setOpen(true) : load())}>{open ? "Fermer contenu" : module.knowledge.label}</button>
+    {open && <section className="module-knowledge">
+      {notion && (!configured || !scoped) && <form className="module-knowledge-config" onSubmit={configureNotion}>
+        <strong>{configured ? "Partager page Atlas avec intégration, puis détecter" : "Connecter Notion"}</strong>
+        {!configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Token ntn_…" autoComplete="off" required />}
+        <input value={pageUrl} onChange={(event) => setPageUrl(event.target.value)} placeholder="URL page Atlas (optionnel si titre exact)" />
+        <button className="primary" disabled={busy}>{busy ? "Détection…" : configured ? "Détecter page" : "Enregistrer localement"}</button>
+      </form>}
+      {(!notion || configured) && <>
+        <header><button disabled={!stack.length || busy} onClick={() => { const next = stack.slice(0, -1); load(next.at(-1) || null, next); }}>←</button><strong>{stack.at(-1)?.name || (notion ? "Pages Notion" : "Drive Atlas")}</strong><button onClick={() => load(stack.at(-1) || null, stack)} disabled={busy} aria-label="Rafraîchir">↻</button></header>
+        {!preview ? <div className="module-knowledge-list">{items.map((item) => <button key={item.id} onClick={() => openItem(item)}><i>{item.kind === "folder" ? "▸" : item.kind === "page" ? "N" : "·"}</i><span><strong>{item.name}</strong><small>{item.kind}{item.modified ? ` · ${item.modified}` : ""}</small></span><b>{item.kind === "folder" ? "›" : "↗"}</b></button>)}{!items.length && !busy && <span>Aucun contenu visible.</span>}</div> : <div className="module-knowledge-preview"><header><strong>{preview.name}</strong><a href={preview.url} target="_blank" rel="noreferrer">Ouvrir ↗</a></header><pre>{preview.content.slice(0, 30_000)}</pre>{preview.truncated && <small>Page tronquée par Notion.</small>}<button onClick={() => setPreview(null)}>← Fichiers</button></div>}
+      </>}
+      {busy && <small className="module-knowledge-loading">Chargement…</small>}
+      {error && <small className="module-knowledge-error">{error}</small>}
+    </section>}
+  </>;
+}
+
+function ProjectModule({ module, onToggle, onAction, onSchedule, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
   async function toggle() {
@@ -721,19 +808,20 @@ function ProjectModule({ module, onToggle, onAction, onSchedule }) {
       <header><span className="module-glyph">{module.glyph}</span><div><strong>{module.name}</strong><small>{module.description}</small></div>{module.controllable ? <button className={`module-toggle ${module.enabled ? "enabled" : ""}`} onClick={toggle} disabled={busy} role="switch" aria-checked={module.enabled}><i /><span>{module.enabled ? "Actif" : "Arrêté"}</span></button> : <span className={`module-status ${module.setup?.status === "required" ? "required" : "ready"}`}>{module.setup?.status === "required" ? "À configurer" : "Prêt"}</span>}</header>
       {module.setup && <p className={`module-setup ${module.setup.status}`}><strong>{module.setup.label}</strong>{module.setup.description && <small>{module.setup.description}</small>}</p>}
       <div className="module-schedules">{(module.schedules || []).map((schedule) => <ModuleSchedule key={schedule.id} moduleId={module.id} schedule={schedule} onSave={onSchedule} />)}</div>
-      <div className="module-actions">{(module.links || []).map((link) => <a key={link.id} className={link.tone} href={link.url} target="_blank" rel="noreferrer" title={link.description}>{link.label}</a>)}{(module.actions || []).map((action) => <button key={action.id} className={action.tone} onClick={() => actionRun(action)} disabled={busy || action.run?.state === "running"}>{action.run?.state === "running" ? "Exécution…" : action.label}</button>)}</div>
+      <div className="module-actions"><ModuleKnowledge module={module} onConfigured={onRefresh} />{(module.links || []).map((link) => <a key={link.id} className={link.tone} href={link.url} target="_blank" rel="noreferrer" title={link.description}>{link.label}</a>)}{(module.actions || []).map((action) => <button key={action.id} className={action.tone} onClick={() => actionRun(action)} disabled={busy || action.run?.state === "running"}>{action.run?.state === "running" ? "Exécution…" : action.label}</button>)}</div>
       {runLabel && <small className={`module-run ${latestRun?.state || "running"}`}>{runLabel}</small>}
     </article>
   );
 }
 
-function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onOpenTodos }) {
+function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onOpenTodos, onReorder, onRefresh }) {
   // Le cache Todo porte { todos, folders } depuis la refonte par dossier: on accepte les deux formes.
   const [todos, setTodos] = useState(() => {
     const cached = cachedView("todos");
     return (Array.isArray(cached) ? cached : cached?.todos) || [];
   });
   const [todoBusy, setTodoBusy] = useState("");
+  const [draggedProject, setDraggedProject] = useState("");
 
   const loadTodos = useCallback(async () => {
     try {
@@ -757,6 +845,17 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
     }
   }
 
+  function dropProject(targetId) {
+    if (!draggedProject || draggedProject === targetId) return setDraggedProject("");
+    const ids = projects.map((project) => project.id);
+    const from = ids.indexOf(draggedProject);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return setDraggedProject("");
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    setDraggedProject("");
+    onReorder(ids);
+  }
+
   return (
     <div className="page projects-page">
       <section className="hero-row"><div><p className="eyebrow">ORGANISATION</p><h1>Projets.</h1><p className="muted">Regroupe agents liés au même travail, sans imposer dossier.</p></div></section>
@@ -768,8 +867,8 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
           const projectTodos = todos.filter((todo) => todo.projectId === project.id);
           const openTodos = projectTodos.filter((todo) => !todo.completed);
           return (
-            <article className="panel project-card" key={project.id}>
-              <header><ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={`Projet partagé par ${project.owner?.name || "autre profil"}`}>⇄ {project.owner?.name || "partagé"}</b> : project.shared ? <b className="shared-chip own" title="Projet partagé avec les autres profils">⇄ partagé</b> : null}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
+            <article className={`panel project-card ${draggedProject === project.id ? "dragging" : ""}`} key={project.id} onDragOver={(event) => event.preventDefault()} onDrop={() => dropProject(project.id)}>
+              <header><button className="project-drag" draggable onDragStart={(event) => { setDraggedProject(project.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", project.id); }} onDragEnd={() => setDraggedProject("")} title="Glisser pour changer ordre" aria-label={`Déplacer ${project.name}`}>⠿</button><ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={`Projet partagé par ${project.owner?.name || "autre profil"}`}>⇄ {project.owner?.name || "partagé"}</b> : project.shared ? <b className="shared-chip own" title="Projet partagé avec les autres profils">⇄ partagé</b> : null}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
               <p>{agents.length} agent{agents.length > 1 ? "s" : ""} actif{agents.length > 1 ? "s" : ""}</p>
               <div className="project-agents">
                 {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {session.agentStatus?.label || "Disponible"}</small></span><b>›</b></button>)}
@@ -785,7 +884,7 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
                 {!projectTodos.length && <span className="project-empty">Aucune tâche liée.</span>}
                 <button className="project-todo-link" onClick={onOpenTodos}>Ouvrir la liste complète ›</button>
               </div></details>
-              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
+              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onRefresh={onRefresh} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
             </article>
           );
         })}
@@ -2096,8 +2195,8 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
         </article>
         <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
-        <article><span className="setting-symbol">✓</span><div><strong>Confirmations</strong><small>{confirmMode === "off" ? "Redémarrage et changement de fournisseur immédiats" : "Demandées avant redémarrage et changement de fournisseur"} · suppressions toujours confirmées</small></div><select className="setting-select" value={confirmMode} onChange={(event) => chooseConfirm(event.target.value)} aria-label="Confirmations"><option value="on">Demander</option><option value="off">Sans confirmation</option></select></article>
-        <article><span className="setting-symbol">⌨</span><div><strong>Clavier virtuel</strong><small>Réglage propre à cet appareil · {osk === "auto" ? (wantsOnScreenKeyboard() ? "ouvert au toucher ici" : "désactivé ici (clavier physique ou PC)") : osk === "always" ? "toujours ouvert au toucher" : "jamais ouvert"}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label="Clavier virtuel"><option value="auto">Automatique</option><option value="always">Toujours</option><option value="never">Jamais</option></select></article>
+        <article className="setting-select-row"><span className="setting-symbol">✓</span><div><strong>Confirmations</strong><small>{confirmMode === "off" ? "Redémarrage et changement de fournisseur immédiats" : "Demandées avant redémarrage et changement de fournisseur"} · suppressions toujours confirmées</small></div><select className="setting-select" value={confirmMode} onChange={(event) => chooseConfirm(event.target.value)} aria-label="Confirmations"><option value="on">Demander</option><option value="off">Sans confirmation</option></select></article>
+        <article className="setting-select-row"><span className="setting-symbol">⌨</span><div><strong>Clavier virtuel</strong><small>Réglage propre à cet appareil · {osk === "auto" ? (wantsOnScreenKeyboard() ? "ouvert au toucher ici" : "désactivé ici (clavier physique ou PC)") : osk === "always" ? "toujours ouvert au toucher" : "jamais ouvert"}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label="Clavier virtuel"><option value="auto">Automatique</option><option value="always">Toujours</option><option value="never">Jamais</option></select></article>
         <article><span className="setting-symbol">⌁</span><div><strong>Connexion privée</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : "Ouvre version HTTPS via VPN"}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
       </section>
       {profiles.length > 0 && <ProfilesSettings key={profileId} profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onChanged={onProfilesChanged} />}
@@ -2176,14 +2275,28 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
       else timer = setTimeout(applyHeight, 90);
     };
     viewportRefreshRef.current = updateHeight;
+    const restoreViewport = () => {
+      if (document.visibilityState === "hidden") return;
+      keyboardRef.current?.blur();
+      setKeyboardActive(false);
+      document.documentElement.style.removeProperty("--terminal-height");
+      document.documentElement.style.removeProperty("--terminal-top");
+      baseHeight = Math.max(Math.floor(window.innerHeight), Math.floor(viewport?.height || 0));
+      window.scrollTo(0, 0);
+      requestAnimationFrame(() => updateHeight(true));
+    };
     applyHeight();
     viewport?.addEventListener("resize", updateHeight);
     viewport?.addEventListener("scroll", updateHeight);
     window.addEventListener("resize", updateHeight);
+    window.addEventListener("pageshow", restoreViewport);
+    document.addEventListener("visibilitychange", restoreViewport);
     return () => {
       viewport?.removeEventListener("resize", updateHeight);
       viewport?.removeEventListener("scroll", updateHeight);
       window.removeEventListener("resize", updateHeight);
+      window.removeEventListener("pageshow", restoreViewport);
+      document.removeEventListener("visibilitychange", restoreViewport);
       clearTimeout(timer);
       viewportRefreshRef.current = () => {};
       document.documentElement.style.removeProperty("--terminal-height");
@@ -3442,6 +3555,17 @@ function App() {
   const toggleModule = (id, enabled) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/toggle`, { method: "PATCH", body: JSON.stringify({ enabled }) });
   const runModuleAction = (id, actionId) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`, { method: "POST" });
   const saveModuleSchedule = (id, scheduleId, time) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/schedules/${encodeURIComponent(scheduleId)}`, { method: "PATCH", body: JSON.stringify({ time }) });
+  async function reorderProjects(ids) {
+    const byId = new Map(projects.map((project) => [project.id, project]));
+    setProjects(ids.map((id) => byId.get(id)).filter(Boolean));
+    try {
+      const result = await api("/api/projects/order", { method: "PATCH", body: JSON.stringify({ ids }) });
+      setProjects(result.projects || []);
+    } catch (error) {
+      await refresh();
+      window.alert(error.message);
+    }
+  }
 
   return (
     <div className={`app-shell ${TOUCH_MODE ? "touch-shell" : ""}`}>
@@ -3453,7 +3577,7 @@ function App() {
         {!active ? (
           <>
             {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onRefreshQuotas={refreshQuotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
-            {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onOpenTodos={() => setView("todos")} /></>}
+            {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onOpenTodos={() => setView("todos")} onReorder={reorderProjects} onRefresh={refresh} /></>}
             {view === "todos" && <><Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} /><TodosView /></>}
             {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
             {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}

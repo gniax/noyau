@@ -190,7 +190,7 @@ export class HandoverService {
         const file = await this.codexFile({ threadId, cwd });
         return file ? extractCodexMessages(await readTail(file)) : [];
       }
-      if (assistant === "claude") {
+      if (["claude", "claude-design"].includes(assistant)) {
         const file = await this.claudeFile({ agentSessionId, cwd });
         return file ? extractClaudeMessages(await readTail(file)) : [];
       }

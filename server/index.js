@@ -24,6 +24,8 @@ import { SessionReaper } from "./session-reaper.js";
 import { AntigravityQuotaService } from "./antigravity-quota.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { ModuleService } from "./module-service.js";
+import { KnowledgeService } from "./knowledge-service.js";
+import { normalizeProjectOrder, sortProjects } from "./project-order.js";
 import { FinanceService } from "./finance-service.js";
 import { FinanceAdvisor } from "./finance-advisor.js";
 import { EnableBankingService } from "./enable-banking.js";
@@ -31,6 +33,8 @@ import { agentStatus } from "./agent-status.js";
 import { ROOT_FOLDER, TodoService } from "./todo-service.js";
 import { ProfileService } from "./profile-service.js";
 import { QuotaNotifier } from "./quota-notifier.js";
+import { CodexCapacityRetry } from "./codex-capacity-retry.js";
+import { ClaudeDesignTool } from "./claude-design-tool.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -101,6 +105,10 @@ const projects = new SessionStore(path.join(dataDir, "projects.json"));
 await projects.load();
 const moduleStore = new SessionStore(path.join(dataDir, "modules.json"));
 await moduleStore.load();
+const knowledgeConfigStore = new SessionStore(path.join(dataDir, "knowledge-config.json"));
+await knowledgeConfigStore.load();
+const projectOrderStore = new SessionStore(path.join(dataDir, "project-order.json"));
+await projectOrderStore.load();
 const financeStore = new SessionStore(path.join(dataDir, "finance.json"));
 await financeStore.load();
 const bankingStore = new SessionStore(path.join(dataDir, "enable-banking.json"));
@@ -175,6 +183,7 @@ const moduleService = new ModuleService({
     }, profileId);
   },
 });
+const knowledgeService = new KnowledgeService({ configStore: knowledgeConfigStore });
 const financeService = new FinanceService({
   store: financeStore,
 });
@@ -203,6 +212,7 @@ const tmux = new TmuxController({
 const installedAssistants = {
   codex: path.isAbsolute(codexBinary),
   claude: path.isAbsolute(claudeBinary),
+  "claude-design": path.isAbsolute(claudeBinary),
   antigravity: path.isAbsolute(antigravityBinary),
   shell: true,
 };
@@ -290,8 +300,9 @@ const quotaNotifier = new QuotaNotifier({
   push,
   providerState,
   profileService,
-  activeDevice: (profileId) => activeDevice(profileId),
 });
+const codexCapacityRetry = new CodexCapacityRetry({ tmux, providerState });
+const claudeDesignTool = new ClaudeDesignTool({ tmux, store, readResponse: (metadata) => lastClaudeMessage(metadata.transcriptPath) });
 const fileUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024, files: 1 },
@@ -969,8 +980,21 @@ app.post("/api/hooks/claude-statusline", async (request, response, next) => {
 });
 
 app.get("/api/projects", (request, response) => {
-  const list = Object.entries(scopedProjects(request.profile.id)).map(([id, project]) => projectPayload(id, project, request.profile.id)).sort((a, b) => a.name.localeCompare(b.name));
+  const entries = Object.entries(scopedProjects(request.profile.id));
+  const list = sortProjects(entries, projectOrderStore.get(request.profile.id)?.ids).map(([id, project]) => projectPayload(id, project, request.profile.id));
   response.json({ projects: list });
+});
+
+app.patch("/api/projects/order", async (request, response, next) => {
+  try {
+    const entries = Object.entries(scopedProjects(request.profile.id));
+    const ids = normalizeProjectOrder(entries.map(([id]) => id), request.body?.ids);
+    if (ids.length > 200 || ids.some((id) => !PROJECT_PATTERN.test(id))) throw new Error("Ordre projets invalide.");
+    await projectOrderStore.set(request.profile.id, { ids, updatedAt: new Date().toISOString() });
+    response.json({ projects: sortProjects(entries, ids).map(([id, project]) => projectPayload(id, project, request.profile.id)) });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/projects", async (request, response, next) => {
@@ -1078,9 +1102,19 @@ app.delete("/api/todos/folders/:id", async (request, response, next) => {
   }
 });
 
+function moduleKnowledgePayload(payload) {
+  if (!payload.knowledge) return payload;
+  const status = knowledgeService.status(moduleService.get(payload.id));
+  const setup = payload.knowledge.provider === "notion"
+    ? { status: status.scoped ? "ready" : "required", label: status.label, description: status.scoped ? "Contenu Notion disponible dans Noyau et pour agents." : "Dans Notion: page Atlas > ••• > Ajouter des connexions > choisir intégration." }
+    : payload.setup;
+  return { ...payload, setup, enabled: status.configured, state: status.scoped ? "ready" : "setup-required", knowledge: { ...payload.knowledge, status } };
+}
+
 app.get("/api/modules", async (request, response, next) => {
   try {
-    response.json(await moduleService.list(scopedProjects(request.profile.id)));
+    const result = await moduleService.list(scopedProjects(request.profile.id));
+    response.json({ ...result, modules: result.modules.map(moduleKnowledgePayload) });
   } catch (error) {
     next(error);
   }
@@ -1089,7 +1123,7 @@ app.get("/api/modules", async (request, response, next) => {
 app.post("/api/modules/:id/install", async (request, response, next) => {
   try {
     const module = await moduleService.install(request.params.id, scopedProjects(request.profile.id));
-    response.status(201).json({ module: await moduleService.payload(module) });
+    response.status(201).json({ module: moduleKnowledgePayload(await moduleService.payload(module)) });
   } catch (error) {
     next(error);
   }
@@ -1117,6 +1151,35 @@ app.post("/api/modules/:id/actions/:actionId", (request, response, next) => {
   try {
     if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
     response.status(202).json({ run: moduleService.runAction(request.params.id, request.params.actionId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/modules/:id/knowledge", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    response.json(await knowledgeService.list(moduleService.get(request.params.id), { folderId: request.query.folderId, query: request.query.q }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/modules/:id/knowledge/content", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    response.json(await knowledgeService.content(moduleService.get(request.params.id), { itemId: request.query.itemId, kind: request.query.kind }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/modules/:id/knowledge/config", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    const module = moduleService.get(request.params.id);
+    if (module.knowledge?.provider !== "notion") throw new Error("Configuration indisponible.");
+    response.json({ status: await knowledgeService.configureNotion(module.id, { token: request.body?.token, pageUrl: request.body?.pageUrl }) });
   } catch (error) {
     next(error);
   }
@@ -1404,10 +1467,20 @@ app.get("/api/sessions", async (request, response, next) => {
 app.post("/api/sessions", async (request, response, next) => {
   try {
     if (request.body?.projectId && !projectVisible(request.profile.id, request.body.projectId)) throw new Error("Projet introuvable.");
-    if (installedAssistants[request.body?.assistant] === false) throw new Error("Antigravity n'est pas installé sur ce PC. Installe-le, puis redémarre Noyau (ou renseigne ANTIGRAVITY_BIN).");
+    if (installedAssistants[request.body?.assistant] === false) throw new Error(`${assistantLabel(request.body?.assistant)} n'est pas installé sur ce PC.`);
     const project = request.body?.projectId ? projects.get(request.body.projectId) : null;
     const shared = request.body?.shared === undefined ? Boolean(project?.shared) : Boolean(request.body.shared);
     response.status(201).json({ session: await tmux.create({ ...(request.body || {}), profileId: request.profile.id, shared }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/agent-tools/claude-design", async (request, response, next) => {
+  try {
+    const callerSessionId = String(request.body?.callerSessionId || "");
+    if (!validSessionId(callerSessionId) || !sessionOwned(request.profile.id, callerSessionId)) throw new Error("Agent appelant introuvable.");
+    response.json(await claudeDesignTool.run({ callerSessionId, prompt: request.body?.prompt }));
   } catch (error) {
     next(error);
   }
@@ -1434,7 +1507,7 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     if (!session?.managed || !current) throw new Error("Session Noyau introuvable.");
     const name = request.body?.name === undefined ? current.name : String(request.body.name).trim().slice(0, 60);
     if (!name) throw new Error("Nom requis.");
-    const yolo = ["codex", "claude", "antigravity"].includes(session.assistant)
+    const yolo = ["codex", "claude", "claude-design", "antigravity"].includes(session.assistant)
       ? (request.body?.yolo === undefined ? Boolean(current.yolo) : Boolean(request.body.yolo))
       : false;
     const projectLogo = request.body?.projectLogo === undefined ? Boolean(current.projectLogo) : Boolean(request.body.projectLogo);
@@ -1451,7 +1524,7 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
       return response.json({ session: { ...created, logoUrl: logoUrl(created) }, switched: true, history, restarted: true, pending: false });
     }
     let next = { ...current, name, yolo, projectLogo, projectId, favorite, shared };
-    const permissionChanged = ["codex", "claude", "antigravity"].includes(session.assistant) && yolo !== Boolean(current.runningYolo);
+    const permissionChanged = ["codex", "claude", "claude-design", "antigravity"].includes(session.assistant) && yolo !== Boolean(current.runningYolo);
     let restarted = false;
     if (permissionChanged) {
       let threadId = session.assistant === "codex" ? current.threadId : current.agentSessionId;
@@ -1474,7 +1547,7 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
 
 // Logo de l'agent pour la notification: le navigateur le charge en same-origin avec le cookie.
 // Icone de notification: logo du projet si on en trouve un, sinon l'icone de l'agent lui-meme.
-const ASSISTANT_LABELS = { codex: "Codex", claude: "Claude", antigravity: "Antigravity", shell: "Terminal" };
+const ASSISTANT_LABELS = { codex: "Codex", claude: "Claude", "claude-design": "Claude Design", antigravity: "Antigravity", shell: "Terminal" };
 // Un agent a bout de quota repond son message de limite au lieu du recapitulatif demande.
 const QUOTA_REPLY = /usage limit|limite d'utilisation|rate limit|individual quota reached|resource_exhausted|quota (atteint|reached|exceeded|depasse|dépassé)|try again (at|in)|upgrade (to pro|your subscription)|plan limit|out of credits/i;
 
@@ -1489,6 +1562,7 @@ function assistantLabel(assistant) {
 }
 
 function assistantIcon(assistant) {
+  if (assistant === "claude-design") return "/agents/claude.png";
   return ["codex", "claude", "shell", "antigravity"].includes(assistant) ? `/agents/${assistant}.png` : null;
 }
 
@@ -1506,7 +1580,7 @@ async function sourceQuotaRemaining(session, metadata) {
     const info = await usage.get({ ...session, ...metadata }, await tmux.capture(session.id));
     return Number.isFinite(info?.rateRemainingPercent) ? info.rateRemainingPercent : null;
   }
-  const provider = providerState.get(session.assistant);
+  const provider = providerState.get(session.assistant === "claude-design" ? "claude" : session.assistant);
   const values = session.assistant === "antigravity"
     ? (provider?.windows || []).map((window) => window.remainingPercent).filter((value) => Number.isFinite(value))
     : [provider?.fiveHour?.remainingPercent, provider?.sevenDay?.remainingPercent].filter((value) => Number.isFinite(value));
@@ -1853,6 +1927,7 @@ promptWatcher.start();
 claudeQuota.start();
 antigravityQuota.start();
 quotaNotifier.start();
+codexCapacityRetry.start();
 
 // Releve Codex periodique: les quotas se renouvellent meme quand aucun agent ne parle.
 async function refreshCodexQuota() {

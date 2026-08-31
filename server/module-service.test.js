@@ -66,6 +66,16 @@ test("link module rejects non-HTTPS URLs", async () => {
   }, workspaceRoot, path.join(workspaceRoot, "unsafe.json"), [["project-atlas", { name: "Atlas" }]]), /Lien module invalide/);
 });
 
+test("knowledge module accepts public Drive source", async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-module-"));
+  const service = new ModuleService({ workspaceRoot, store: new MemoryStore() });
+  await fs.mkdir(path.join(workspaceRoot, "atlas"));
+  const module = await service.normalize({
+    id: "drive", project: "Atlas", knowledge: { provider: "google-drive-public", rootId: "folder123456789" },
+  }, path.join(workspaceRoot, "atlas"), path.join(workspaceRoot, "drive.json"), [["project-atlas", { name: "Atlas" }]]);
+  assert.equal(module.knowledge.provider, "google-drive-public");
+});
+
 test("systemd timer output exposes current schedule", () => {
   const [state] = parseSystemdShow("Id=canva.timer\nActiveState=active\nTimersCalendar={ OnCalendar=*-*-* 18:30:00 Europe/Paris }\n\n");
   assert.equal(state.ActiveState, "active");

@@ -221,7 +221,7 @@ export class UsageService {
   async get(session, pane = "") {
     try {
       if (session.assistant === "codex" && session.threadId) return parseCodexUsage(await readTail(await this.codexFile(session.threadId))) || parsePaneUsage(pane);
-      if (session.assistant === "claude" && session.transcriptPath) return parseClaudeUsage(await readTail(session.transcriptPath)) || parsePaneUsage(pane);
+      if (["claude", "claude-design"].includes(session.assistant) && session.transcriptPath) return parseClaudeUsage(await readTail(session.transcriptPath)) || parsePaneUsage(pane);
     } catch { /* unavailable while agent writes */ }
     return parsePaneUsage(pane);
   }

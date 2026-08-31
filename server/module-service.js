@@ -8,6 +8,7 @@ const execFileAsync = promisify(execFile);
 const MODULE_PATTERN = /^[a-z0-9][a-z0-9-]{0,60}$/;
 const UNIT_PATTERN = /^[a-zA-Z0-9@_.:-]+\.(?:service|timer)$/;
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const DRIVE_ID_PATTERN = /^[a-zA-Z0-9_-]{10,200}$/;
 const EXECUTABLE_ROOTS = ["/bin/", "/usr/bin/", "/usr/local/bin/"];
 
 function within(root, target) {
@@ -37,6 +38,15 @@ function externalLinks(links) {
       tone: ["primary", "neutral"].includes(link.tone) ? link.tone : "neutral",
     };
   });
+}
+
+function knowledgeSource(value) {
+  if (!value) return null;
+  if (value.provider === "google-drive-public" && DRIVE_ID_PATTERN.test(String(value.rootId || ""))) {
+    return { provider: value.provider, rootId: value.rootId, label: cleanText(value.label, "Contenu Drive", 50), agentCommand: cleanText(value.agentCommand, "atlas-knowledge", 80) };
+  }
+  if (value.provider === "notion") return { provider: value.provider, rootId: null, label: cleanText(value.label, "Contenu Notion", 50), agentCommand: cleanText(value.agentCommand, "atlas-knowledge", 80) };
+  throw new Error("Source connaissances module invalide.");
 }
 
 function parseSystemdShow(output) {
@@ -89,7 +99,8 @@ export class ModuleService {
     if (!stat.isDirectory()) throw new Error("Dossier module invalide.");
     const controlUnits = validateUnits(raw.controlUnits);
     const links = externalLinks(raw.links);
-    if (!controlUnits.length && !links.length) throw new Error("Module sans contrôle ni lien.");
+    const knowledge = knowledgeSource(raw.knowledge);
+    if (!controlUnits.length && !links.length && !knowledge) throw new Error("Module sans contrôle, lien ni connaissance.");
     const primaryUnit = raw.primaryUnit || controlUnits[0] || null;
     if (primaryUnit && !controlUnits.includes(primaryUnit)) throw new Error("Unité principale module invalide.");
     const schedules = (Array.isArray(raw.schedules) ? raw.schedules : []).slice(0, 12).map((schedule) => {
@@ -125,6 +136,7 @@ export class ModuleService {
       schedules,
       actions,
       links,
+      knowledge,
       setup: raw.setup ? {
         status: raw.setup.status === "required" ? "required" : "ready",
         label: cleanText(raw.setup.label, raw.setup.status === "required" ? "Configuration requise" : "Prêt", 60),
@@ -198,6 +210,7 @@ export class ModuleService {
       state: controllable ? primary?.ActiveState || "unknown" : setupRequired ? "setup-required" : "ready",
       setup: module.setup || null,
       links: module.links || [],
+      knowledge: module.knowledge || null,
       schedules: (module.schedules || []).map((schedule) => {
         const state = states.find((item) => item.Id === schedule.unit);
         return { id: schedule.id, label: schedule.label, time: timerTime(state?.TimersCalendar, schedule.defaultTime), active: state?.ActiveState === "active", nextRun: state?.NextElapseUSecRealtime || null };
@@ -208,8 +221,14 @@ export class ModuleService {
 
   async list(projects) {
     const projectIds = new Set(Object.keys(projects));
-    const installed = Object.values(this.store.all()).filter((module) => projectIds.has(module.projectId));
     const discovered = await this.discover(projects);
+    for (const candidate of discovered) {
+      const installed = this.store.get(candidate.id);
+      if (!installed) continue;
+      const refreshed = { ...candidate, installedAt: installed.installedAt, actionRuns: installed.actionRuns || {} };
+      if (JSON.stringify(refreshed) !== JSON.stringify(installed)) await this.store.set(candidate.id, refreshed);
+    }
+    const installed = Object.values(this.store.all()).filter((module) => projectIds.has(module.projectId));
     const proposals = discovered.filter((candidate) => !this.store.get(candidate.id)).map((candidate) => ({ id: candidate.id, projectId: candidate.projectId, name: candidate.name, description: candidate.description, glyph: candidate.glyph, accent: candidate.accent }));
     return { modules: await Promise.all(installed.map((module) => this.payload(module))), proposals };
   }

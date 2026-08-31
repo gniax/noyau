@@ -135,3 +135,20 @@ test("QuotaNotifier re-arms when quota drops low again with a new reset time", a
   await notifier.check();
   assert.equal(sent.length, 2);
 });
+
+test("QuotaNotifier sends reset to every profile device", async () => {
+  let clock = 1_000;
+  const calls = [];
+  const providerState = new MemoryStore({ codex: { windows: [{ label: "5 h", remainingPercent: 1, resetsAt: new Date(2_000).toISOString() }] } });
+  const notifier = new QuotaNotifier({
+    push: { send: async (...args) => { calls.push(args); return 2; } },
+    providerState,
+    profileService: { list: () => [{ id: "principal", name: "Noyau", quotaResetNotify: { codex: true } }] },
+    now: () => clock,
+  });
+  await notifier.check();
+  clock = 2_001;
+  assert.equal(await notifier.check(), 2);
+  assert.equal(calls[0].length, 2);
+  assert.equal(calls[0][1], "principal");
+});

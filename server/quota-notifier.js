@@ -3,14 +3,12 @@ export class QuotaNotifier {
     push,
     providerState,
     profileService,
-    activeDevice = () => null,
     now = () => Date.now(),
     interval = 30_000,
   }) {
     this.push = push;
     this.providerState = providerState;
     this.profileService = profileService;
-    this.activeDevice = activeDevice;
     this.now = now;
     this.interval = interval;
     this.timer = null;
@@ -109,7 +107,7 @@ export class QuotaNotifier {
             body: `Le quota ${windowText} est réinitialisé et prêt à l'emploi.`,
             tag: `quota-reset-${reset.provider}-${windowText.replace(/\s+/g, "")}`,
             url: `/?view=dashboard&profile=${encodeURIComponent(profile.id)}`,
-          }, profile.id, this.activeDevice(profile.id));
+          }, profile.id);
           sentTotal += Number(sent || 0);
         } catch (error) {
           console.error(`Erreur notification quota reset ${reset.provider} (${profile.name}): ${error.message}`);

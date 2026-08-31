@@ -12,6 +12,7 @@ function wait(milliseconds) {
 }
 const SESSION_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
 const FORMATS = ["#{session_name}", "#{session_activity}", "#{session_windows}", "#{pane_current_command}", "#{pane_current_path}", "#{pane_pid}"].join("\t");
+const CLAUDE_DESIGN_PROMPT = "Tu es agent Claude Design dédié. Traite demandes design/UI/UX transmises par autres agents du même projet. Produis résultat concret dans dépôt quand demandé, indique fichiers créés/modifiés, puis attends prochaine tâche. Ne change pas logique métier hors nécessité design.";
 
 export function validSessionId(id) {
   return SESSION_PATTERN.test(id);
@@ -35,7 +36,7 @@ export class TmuxController {
     this.binary = binary;
     this.store = store;
     this.workspaceRoot = workspaceRoot;
-    this.commands = { codex: codexBinary, claude: claudeBinary, antigravity: antigravityBinary };
+    this.commands = { codex: codexBinary, claude: claudeBinary, "claude-design": claudeBinary, antigravity: antigravityBinary };
     // Antigravity n'expose pas encore d'options connues: on laisse la ligne de commande configurable.
     this.antigravityArgs = antigravityArgs;
   }
@@ -125,7 +126,7 @@ export class TmuxController {
     for (const [id, entry] of Object.entries(this.store.all())) {
       if (!entry.autoRestore || live.has(id) || !validSessionId(id) || !id.startsWith("noyau-")) continue;
       try {
-        if (!["codex", "claude", "shell", "antigravity"].includes(entry.assistant)) throw new Error("Assistant invalide.");
+        if (!["codex", "claude", "claude-design", "shell", "antigravity"].includes(entry.assistant)) throw new Error("Assistant invalide.");
         const cwd = path.resolve(entry.cwd || this.workspaceRoot);
         const stat = await fs.stat(cwd);
         if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
@@ -134,11 +135,12 @@ export class TmuxController {
           args.push(this.commands.codex, "--no-alt-screen");
           if (entry.yolo) args.push("--yolo");
           args.push("-c", "check_for_update_on_startup=false", "resume", entry.threadId ? String(entry.threadId) : "--last");
-        } else if (entry.assistant === "claude") {
+        } else if (["claude", "claude-design"].includes(entry.assistant)) {
           args.push(this.commands.claude);
           if (entry.yolo) args.push("--dangerously-skip-permissions");
-          args.push(entry.agentSessionId ? "--resume" : "--continue");
-          if (entry.agentSessionId) args.push(String(entry.agentSessionId));
+          if (entry.agentSessionId) args.push("--resume", String(entry.agentSessionId));
+          else if (entry.assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
+          else args.push("--continue");
         } else if (entry.assistant === "antigravity") {
           args.push(this.commands.antigravity, ...this.antigravityArgs);
           if (entry.yolo) args.push("--dangerously-skip-permissions");
@@ -158,7 +160,7 @@ export class TmuxController {
   }
 
   async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, profileId = null, shared = false, favorite = false }) {
-    if (!["codex", "claude", "shell", "antigravity"].includes(assistant)) throw new Error("Assistant invalide.");
+    if (!["codex", "claude", "claude-design", "shell", "antigravity"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
     let stat;
     try {
@@ -180,11 +182,12 @@ export class TmuxController {
         if (unrestricted) args.push("--yolo");
         args.push("-c", "check_for_update_on_startup=false");
       }
-      if (assistant === "claude" && unrestricted) args.push("--dangerously-skip-permissions");
+      if (["claude", "claude-design"].includes(assistant) && unrestricted) args.push("--dangerously-skip-permissions");
       if (assistant === "antigravity" && unrestricted) args.push("--dangerously-skip-permissions");
       // Antigravity attend son prompt derriere une option, pas en argument libre.
-      if (prompt && assistant === "antigravity") args.push("--prompt-interactive", String(prompt).slice(0, 50_000));
-      else if (prompt) args.push(String(prompt).slice(0, 50_000));
+      const initialPrompt = prompt || (assistant === "claude-design" ? CLAUDE_DESIGN_PROMPT : null);
+      if (initialPrompt && assistant === "antigravity") args.push("--prompt-interactive", String(initialPrompt).slice(0, 50_000));
+      else if (initialPrompt) args.push(String(initialPrompt).slice(0, 50_000));
     }
     await this.run(args);
     await this.applyScrollDefaults();
@@ -205,7 +208,7 @@ export class TmuxController {
       shared: Boolean(shared),
       favorite: Boolean(favorite),
       autoRestore: true,
-      agentState: prompt ? "working" : "available",
+      agentState: prompt || assistant === "claude-design" ? "working" : "available",
       agentStateUpdatedAt: new Date().toISOString(),
     };
     await this.store.set(id, entry);
@@ -258,7 +261,7 @@ export class TmuxController {
   }
 
   async restartAgent({ id, assistant, cwd, threadId, yolo = false }) {
-    if (!validSessionId(id) || !["codex", "claude", "shell", "antigravity"].includes(assistant)) throw new Error("Agent invalide pour redémarrage.");
+    if (!validSessionId(id) || !["codex", "claude", "claude-design", "shell", "antigravity"].includes(assistant)) throw new Error("Agent invalide pour redémarrage.");
     const workingDirectory = path.resolve(cwd || this.workspaceRoot);
     // Un terminal n'a pas de conversation a reprendre: on relance simplement le shell.
     if (assistant === "shell") return this.run(["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory]);
@@ -279,8 +282,9 @@ export class TmuxController {
       args.push(threadId ? String(threadId) : "--last");
     } else {
       if (yolo) args.push("--dangerously-skip-permissions");
-      args.push(threadId ? "--resume" : "--continue");
-      if (threadId) args.push(String(threadId));
+      if (threadId) args.push("--resume", String(threadId));
+      else if (assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
+      else args.push("--continue");
     }
     await this.run(args);
     void this.acceptTrustPrompt(id).catch(() => {});
