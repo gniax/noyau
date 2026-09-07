@@ -21,6 +21,8 @@ import { ProjectLogoService } from "./project-logo.js";
 import { agentNotificationTitle, PromptWatcher } from "./prompt-watcher.js";
 import { HandoverService } from "./handover.js";
 import { SessionReaper } from "./session-reaper.js";
+import { AgentArchiveService } from "./agent-archive-service.js";
+import { BoardService } from "./board-service.js";
 import { AntigravityQuotaService } from "./antigravity-quota.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { CodexQuotaService } from "./codex-quota.js";
@@ -139,6 +141,8 @@ const todoService = new TodoService({
   file: process.env.NOYAU_TODO_FILE || path.join(dataDir, "TO DO.md"),
   mountUri: process.env.NOYAU_TODO_MOUNT_URI || null,
 });
+const agentArchiveService = new AgentArchiveService({ file: path.join(dataDir, "agent-archives.json") });
+const boardService = new BoardService({ file: path.join(dataDir, "todo-boards.json") });
 const usage = new UsageService();
 const projectLogos = new ProjectLogoService();
 const migrations = new Map();
@@ -457,7 +461,9 @@ async function projectInput(body, current = {}) {
     if (!stat.isDirectory()) throw new Error("Dossier projet invalide.");
   }
   const shared = body?.shared === undefined ? Boolean(current.shared) : Boolean(body.shared);
-  return { ...current, name, rootPath, shared, updatedAt: new Date().toISOString() };
+  // Suivi to-do actif par defaut: un projet existant garde son reglage tant qu'on n'y touche pas.
+  const todoTracking = body?.todoTracking === undefined ? current.todoTracking !== false : Boolean(body.todoTracking);
+  return { ...current, name, rootPath, shared, todoTracking, updatedAt: new Date().toISOString() };
 }
 
 function projectOwned(profileId, projectId) {
@@ -498,6 +504,7 @@ async function todosView(profile) {
     merged.folders.push(...shared.map((folder) => ({ ...folder, ownerProfileId: ownerId, ownerName: owner.name })));
     merged.todos.push(...remote.todos.filter((todo) => folderIds.has(todo.folderId)));
   }
+  merged.columns = await boardService.columns(profile.id);
   return merged;
 }
 
@@ -541,8 +548,9 @@ for (const [id, entry] of Object.entries(store.all())) {
 const sessionReaper = new SessionReaper({
   tmux,
   store,
+  archiveService: agentArchiveService,
   isMigrating: (id) => migrations.has(id),
-  onReap: (id) => console.log(`Agent ${id} terminé: entrée supprimée, aucune restauration.`),
+  onReap: (id) => console.log(`Agent ${id} terminé: archivé et retiré des sessions actives.`),
 });
 sessionReaper.start();
 
@@ -1250,6 +1258,58 @@ app.delete("/api/todos/folders/:id", async (request, response, next) => {
   }
 });
 
+app.delete("/api/todos/:id", async (request, response, next) => {
+  try {
+    const runtime = await todoRuntime(request.profile, { todoId: request.params.id });
+    await runtime.todoService.remove(request.params.id);
+    response.json(await todosView(request.profile));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/todos/columns", async (request, response, next) => {
+  try {
+    const { column } = await boardService.add(request.profile.id, request.body?.name);
+    response.status(201).json({ column, ...(await todosView(request.profile)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/todos/columns/order", async (request, response, next) => {
+  try {
+    await boardService.reorder(request.profile.id, request.body?.ids);
+    response.json(await todosView(request.profile));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/todos/columns/:id", async (request, response, next) => {
+  try {
+    await boardService.rename(request.profile.id, request.params.id, request.body?.name);
+    response.json(await todosView(request.profile));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/todos/columns/:id", async (request, response, next) => {
+  try {
+    const columns = await boardService.remove(request.profile.id, request.params.id);
+    // Aucune tache ne reste orpheline: la zone supprimee renvoie ses taches en « A faire ».
+    const view = await todosView(request.profile);
+    for (const todo of view.todos.filter((item) => item.status === request.params.id)) {
+      const runtime = await todoRuntime(request.profile, { todoId: todo.id });
+      await runtime.todoService.update(todo.id, { status: "todo" }).catch(() => {});
+    }
+    response.json({ columns, ...(await todosView(request.profile)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 function moduleKnowledgePayload(payload) {
   if (!payload.knowledge) return payload;
   const status = knowledgeService.status(moduleService.get(payload.id));
@@ -1776,17 +1836,18 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     const projectId = request.body?.projectId === undefined ? current.projectId || null : request.body.projectId || null;
     const favorite = request.body?.favorite === undefined ? Boolean(current.favorite) : Boolean(request.body.favorite);
     const shared = request.body?.shared === undefined ? Boolean(current.shared) : Boolean(request.body.shared);
+    const todoTracking = request.body?.todoTracking === undefined ? current.todoTracking !== false : Boolean(request.body.todoTracking);
     if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
     const assistant = request.body?.assistant;
     if (assistant && assistant !== session.assistant) {
       if (!["codex", "claude", "antigravity"].includes(assistant) || !["codex", "claude", "antigravity"].includes(session.assistant)) throw new Error("Bascule réservée aux agents conversationnels.");
       if (installedAssistants[assistant] === false) throw new Error(`${assistantLabel(assistant)} n'est pas installé sur ce PC.`);
-      const metadata = { ...current, name, yolo, projectLogo, projectId, favorite, shared };
+      const metadata = { ...current, name, yolo, projectLogo, projectId, favorite, shared, todoTracking };
       const { prompt, history } = await handoverPrompt({ session, metadata, target: assistant });
       const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target: assistant, prompt, replace: true });
       return response.json({ session: { ...created, logoUrl: logoUrl(created) }, switched: true, history, restarted: true, pending: false });
     }
-    let next = { ...current, name, yolo, projectLogo, projectId, favorite, shared };
+    let next = { ...current, name, yolo, projectLogo, projectId, favorite, shared, todoTracking };
     const permissionChanged = ["codex", "claude", "claude-design", "antigravity"].includes(session.assistant) && yolo !== Boolean(current.runningYolo);
     let restarted = false;
     if (permissionChanged) {
@@ -1963,10 +2024,40 @@ app.post("/api/sessions/:id/restart", async (request, response, next) => {
   }
 });
 
+app.get("/api/agents/archives", async (request, response, next) => {
+  try {
+    response.json({ archives: await agentArchiveService.list({ profileId: request.profile.id }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/agents/archives/:id/restore", async (request, response, next) => {
+  try {
+    const session = await agentArchiveService.restore(request.params.id, { tmux, profileId: request.profile.id });
+    response.status(201).json({ session, archives: await agentArchiveService.list({ profileId: request.profile.id }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/agents/archives/:id", async (request, response, next) => {
+  try {
+    const archived = await agentArchiveService.get(request.params.id);
+    if (archived && archived.profileId && archived.profileId !== request.profile.id && !archived.shared) throw new Error("Agent archivé appartient à autre profil.");
+    await agentArchiveService.remove(request.params.id);
+    response.json({ archives: await agentArchiveService.list({ profileId: request.profile.id }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.delete("/api/sessions/:id", async (request, response, next) => {
   try {
     if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
     if (store.get(request.params.id)?.core) throw new Error("Agent de base du Noyau: non supprimable.");
+    // La fermeture manuelle passe aussi par l'archive: on peut toujours revenir sur le fil de discussion.
+    await agentArchiveService.archive(request.params.id, store.get(request.params.id) || {}, { reason: "closed" }).catch(() => {});
     await tmux.kill(request.params.id);
     response.status(204).end();
   } catch (error) {

@@ -35,6 +35,15 @@ function profileCacheKey(key) {
 }
 
 const ROOT_FOLDER = "root";
+const DEFAULT_COLUMNS = [
+  { id: "todo", name: "À faire", kind: "todo" },
+  { id: "review", name: "À tester / valider", kind: "review" },
+  { id: "done", name: "Terminé", kind: "done" },
+];
+// Reference courte affichee sur la carte: sert a designer une tache dans un prompt d'agent.
+function todoRef(id) {
+  return `#${String(id || "").split("-").pop().slice(-4).toUpperCase()}`;
+}
 const DEVICE_KEY = "noyau:device";
 const CONFIRM_KEY = "noyau:confirm";
 
@@ -373,6 +382,12 @@ function localIsoDate(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+function shiftIsoDate(days, from = new Date()) {
+  const date = new Date(from);
+  date.setDate(date.getDate() + days);
+  return localIsoDate(date);
+}
+
 function operationDate(item) {
   const actual = item.date.split("-").reverse().join("/");
   return item.bookingDate ? `${actual} · comptabilisé ${item.bookingDate.split("-").reverse().join("/")}` : actual;
@@ -566,6 +581,87 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite }) {
   );
 }
 
+function AgentArchives({ onOpen }) {
+  const [archives, setArchives] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const result = await api("/api/agents/archives");
+      setArchives(result.archives || []);
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const timer = setInterval(load, 20_000);
+    return () => clearInterval(timer);
+  }, [open, load]);
+
+  async function restore(archive) {
+    setBusy(archive.id);
+    try {
+      const result = await api(`/api/agents/archives/${encodeURIComponent(archive.id)}/restore`, { method: "POST" });
+      setArchives(result.archives || []);
+      setError("");
+      if (result.session?.id) onOpen?.(result.session.id);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function forget(archive) {
+    if (!window.confirm(`Oublier définitivement l'archive « ${archive.name} » ?`)) return;
+    setBusy(archive.id);
+    try {
+      const result = await api(`/api/agents/archives/${encodeURIComponent(archive.id)}`, { method: "DELETE" });
+      setArchives(result.archives || []);
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <details className="agent-archives" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>
+        <span className="agent-group-chevron">›</span>
+        <strong>Agents archivés</strong>
+        <small>{archives.length ? `${archives.length} restaurable${archives.length > 1 ? "s" : ""}` : "aucun"}</small>
+      </summary>
+      {error && <p className="finance-error">{error}</p>}
+      <div className="agent-archive-list">
+        {archives.map((archive) => (
+          <article className="agent-archive-row" key={archive.id}>
+            <div>
+              <strong>{archive.name}</strong>
+              <small>{assistantMeta[archive.assistant]?.label || archive.assistant} · {archive.cwd || "—"}</small>
+              <small>{archive.reason === "reaped" ? "Fermé tout seul" : "Fermé manuellement"} · {formatCommentDate(archive.archivedAt)}</small>
+            </div>
+            <div className="agent-archive-actions">
+              <button className="primary" onClick={() => restore(archive)} disabled={busy === archive.id} title="Relancer cet agent avec son fil de discussion">
+                {busy === archive.id ? "…" : "Restaurer"}
+              </button>
+              <button className="ghost" onClick={() => forget(archive)} disabled={busy === archive.id} title="Oublier cette archive">×</button>
+            </div>
+          </article>
+        ))}
+        {!archives.length && <p className="todo-column-empty">Aucun agent archivé pour le moment.</p>}
+      </div>
+    </details>
+  );
+}
+
 function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavorite, onProjects, onFinances, onRefreshQuotas }) {
   const [refreshingQuotas, setRefreshingQuotas] = useState(false);
   const [quotaRefreshState, setQuotaRefreshState] = useState("");
@@ -660,6 +756,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
             <button className="empty-agent" onClick={onNew}><span>+</span><strong>Lancer premier agent</strong><small>Codex, Claude ou terminal</small></button>
           )}
         </div>
+        <AgentArchives onOpen={onOpen} />
       </section>
 
       <section className="panel project-preview">
@@ -1114,24 +1211,32 @@ function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefr
   );
 }
 
-function TodoInlineText({ text, onSave, disabled, placeholder = "Tâche sans titre…" }) {
+function TodoInlineText({ text, onSave, disabled, expanded = false, placeholder = "Tâche sans titre…" }) {
   const [val, setVal] = useState(text || "");
   const [editing, setEditing] = useState(false);
+  const field = React.useRef(null);
 
   useEffect(() => {
-    if (!editing) {
-      setVal(text || "");
-    }
+    if (!editing) setVal(text || "");
   }, [text, editing]);
+
+  // Le champ suit son contenu quand il est ouvert, et reste tronque a deux lignes au repos.
+  useEffect(() => {
+    const node = field.current;
+    if (!node) return;
+    if (editing || expanded) {
+      node.style.height = "auto";
+      node.style.height = `${node.scrollHeight}px`;
+    } else {
+      node.style.height = "";
+    }
+  }, [val, editing, expanded]);
 
   const commit = () => {
     const trimmed = val.trim();
     setEditing(false);
-    if (trimmed && trimmed !== text) {
-      onSave(trimmed);
-    } else {
-      setVal(text || "");
-    }
+    if (trimmed && trimmed !== text) onSave(trimmed);
+    else setVal(text || "");
   };
 
   const handleKeyDown = (e) => {
@@ -1147,14 +1252,16 @@ function TodoInlineText({ text, onSave, disabled, placeholder = "Tâche sans tit
   };
 
   return (
-    <input
-      type="text"
-      className="todo-text-input"
+    <textarea
+      ref={field}
+      rows={1}
+      className={`todo-text-input ${editing || expanded ? "open" : ""}`}
       value={val}
       disabled={disabled}
       placeholder={placeholder}
       title="Cliquer pour modifier le texte"
       aria-label="Modifier le texte de la tâche"
+      maxLength={300}
       onFocus={() => setEditing(true)}
       onChange={(e) => setVal(e.target.value)}
       onBlur={commit}
@@ -2240,6 +2347,13 @@ function TodosView() {
   const [columnText, setColumnText] = useState("");
   const [openFolder, setOpenFolder] = useState(() => { try { return localStorage.getItem(profileCacheKey("todo-folder")) || null; } catch { return null; } });
   const [showDone, setShowDone] = useState({});
+  const [columns, setColumns] = useState(() => (Array.isArray(cached) ? null : cached?.columns) || DEFAULT_COLUMNS);
+  const [expandedCards, setExpandedCards] = useState({});
+  const [collapsedColumns, setCollapsedColumns] = useState(() => {
+    // La colonne « Terminé » demarre repliee: elle ne mange pas la largeur utile du tableau.
+    try { return JSON.parse(localStorage.getItem(profileCacheKey("todo-collapsed-columns"))) || { done: true }; } catch { return { done: true }; }
+  });
+  const [renamingColumn, setRenamingColumn] = useState(null);
   const [dragging, setDragging] = useState("");
   const dragRef = React.useRef(null);
   const rowRefs = React.useRef(new Map());
@@ -2248,9 +2362,11 @@ function TodosView() {
     if (!result) return;
     const nextTodos = result.todos || [];
     const nextFolders = result.folders || [];
+    const nextColumns = result.columns?.length ? result.columns : DEFAULT_COLUMNS;
     setTodos(nextTodos);
     setFolders(nextFolders);
-    storeView("todos", { todos: nextTodos, folders: nextFolders });
+    setColumns(nextColumns);
+    storeView("todos", { todos: nextTodos, folders: nextFolders, columns: nextColumns });
   }, []);
 
   const load = useCallback(async () => {
@@ -2348,6 +2464,54 @@ function TodosView() {
 
   async function removeComment(todo, commentId) {
     await run(`comment-del:${commentId}`, () => api(`/api/todos/${encodeURIComponent(todo.id)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" }));
+  }
+
+  async function removeTodo(todo) {
+    if (!window.confirm(`Supprimer la tâche « ${todo.text} » ? Action définitive.`)) return;
+    await run(`del:${todo.id}`, () => api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "DELETE" }));
+  }
+
+  const statusOf = (todo) => todo.status || (todo.completed ? "done" : "todo");
+  const knownStatus = useMemo(() => new Set(columns.map((column) => column.id)), [columns]);
+  // Une tache dont la zone a disparu retombe visuellement dans « A faire ».
+  const inColumn = useCallback(
+    (list, columnId) => list.filter((todo) => statusOf(todo) === columnId || (columnId === "todo" && !knownStatus.has(statusOf(todo)))),
+    [knownStatus],
+  );
+
+  async function addColumn() {
+    const name = window.prompt("Nom de la nouvelle zone ?");
+    if (!name?.trim()) return;
+    await run("column", () => api("/api/todos/columns", { method: "POST", body: JSON.stringify({ name }) }));
+  }
+
+  async function renameColumn(column, name) {
+    setRenamingColumn(null);
+    if (!name?.trim() || name.trim() === column.name) return;
+    await run(`column:${column.id}`, () => api(`/api/todos/columns/${encodeURIComponent(column.id)}`, { method: "PATCH", body: JSON.stringify({ name }) }));
+  }
+
+  async function removeColumn(column) {
+    if (!window.confirm(`Supprimer la zone « ${column.name} » ? Ses tâches repartent dans « À faire ».`)) return;
+    await run(`column:${column.id}`, () => api(`/api/todos/columns/${encodeURIComponent(column.id)}`, { method: "DELETE" }));
+  }
+
+  function toggleColumn(column) {
+    setCollapsedColumns((current) => {
+      const next = { ...current, [column.id]: !current[column.id] };
+      try { localStorage.setItem(profileCacheKey("todo-collapsed-columns"), JSON.stringify(next)); } catch { /* stockage optionnel */ }
+      return next;
+    });
+  }
+
+  async function shiftColumn(column, offset) {
+    const order = columns.map((item) => item.id);
+    const index = order.indexOf(column.id);
+    const target = index + offset;
+    if (index === -1 || target < 0 || target >= order.length) return;
+    order.splice(target, 0, ...order.splice(index, 1));
+    setColumns(order.map((id) => columns.find((item) => item.id === id)));
+    await run(`column:${column.id}`, () => api("/api/todos/columns/order", { method: "PATCH", body: JSON.stringify({ ids: order }) }));
   }
 
   // Un dossier a la fois: la page liste les dossiers, le clic ouvre son contenu.
@@ -2477,17 +2641,23 @@ function TodosView() {
   }
 
   function renderBoardCard(todo, currentColumn) {
-    const isDone = currentColumn === "done";
-    const isReview = currentColumn === "review";
+    const columnIndex = columns.findIndex((item) => item.id === currentColumn);
+    const column = columns[columnIndex] || columns[0];
+    const previousColumn = columns[columnIndex - 1] || null;
+    const nextColumn = columns[columnIndex + 1] || null;
+    const isDone = column?.kind === "done";
+    const isReview = column?.kind === "review";
     const overdue = todo.dueDate && todo.dueDate < localIsoDate() && !isDone;
     const commentsCount = todo.comments?.length || 0;
     const commentsOpen = !!openComments[todo.id];
+    const expanded = !!expandedCards[todo.id];
     const folderObj = folders.find((f) => f.id === (todo.folderId || ROOT_FOLDER));
+    const reference = todoRef(todo.id);
 
     return (
       <div
         key={todo.id}
-        className={`todo-board-card ${isDone ? "completed" : ""} ${isReview ? "in-review" : ""}`}
+        className={`todo-board-card ${isDone ? "completed" : ""} ${isReview ? "in-review" : ""} ${expanded ? "expanded" : ""}`}
         draggable
         onDragStart={(e) => {
           e.dataTransfer.setData("text/plain", todo.id);
@@ -2497,17 +2667,10 @@ function TodosView() {
         <div className="todo-card-top">
           <button
             type="button"
-            className={`todo-tri-box status-${todo.status || (todo.completed ? "done" : "todo")}`}
-            onClick={() => {
-              const next = todo.status === "todo" ? "review" : todo.status === "review" ? "done" : "todo";
-              update(todo, { status: next });
-            }}
+            className={`todo-tri-box status-${column?.kind || "custom"}`}
+            onClick={() => update(todo, { status: (columns[(columnIndex + 1) % columns.length] || columns[0]).id })}
             disabled={busy === todo.id}
-            title={
-              todo.status === "todo" ? "À faire (cliquer pour : À vérifier / tester)" :
-              todo.status === "review" ? "À vérifier (cliquer pour : Terminée)" :
-              "Terminée (cliquer pour : À faire)"
-            }
+            title={`${column?.name || "Zone"} — cliquer pour : ${(columns[(columnIndex + 1) % columns.length] || columns[0])?.name}`}
           >
             {isDone && <span className="todo-tri-icon done-check">✓</span>}
             {isReview && <span className="todo-tri-icon review-bar" />}
@@ -2515,33 +2678,36 @@ function TodosView() {
           <div className="todo-card-text">
             <TodoInlineText
               text={todo.text}
+              expanded={expanded}
               onSave={(newText) => update(todo, { text: newText })}
               disabled={busy === todo.id}
             />
           </div>
+          <button
+            type="button"
+            className="todo-card-expand"
+            onClick={() => setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
+            title={expanded ? "Replier le texte" : "Déplier le texte"}
+            aria-label={expanded ? "Replier le texte" : "Déplier le texte"}
+          >{expanded ? "⌃" : "⌄"}</button>
         </div>
 
         <div className="todo-card-meta">
           <div className="todo-card-pills">
-            {todo.dueDate ? (
-              <button
-                className={`todo-date-pill ${overdue ? "overdue" : ""}`}
-                onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}
-                disabled={busy === todo.id}
-                title="Modifier date limite"
-              >
-                📅 {todo.dueDate.slice(5).split("-").reverse().join("/")}
-              </button>
-            ) : (
-              <button
-                className="todo-date-pill empty"
-                onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}
-                disabled={busy === todo.id}
-                title="Ajouter une date limite"
-              >
-                + Date
-              </button>
-            )}
+            <button
+              type="button"
+              className="todo-ref-pill"
+              onClick={() => writeClipboard(reference)}
+              title={`Référence ${reference} — cliquer pour copier (utilisable dans un prompt d'agent)`}
+            >{reference}</button>
+            <button
+              className={`todo-date-pill ${overdue ? "overdue" : ""} ${todo.dueDate ? "" : "empty"} ${datePanel === todo.id ? "active" : ""}`}
+              onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}
+              disabled={busy === todo.id}
+              title={todo.dueDate ? `Date limite ${todo.dueDate}` : "Ajouter une date limite"}
+            >
+              {todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "📅"}
+            </button>
             <button
               className={`todo-comments-trigger ${commentsCount > 0 ? "has-comments" : ""} ${commentsOpen ? "active" : ""}`}
               onClick={() => setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
@@ -2550,81 +2716,55 @@ function TodosView() {
               💬{commentsCount > 0 ? ` ${commentsCount}` : ""}
             </button>
             {openFolder === "all" && folderObj && (
-              <span className="todo-folder-pill" title={`Dossier : ${folderObj.name}`}>
-                {folderObj.name}
-              </span>
+              <span className="todo-folder-pill" title={`Dossier : ${folderObj.name}`}>{folderObj.name}</span>
             )}
           </div>
 
           <div className="todo-card-shift-actions">
-            {currentColumn === "todo" && (
-              <button
-                type="button"
-                className="todo-shift-btn review"
-                onClick={() => update(todo, { status: "review" })}
-                disabled={busy === todo.id}
-                title="Déplacer vers : À tester / valider"
-              >
-                À tester ›
-              </button>
-            )}
-            {currentColumn === "review" && (
-              <>
-                <button
-                  type="button"
-                  className="todo-shift-btn todo"
-                  onClick={() => update(todo, { status: "todo" })}
-                  disabled={busy === todo.id}
-                  title="Déplacer vers : À faire"
-                >
-                  ‹ À faire
-                </button>
-                <button
-                  type="button"
-                  className="todo-shift-btn done"
-                  onClick={() => update(todo, { status: "done" })}
-                  disabled={busy === todo.id}
-                  title="Déplacer vers : Terminé"
-                >
-                  Terminer ›
-                </button>
-              </>
-            )}
-            {currentColumn === "done" && (
-              <button
-                type="button"
-                className="todo-shift-btn reopen"
-                onClick={() => update(todo, { status: "todo" })}
-                disabled={busy === todo.id}
-                title="Rouvrir dans : À faire"
-              >
-                ↺ Rouvrir
-              </button>
-            )}
+            <button
+              type="button"
+              className="todo-shift-btn"
+              onClick={() => previousColumn && update(todo, { status: previousColumn.id })}
+              disabled={!previousColumn || busy === todo.id}
+              title={previousColumn ? `Déplacer vers : ${previousColumn.name}` : "Première zone"}
+            >‹</button>
+            <button
+              type="button"
+              className="todo-shift-btn"
+              onClick={() => nextColumn && update(todo, { status: nextColumn.id })}
+              disabled={!nextColumn || busy === todo.id}
+              title={nextColumn ? `Déplacer vers : ${nextColumn.name}` : "Dernière zone"}
+            >›</button>
+            <details className="todo-card-menu">
+              <summary title="Actions sur la tâche">⋯</summary>
+              <div className="todo-card-menu-panel">
+                <button onClick={() => setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}>{expanded ? "Replier le texte" : "Déplier le texte"}</button>
+                <button onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}>{todo.dueDate ? "Modifier la date" : "Ajouter une date"}</button>
+                <button className="danger" onClick={() => removeTodo(todo)} disabled={busy === `del:${todo.id}`}>Supprimer la tâche</button>
+              </div>
+            </details>
           </div>
         </div>
 
         {datePanel === todo.id && (
-          <div className="todo-inline-panel todo-date-panel">
-            <span>Date limite</span>
+          <div className="todo-date-popover">
+            <button type="button" onClick={async () => { await update(todo, { dueDate: localIsoDate() }); setDatePanel(null); }}>Auj.</button>
+            <button type="button" onClick={async () => { await update(todo, { dueDate: shiftIsoDate(1) }); setDatePanel(null); }}>Demain</button>
+            <button type="button" onClick={async () => { await update(todo, { dueDate: shiftIsoDate(7) }); setDatePanel(null); }}>+7 j</button>
             <input
               type="date"
               value={todo.dueDate || ""}
-              onChange={async (event) => {
-                await update(todo, { dueDate: event.target.value || null });
-                setDatePanel(null);
-              }}
+              onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }}
               disabled={busy === todo.id}
+              aria-label="Date limite"
             />
             <button
-              onClick={async () => {
-                await update(todo, { dueDate: null });
-                setDatePanel(null);
-              }}
+              type="button"
+              className="clear"
+              onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }}
               disabled={busy === todo.id || !todo.dueDate}
-            >
-              Effacer
-            </button>
+              title="Effacer la date"
+            >×</button>
           </div>
         )}
 
@@ -2735,6 +2875,8 @@ function TodosView() {
             </button>
             <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
             <select value={todo.folderId || ROOT_FOLDER} onChange={(event) => update(todo, { folderId: event.target.value })} disabled={busy === todo.id} aria-label="Dossier">{folders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
+            <button className="todo-ref-pill" onClick={() => writeClipboard(todoRef(todo.id))} title={`Référence ${todoRef(todo.id)} — cliquer pour copier`}>{todoRef(todo.id)}</button>
+            <button className="todo-card-delete" onClick={() => removeTodo(todo)} disabled={busy === `del:${todo.id}`} title="Supprimer la tâche" aria-label="Supprimer la tâche">🗑</button>
           </div>
           {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
         </article>
@@ -2861,9 +3003,9 @@ function TodosView() {
   }
 
   const { folder, items } = active;
-  const todoItems = items.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo");
-  const reviewItems = items.filter((todo) => todo.status === "review");
-  const doneItems = items.filter((todo) => todo.status === "done" || todo.completed);
+  const todoItems = inColumn(items, "todo");
+  const reviewItems = items.filter((todo) => statusOf(todo) === "review");
+  const doneItems = items.filter((todo) => statusOf(todo) === "done" || todo.completed);
 
   const displayedItems = filterTab === "todo" ? todoItems
     : filterTab === "review" ? reviewItems
@@ -2921,82 +3063,96 @@ function TodosView() {
       {error && <p className="finance-error todo-error">{error}</p>}
 
       {viewMode === "board" ? (
-        <div className="todo-board">
-          {/* Colonne 1: À faire */}
-          <div className="todo-board-column column-todo" onDragOver={handleBoardDragOver} onDrop={(e) => handleBoardDrop(e, "todo")}>
-            <header className="todo-column-header">
-              <div className="todo-column-title">
-                <span className="todo-column-dot todo" />
-                <h3>À faire</h3>
-                <span className="todo-column-count">{todoItems.length}</span>
-              </div>
-              <button className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === "todo" ? null : "todo"))} title="Ajouter une tâche à faire">+</button>
-            </header>
-            {addingInColumn === "todo" && (
-              <form className="todo-board-quick-add" onSubmit={(e) => addWithStatus(e, "todo")}>
-                <input
-                  autoFocus
-                  value={columnText}
-                  onChange={(e) => setColumnText(e.target.value)}
-                  placeholder="Nouvelle tâche à faire…"
-                  onKeyDown={(e) => { if (e.key === "Escape") setAddingInColumn(null); }}
-                />
-                <div className="quick-add-actions">
-                  <button type="submit" className="primary" disabled={!columnText.trim()}>Ajouter</button>
-                  <button type="button" className="ghost" onClick={() => setAddingInColumn(null)}>Annuler</button>
-                </div>
-              </form>
-            )}
-            <div className="todo-column-cards">
-              {todoItems.map((todo) => renderBoardCard(todo, "todo"))}
-              {!todoItems.length && !addingInColumn && <p className="todo-column-empty">Aucune tâche à faire</p>}
-            </div>
+        <div className="todo-board-wrap">
+          <div className="todo-board-toolbar">
+            <small>{columns.length} zone{columns.length > 1 ? "s" : ""} · {items.length} tâche{items.length > 1 ? "s" : ""}</small>
+            <button className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title="Ajouter une zone">＋ Zone</button>
           </div>
-
-          {/* Colonne 2: À tester / valider */}
-          <div className="todo-board-column column-review" onDragOver={handleBoardDragOver} onDrop={(e) => handleBoardDrop(e, "review")}>
-            <header className="todo-column-header">
-              <div className="todo-column-title">
-                <span className="todo-column-dot review" />
-                <h3>À tester / valider</h3>
-                <span className="todo-column-count">{reviewItems.length}</span>
-              </div>
-              <button className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === "review" ? null : "review"))} title="Ajouter une tâche à vérifier">+</button>
-            </header>
-            {addingInColumn === "review" && (
-              <form className="todo-board-quick-add" onSubmit={(e) => addWithStatus(e, "review")}>
-                <input
-                  autoFocus
-                  value={columnText}
-                  onChange={(e) => setColumnText(e.target.value)}
-                  placeholder="Nouvelle tâche à tester / valider…"
-                  onKeyDown={(e) => { if (e.key === "Escape") setAddingInColumn(null); }}
-                />
-                <div className="quick-add-actions">
-                  <button type="submit" className="primary" disabled={!columnText.trim()}>Ajouter</button>
-                  <button type="button" className="ghost" onClick={() => setAddingInColumn(null)}>Annuler</button>
+          <div className="todo-board">
+            {columns.map((column, index) => {
+              const columnItems = inColumn(items, column.id);
+              const renaming = renamingColumn === column.id;
+              const collapsed = !!collapsedColumns[column.id];
+              if (collapsed) {
+                return (
+                  <button
+                    key={column.id}
+                    className={`todo-board-column collapsed column-${column.kind}`}
+                    onClick={() => toggleColumn(column)}
+                    onDragOver={handleBoardDragOver}
+                    onDrop={(e) => handleBoardDrop(e, column.id)}
+                    title={`Déplier ${column.name}`}
+                  >
+                    <span className="todo-column-count">{columnItems.length}</span>
+                    <span className="todo-collapsed-title">{column.name}</span>
+                    <span className="todo-collapsed-chevron">›</span>
+                  </button>
+                );
+              }
+              return (
+                <div
+                  className={`todo-board-column column-${column.kind} ${column.kind === "done" ? "muted" : ""}`}
+                  key={column.id}
+                  onDragOver={handleBoardDragOver}
+                  onDrop={(e) => handleBoardDrop(e, column.id)}
+                >
+                  <header className="todo-column-header">
+                    <div className="todo-column-title">
+                      <button className="todo-column-fold" onClick={() => toggleColumn(column)} title={`Replier ${column.name}`} aria-label={`Replier ${column.name}`}>⌄</button>
+                      {renaming ? (
+                        <input
+                          autoFocus
+                          className="todo-column-rename"
+                          defaultValue={column.name}
+                          onBlur={(e) => renameColumn(column, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.target.blur();
+                            if (e.key === "Escape") setRenamingColumn(null);
+                          }}
+                          aria-label="Renommer la zone"
+                        />
+                      ) : (
+                        <h3 onDoubleClick={() => setRenamingColumn(column.id)} title="Double-clic pour renommer">{column.name}</h3>
+                      )}
+                      <span className="todo-column-count">{columnItems.length}</span>
+                    </div>
+                    <div className="todo-column-tools">
+                      {column.kind !== "done" && (
+                        <button className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === column.id ? null : column.id))} title={`Ajouter une tâche dans ${column.name}`}>+</button>
+                      )}
+                      <details className="todo-column-menu">
+                        <summary title="Options de la zone">⋯</summary>
+                        <div className="todo-column-menu-panel">
+                          <button onClick={() => setRenamingColumn(column.id)}>Renommer</button>
+                          <button onClick={() => shiftColumn(column, -1)} disabled={index === 0}>Déplacer à gauche</button>
+                          <button onClick={() => shiftColumn(column, 1)} disabled={index === columns.length - 1}>Déplacer à droite</button>
+                          {column.kind === "custom" && <button className="danger" onClick={() => removeColumn(column)}>Supprimer la zone</button>}
+                        </div>
+                      </details>
+                    </div>
+                  </header>
+                  {addingInColumn === column.id && (
+                    <form className="todo-board-quick-add" onSubmit={(e) => addWithStatus(e, column.id)}>
+                      <input
+                        autoFocus
+                        value={columnText}
+                        onChange={(e) => setColumnText(e.target.value)}
+                        placeholder={`Nouvelle tâche · ${column.name}…`}
+                        onKeyDown={(e) => { if (e.key === "Escape") setAddingInColumn(null); }}
+                      />
+                      <div className="quick-add-actions">
+                        <button type="submit" className="primary" disabled={!columnText.trim()}>Ajouter</button>
+                        <button type="button" className="ghost" onClick={() => setAddingInColumn(null)}>Annuler</button>
+                      </div>
+                    </form>
+                  )}
+                  <div className="todo-column-cards">
+                    {columnItems.map((todo) => renderBoardCard(todo, column.id))}
+                    {!columnItems.length && addingInColumn !== column.id && <p className="todo-column-empty">Aucune tâche</p>}
+                  </div>
                 </div>
-              </form>
-            )}
-            <div className="todo-column-cards">
-              {reviewItems.map((todo) => renderBoardCard(todo, "review"))}
-              {!reviewItems.length && !addingInColumn && <p className="todo-column-empty">Aucune tâche en test / validation</p>}
-            </div>
-          </div>
-
-          {/* Colonne 3: Terminé */}
-          <div className="todo-board-column column-done" onDragOver={handleBoardDragOver} onDrop={(e) => handleBoardDrop(e, "done")}>
-            <header className="todo-column-header">
-              <div className="todo-column-title">
-                <span className="todo-column-dot done" />
-                <h3>Terminé</h3>
-                <span className="todo-column-count">{doneItems.length}</span>
-              </div>
-            </header>
-            <div className="todo-column-cards">
-              {doneItems.map((todo) => renderBoardCard(todo, "done"))}
-              {!doneItems.length && <p className="todo-column-empty">Aucune tâche terminée</p>}
-            </div>
+              );
+            })}
           </div>
         </div>
       ) : (
@@ -4070,6 +4226,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
   const [projectId, setProjectId] = useState(session.projectId || "");
   const [favorite, setFavorite] = useState(Boolean(session.favorite));
   const [shared, setShared] = useState(Boolean(session.shared));
+  const [todoTracking, setTodoTracking] = useState(session.todoTracking !== false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -4082,7 +4239,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
         setLoading(false);
         return;
       }
-      const result = await api(`/api/sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ name, assistant, yolo, projectLogo, projectId: projectId || null, favorite, shared }) });
+      const result = await api(`/api/sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ name, assistant, yolo, projectLogo, projectId: projectId || null, favorite, shared, todoTracking }) });
       onSaved(result.session, { switched: Boolean(result.switched) });
       if (result.switched && !result.history) window.alert("Aucun historique lisible: le nouvel agent repart de l'état du dépôt.");
       if (result.pending) window.alert("Mode permissions appliqué après prochaine réponse agent.");
@@ -4115,6 +4272,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
           <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Remplace icône agent si logo trouvé</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Partager l’agent</strong><small>Visible et utilisable depuis les autres profils</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={todoTracking} onChange={(event) => setTodoTracking(event.target.checked)} /><span><strong>Reporting évolutions / bugs</strong><small>Chaque demande envoyée à cet agent est tracée dans les to-do du projet</small></span></label>
           {session.permissionRestartPending && <p className="form-hint">Changement permissions en attente prochaine réponse.</p>}
           {error && <p className="form-error">{error}</p>}
           <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Annuler</button><button className="primary" disabled={loading}>{loading ? "Application…" : "Enregistrer"}</button></div>
@@ -4127,6 +4285,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
 function ProjectModal({ project, onClose, onSaved }) {
   const [name, setName] = useState(project?.name || "");
   const [shared, setShared] = useState(Boolean(project?.shared));
+  const [todoTracking, setTodoTracking] = useState(project?.todoTracking !== false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -4135,7 +4294,7 @@ function ProjectModal({ project, onClose, onSaved }) {
     setLoading(true);
     setError("");
     try {
-      const result = await api(project ? `/api/projects/${project.id}` : "/api/projects", { method: project ? "PATCH" : "POST", body: JSON.stringify({ name, rootPath: null, shared }) });
+      const result = await api(project ? `/api/projects/${project.id}` : "/api/projects", { method: project ? "PATCH" : "POST", body: JSON.stringify({ name, rootPath: null, shared, todoTracking }) });
       onSaved(result.project);
     } catch (reason) {
       setError(reason.message);
@@ -4151,6 +4310,7 @@ function ProjectModal({ project, onClose, onSaved }) {
         <form onSubmit={submit}>
           <label htmlFor="project-name">Nom</label><input id="project-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex. Noyau" autoFocus />
           <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Partager le projet</strong><small>Visible par les autres profils, avec ses agents, todos et modules</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={todoTracking} onChange={(event) => setTodoTracking(event.target.checked)} /><span><strong>Reporting évolutions / bugs</strong><small>Les demandes adressées aux agents du projet créent ou commentent un to-do</small></span></label>
           <p className="form-hint">Agents peuvent utiliser dossiers différents. Logo repris depuis premier agent rattaché.</p>
           {error && <p className="form-error">{error}</p>}
           <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Annuler</button><button className="primary" disabled={loading}>{loading ? "Enregistrement…" : "Enregistrer"}</button></div>

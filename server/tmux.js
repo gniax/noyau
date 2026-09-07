@@ -159,7 +159,7 @@ export class TmuxController {
     return { restored, failed };
   }
 
-  async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, profileId = null, shared = false, favorite = false }) {
+  async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, profileId = null, shared = false, favorite = false, threadId = null, agentSessionId = null, transcriptPath = null }) {
     if (!["codex", "claude", "claude-design", "shell", "antigravity"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
     let stat;
@@ -181,13 +181,20 @@ export class TmuxController {
         args.push("--no-alt-screen");
         if (unrestricted) args.push("--yolo");
         args.push("-c", "check_for_update_on_startup=false");
+        if (threadId) args.push("resume", String(threadId));
       }
-      if (["claude", "claude-design"].includes(assistant) && unrestricted) args.push("--dangerously-skip-permissions");
-      if (assistant === "antigravity" && unrestricted) args.push("--dangerously-skip-permissions");
+      if (["claude", "claude-design"].includes(assistant)) {
+        if (unrestricted) args.push("--dangerously-skip-permissions");
+        if (agentSessionId) args.push("--resume", String(agentSessionId));
+      }
+      if (assistant === "antigravity") {
+        if (unrestricted) args.push("--dangerously-skip-permissions");
+        if (agentSessionId) args.push("--conversation", String(agentSessionId));
+      }
       // Antigravity attend son prompt derriere une option, pas en argument libre.
-      const initialPrompt = prompt || (assistant === "claude-design" ? CLAUDE_DESIGN_PROMPT : null);
-      if (initialPrompt && assistant === "antigravity") args.push("--prompt-interactive", String(initialPrompt).slice(0, 50_000));
-      else if (initialPrompt) args.push(String(initialPrompt).slice(0, 50_000));
+      const initialPrompt = prompt || (assistant === "claude-design" && !agentSessionId ? CLAUDE_DESIGN_PROMPT : null);
+      if (initialPrompt && assistant === "antigravity" && !agentSessionId) args.push("--prompt-interactive", String(initialPrompt).slice(0, 50_000));
+      else if (initialPrompt && !threadId && !agentSessionId) args.push(String(initialPrompt).slice(0, 50_000));
     }
     await this.run(args);
     await this.applyScrollDefaults();
@@ -208,8 +215,11 @@ export class TmuxController {
       shared: Boolean(shared),
       favorite: Boolean(favorite),
       autoRestore: true,
-      agentState: prompt || assistant === "claude-design" ? "working" : "available",
+      agentState: prompt || (assistant === "claude-design" && !agentSessionId) ? "working" : "available",
       agentStateUpdatedAt: new Date().toISOString(),
+      ...(threadId ? { threadId: String(threadId) } : {}),
+      ...(agentSessionId ? { agentSessionId: String(agentSessionId) } : {}),
+      ...(transcriptPath ? { transcriptPath: String(transcriptPath) } : {}),
     };
     await this.store.set(id, entry);
     return { id, ...entry, managed: true };

@@ -158,3 +158,25 @@ test("commentaires sur les tâches: ajout, suppression et persistance à l'infin
   assert.equal(removed.todo.comments.length, 1);
   assert.equal(removed.todo.comments[0].text, "Deuxième note de suivi");
 });
+
+test("les zones personnalisées survivent au fichier Markdown", async () => {
+  const { file, service } = await fixture("- [ ] Tâche déplacée dans une zone maison\n");
+  const { todos } = await service.list();
+  const todoId = todos[0].id;
+
+  const moved = await service.update(todoId, { status: "col-abcdef12" });
+  assert.equal(moved.todo.status, "col-abcdef12");
+  assert.equal(moved.todo.completed, false);
+
+  // La case Markdown reste lisible a la main: statut intermediaire = [/]
+  const content = await fs.readFile(file, "utf8");
+  assert.match(content, /^- \[\/\] Tâche déplacée/m);
+
+  const fresh = new TodoService({ file });
+  const reloaded = await fresh.list();
+  assert.equal(reloaded.todos[0].status, "col-abcdef12");
+
+  // Un statut invalide retombe sur « a faire » plutot que de casser la tache.
+  const rejected = await service.update(todoId, { status: "ZONE INVALIDE" });
+  assert.equal(rejected.todo.status, "col-abcdef12");
+});

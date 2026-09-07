@@ -1609,11 +1609,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 
 /* Tableau Trello / Kanban */
 .todo-board {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  display: flex;
   align-items: flex-start;
-  margin-top: 16px;
+  gap: 14px;
+  margin-top: 12px;
+  overflow-x: auto;
+  padding-bottom: 10px;
 }
 @media (max-width: 900px) {
   .todo-board {
@@ -1954,3 +1955,153 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .provider-switch select:disabled { opacity: .55; }
 .provider-switch em { color: var(--green); font-style: normal; font-size: 10px; }
 .quota-providers { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+
+/* Tableau: zones personnalisables, cartes dépliables, référence de tâche */
+
+.todo-board-column.column-custom { border-top: 3px solid var(--c-6c8ccb); }
+.todo-board-column.muted { opacity: .62; background: var(--c-090c0b); }
+.todo-board-column.muted:hover, .todo-board-column.muted:focus-within { opacity: 1; }
+.todo-board-column.muted .todo-board-card { background: var(--c-0d110f); }
+.todo-column-dot.custom { background: var(--c-6c8ccb); box-shadow: 0 0 6px rgba(108, 140, 203, .35); }
+.todo-column-tools { display: flex; align-items: center; gap: 4px; }
+.todo-column-move, .todo-column-remove {
+  width: 22px; height: 22px; padding: 0; display: grid; place-items: center;
+  border: 1px solid var(--c-2c3730); border-radius: 6px; background: var(--c-131a16);
+  color: var(--c-8d9690); font-size: 12px; line-height: 1; cursor: pointer; transition: all .12s ease;
+}
+.todo-column-move:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+.todo-column-move:disabled { opacity: .25; cursor: default; }
+.todo-column-remove:hover:not(:disabled) { border-color: #ef4444; color: #f87171; }
+.todo-column-rename {
+  width: 130px; height: 24px; padding: 0 7px; border: 1px solid var(--green); border-radius: 5px;
+  background: var(--c-090d0b); color: var(--text); font-size: 12px; font-weight: 700;
+}
+.todo-column-title h3 { cursor: text; }
+.todo-board-add-column {
+  align-self: stretch; min-height: 120px; display: grid; place-items: center; gap: 4px;
+  border: 1px dashed var(--c-2c3730); border-radius: 12px; background: transparent;
+  color: var(--c-68756d); cursor: pointer; transition: all .12s ease;
+}
+.todo-board-add-column:hover { border-color: var(--green); color: var(--green); background: var(--c-0e1411); }
+.todo-board-add-column span { font-size: 20px; line-height: 1; }
+.todo-board-add-column small { font-size: 10px; font-weight: 600; }
+
+/* Texte de tâche: deux lignes au repos, complet une fois déplié ou en édition */
+textarea.todo-text-input { resize: none; overflow: hidden; line-height: 1.35; max-height: 2.7em; white-space: pre-wrap; }
+textarea.todo-text-input.open { max-height: none; overflow: visible; }
+.todo-card-expand {
+  flex: none; width: 20px; height: 20px; padding: 0; display: grid; place-items: center;
+  border: 1px solid var(--c-2a342d); border-radius: 5px; background: var(--c-151d18);
+  color: var(--c-8d9690); font-size: 10px; line-height: 1; cursor: pointer;
+}
+.todo-card-expand:hover { border-color: var(--green); color: var(--green); }
+
+.todo-ref-pill {
+  font: 700 9px/1.2 ui-monospace, monospace; letter-spacing: .4px; padding: 3px 6px; border-radius: 5px;
+  border: 1px solid var(--c-2d3b31); background: var(--c-18221c); color: var(--c-a0aca3); cursor: pointer;
+}
+.todo-ref-pill:hover { border-color: var(--green); color: var(--green); }
+.todo-card-delete {
+  width: 22px; height: 22px; padding: 0; display: grid; place-items: center;
+  border: 1px solid var(--c-2a342d); border-radius: 4px; background: var(--c-151d18);
+  color: var(--c-68756d); font-size: 10px; cursor: pointer; transition: all .12s ease;
+}
+.todo-card-delete:hover:not(:disabled) { border-color: #ef4444; color: #f87171; background: #ef44441a; }
+.todo-shift-btn { min-width: 22px; text-align: center; }
+
+/* Choix de date: bulle posée sous la carte, sans écraser la mise en page */
+.todo-date-popover {
+  display: grid; gap: 8px; padding: 10px; border: 1px solid var(--c-2e3831); border-radius: 8px;
+  background: var(--c-0b100d);
+}
+.todo-date-quick { display: flex; gap: 6px; flex-wrap: wrap; }
+.todo-date-quick button {
+  flex: 1 1 auto; min-height: 28px; padding: 0 8px; border: 1px solid var(--c-344038); border-radius: 6px;
+  background: var(--c-141a17); color: var(--c-c3ccc6); font-size: 10px; font-weight: 600; cursor: pointer;
+}
+.todo-date-quick button:hover { border-color: var(--green); color: var(--green); }
+.todo-date-exact { display: flex; gap: 6px; align-items: center; }
+.todo-date-exact input {
+  flex: 1; height: 30px; padding: 0 8px; border: 1px solid var(--c-344038); border-radius: 6px;
+  background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 11px;
+}
+.todo-date-exact button { height: 30px; padding: 0 10px; font-size: 10px; border-radius: 6px; }
+.todo-date-pill.active { border-color: var(--green); color: var(--green); }
+
+/* Archive des agents: repli sous la liste des agents actifs */
+.agent-archives { margin-top: 12px; border-top: 1px solid var(--line); }
+.agent-archives > summary { display: flex; align-items: center; gap: 8px; padding: 12px 14px; list-style: none; cursor: pointer; color: var(--c-8d9690); font-size: 12px; }
+.agent-archives > summary::-webkit-details-marker { display: none; }
+.agent-archives > summary:hover { background: var(--c-141916); color: var(--text); }
+.agent-archives > summary strong { font-size: 12px; font-weight: 650; color: var(--text); }
+.agent-archives > summary small { margin-left: auto; font-size: 10px; color: var(--c-68756d); }
+.agent-archives[open] > summary .agent-group-chevron { transform: rotate(90deg); }
+.agent-archive-list { display: grid; gap: 0; }
+.agent-archive-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-top: 1px solid var(--line); }
+.agent-archive-row strong { display: block; font-size: 12px; }
+.agent-archive-row small { display: block; margin-top: 3px; color: var(--c-68756d); font-size: 9px; overflow-wrap: anywhere; }
+.agent-archive-actions { display: flex; gap: 6px; flex: none; }
+.agent-archive-actions button { min-height: 30px; padding: 0 11px; font-size: 11px; border-radius: 6px; cursor: pointer; }
+
+/* Tableau: largeur utile, zones repliables, barre d'outils en haut a droite */
+.todo-board-wrap { margin-top: 14px; }
+.todo-board-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.todo-board-toolbar small { color: var(--c-68756d); font-size: 10px; }
+.todo-add-column-btn {
+  height: 28px; padding: 0 11px; border: 1px dashed var(--c-2c3730); border-radius: 6px;
+  background: var(--c-101512); color: var(--c-8d9690); font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.todo-add-column-btn:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+.todo-board > .todo-board-column { flex: 1 0 300px; min-width: 300px; max-width: 420px; }
+.todo-board > .todo-board-column.collapsed {
+  flex: 0 0 46px; min-width: 46px; max-width: 46px; min-height: 220px; padding: 12px 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: pointer;
+}
+.todo-collapsed-title {
+  writing-mode: vertical-rl; text-orientation: mixed; font-size: 12px; font-weight: 650;
+  color: var(--c-a0aca3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-height: 190px;
+}
+.todo-collapsed-chevron { margin-top: auto; color: var(--c-68756d); font-size: 13px; }
+.todo-board-column.collapsed:hover { border-color: var(--green); }
+.todo-column-fold {
+  width: 20px; height: 20px; padding: 0; display: grid; place-items: center;
+  border: 1px solid var(--c-2c3730); border-radius: 5px; background: var(--c-131a16);
+  color: var(--c-8d9690); font-size: 11px; line-height: 1; cursor: pointer;
+}
+.todo-column-fold:hover { border-color: var(--green); color: var(--green); }
+
+/* Menus contextuels (zone et carte): actions rangees, plus d'icones eparpillees */
+.todo-column-menu, .todo-card-menu { position: relative; }
+.todo-column-menu > summary, .todo-card-menu > summary {
+  list-style: none; width: 22px; height: 22px; display: grid; place-items: center; cursor: pointer;
+  border: 1px solid var(--c-2a342d); border-radius: 5px; background: var(--c-151d18); color: var(--c-8d9690); font-size: 12px;
+}
+.todo-column-menu > summary::-webkit-details-marker, .todo-card-menu > summary::-webkit-details-marker { display: none; }
+.todo-column-menu > summary:hover, .todo-card-menu > summary:hover { border-color: var(--green); color: var(--green); }
+.todo-column-menu-panel, .todo-card-menu-panel {
+  position: absolute; right: 0; top: 26px; z-index: 8; display: grid; gap: 2px; min-width: 168px; padding: 5px;
+  border: 1px solid var(--c-2e3831); border-radius: 8px; background: var(--c-0b100d); box-shadow: 0 8px 22px rgba(0,0,0,.45);
+}
+.todo-column-menu-panel button, .todo-card-menu-panel button {
+  width: 100%; text-align: left; min-height: 30px; padding: 0 9px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--c-c3ccc6); font-size: 11px; cursor: pointer;
+}
+.todo-column-menu-panel button:hover:not(:disabled), .todo-card-menu-panel button:hover:not(:disabled) { background: var(--c-18211c); color: var(--green); }
+.todo-column-menu-panel button:disabled, .todo-card-menu-panel button:disabled { opacity: .35; cursor: default; }
+.todo-column-menu-panel button.danger:hover, .todo-card-menu-panel button.danger:hover { background: #ef44441a; color: #f87171; }
+
+/* Carte: une seule ligne de meta, pas de retour a la ligne qui casse la lecture */
+.todo-card-meta { flex-wrap: nowrap; }
+.todo-card-pills { flex-wrap: nowrap; overflow: hidden; }
+.todo-card-shift-actions { gap: 3px; }
+.todo-date-pill { white-space: nowrap; }
+
+/* Choix de date: une seule ligne compacte sous la carte */
+.todo-date-popover { display: flex; align-items: center; gap: 5px; padding: 6px; }
+.todo-date-popover button {
+  height: 26px; padding: 0 7px; border: 1px solid var(--c-344038); border-radius: 5px;
+  background: var(--c-141a17); color: var(--c-c3ccc6); font-size: 10px; cursor: pointer;
+}
+.todo-date-popover button:hover { border-color: var(--green); color: var(--green); }
+.todo-date-popover input { flex: 1; min-width: 0; height: 26px; padding: 0 6px; border: 1px solid var(--c-344038); border-radius: 5px; background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 10px; }
+.todo-date-popover button.clear { width: 26px; padding: 0; }

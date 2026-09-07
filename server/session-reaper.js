@@ -2,9 +2,10 @@
 // On ne purge que les sessions vues vivantes dans ce processus: apres un reboot,
 // aucune session n'a ete vue, donc la restauration automatique reste intacte.
 export class SessionReaper {
-  constructor({ tmux, store, isMigrating = () => false, graceMs = 20_000, now = () => Date.now(), onReap = () => {} }) {
+  constructor({ tmux, store, archiveService = null, isMigrating = () => false, graceMs = 20_000, now = () => Date.now(), onReap = () => {} }) {
     this.tmux = tmux;
     this.store = store;
+    this.archiveService = archiveService;
     this.isMigrating = isMigrating;
     this.graceMs = graceMs;
     this.now = now;
@@ -47,6 +48,9 @@ export class SessionReaper {
       }
       if (this.now() - since < this.graceMs) continue;
       this.forget(id);
+      if (this.archiveService) {
+        await this.archiveService.archive(id, entry, { reason: "reaped" }).catch(() => {});
+      }
       await this.store.remove(id);
       this.onReap(id, entry);
       reaped.push(id);

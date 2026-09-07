@@ -13,6 +13,7 @@ const TASK = /^(\s*[-*]\s+\[)([ xX/?\-])(\]\s+)(.*)$/;
 const HEADING = /^(#{1,6}\s+)(.*)$/;
 const METADATA = /\s*<!--\s*noyau:(\{.*\})\s*-->\s*$/;
 const DUE_DATE = /\s+📅\s*(\d{4}-\d{2}-\d{2})\s*$/;
+const STATUS_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const ROOT_FOLDER = "root";
 const ROOT_NAME = "Sans dossier";
 
@@ -32,6 +33,10 @@ function validDate(value) {
   if (!DATE.test(String(value || ""))) return false;
   const date = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function validStatus(value) {
+  return typeof value === "string" && STATUS_ID.test(value);
 }
 
 function validTimestamp(value) {
@@ -88,7 +93,8 @@ function parseDocument(content) {
     const rawMark = match[2];
     const isDone = rawMark.toLowerCase() === "x";
     const isReview = rawMark === "/" || rawMark === "?";
-    const status = (metadata.status === "done" || metadata.status === "review" || metadata.status === "todo")
+    // Les colonnes personnalisees vivent dans la metadonnee: le Markdown garde une case lisible a la main.
+    const status = validStatus(metadata.status)
       ? metadata.status
       : (isDone ? "done" : isReview ? "review" : "todo");
     const completed = status === "done";
@@ -122,8 +128,8 @@ function parseDocument(content) {
 }
 
 function renderTask(task) {
-  const status = task.status === "done" || task.completed ? "done" : task.status === "review" ? "review" : "todo";
-  const mark = status === "done" ? "x" : status === "review" ? "/" : " ";
+  const status = task.status === "done" || task.completed ? "done" : validStatus(task.status) ? task.status : "todo";
+  const mark = status === "done" ? "x" : status === "todo" ? " " : "/";
   const metadataObj = {
     id: task.id,
     projectId: task.projectId || null,
@@ -376,7 +382,7 @@ export class TodoService {
         || (projectId ? document.folders.find((item) => item.projectId === projectId) : null);
       const target = folder?.id || ROOT_FOLDER;
       const id = newId("todo");
-      const st = status === "done" || status === "review" ? status : "todo";
+      const st = validStatus(status) ? status : "todo";
       const completed = st === "done";
       const completedAt = completed ? new Date().toISOString() : null;
       const task = {
@@ -428,7 +434,7 @@ export class TodoService {
         task.reminderKey = null;
       }
       let completedNow = false;
-      if (changes.status !== undefined && ["todo", "review", "done"].includes(changes.status)) {
+      if (changes.status !== undefined && validStatus(changes.status)) {
         const prevStatus = task.status;
         task.status = changes.status;
         if (task.status === "done") {
