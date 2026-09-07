@@ -27,13 +27,12 @@ try {
         notification_type: event.notification_type,
       };
   const token = (await fs.readFile(`${dataDir}/access-token`, "utf8")).trim();
-  const response = await fetch("http://127.0.0.1:4242/api/hooks/notify", {
+  await fetch("http://127.0.0.1:4242/api/hooks/notify", {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ source, sessionId, event: compactEvent }),
+    signal: AbortSignal.timeout(3000),
   });
-  if (!response.ok) process.exitCode = 1;
-} catch (error) {
-  console.error(`Noyau notification: ${error.message}`);
-  process.exitCode = 1;
+} catch {
+  // Notification hook is best-effort: never block or fail the agent turn
 }

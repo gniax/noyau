@@ -36,13 +36,18 @@ export function codexWindowLabel(minutes) {
 
 export function codexRateWindows(rateLimits) {
   return [rateLimits?.primary, rateLimits?.secondary]
-    .filter((item) => item && Number.isFinite(Number(item.used_percent)))
-    .map((item) => ({
-      label: codexWindowLabel(item.window_minutes),
-      remainingPercent: Math.max(0, Math.round(100 - Number(item.used_percent))),
-      resetsAt: item.resets_at ? new Date(Number(item.resets_at) * 1000).toISOString() : null,
-      windowMinutes: Number(item.window_minutes) || null,
-    }));
+    .filter((item) => item && Number.isFinite(Number(item.used_percent ?? item.usedPercent)))
+    .map((item) => {
+      const usedPercent = Number(item.used_percent ?? item.usedPercent);
+      const windowMinutes = Number(item.window_minutes ?? item.windowDurationMins) || null;
+      const resetsAt = item.resets_at ?? item.resetsAt;
+      return {
+        label: codexWindowLabel(windowMinutes),
+        remainingPercent: Math.max(0, Math.round(100 - usedPercent)),
+        resetsAt: resetsAt ? new Date(Number(resetsAt) * 1000).toISOString() : null,
+        windowMinutes,
+      };
+    });
 }
 
 export function parseCodexUsage(text) {
@@ -72,17 +77,33 @@ export function parseCodexUsage(text) {
 }
 
 export function parseClaudeRateLimits(rateLimits) {
+  if (!rateLimits) return null;
   const parse = (item) => {
-    // utilization arrive en ratio (0-1) via le hook statusline, en pourcentage via l'API OAuth.
-    const utilization = Number(item?.utilization);
-    const used = item?.used_percentage ?? (Number.isFinite(utilization) ? (utilization > 1 ? utilization : utilization * 100) : null);
+    if (!item) return null;
+    let used = item.used_percentage ?? item.percent;
+    if (used === null || used === undefined) {
+      if (Number.isFinite(Number(item.utilization))) {
+        const util = Number(item.utilization);
+        used = (util > 0 && util < 1 && !Array.isArray(rateLimits.limits)) ? util * 100 : util;
+      }
+    }
     if (used === null || used === undefined || !Number.isFinite(Number(used))) return null;
     const rawReset = item.resets_at;
     const resetsAt = Number(rawReset) ? new Date(Number(rawReset) * 1000).toISOString() : (rawReset && !Number.isNaN(new Date(rawReset).getTime()) ? new Date(rawReset).toISOString() : null);
     return { remainingPercent: Math.max(0, Math.round(100 - Number(used))), resetsAt };
   };
-  const fiveHour = parse(rateLimits?.five_hour);
-  const sevenDay = parse(rateLimits?.seven_day);
+
+  let fiveHour = null;
+  let sevenDay = null;
+  if (Array.isArray(rateLimits.limits)) {
+    const sessionLimit = rateLimits.limits.find((item) => item.kind === "session" || item.group === "session");
+    const weeklyLimit = rateLimits.limits.find((item) => item.kind === "weekly_all" || item.group === "weekly");
+    if (sessionLimit) fiveHour = parse(sessionLimit);
+    if (weeklyLimit) sevenDay = parse(weeklyLimit);
+  }
+  if (!fiveHour && rateLimits.five_hour) fiveHour = parse(rateLimits.five_hour);
+  if (!sevenDay && rateLimits.seven_day) sevenDay = parse(rateLimits.seven_day);
+
   if (!fiveHour && !sevenDay) return null;
   return { fiveHour, sevenDay, updatedAt: new Date().toISOString() };
 }

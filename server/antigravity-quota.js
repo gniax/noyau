@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 // `agy -p "/usage"` sort une ligne par fenetre: famille, libelle, pourcentage restant, renouvellement.
-const USAGE_LINE = /^(.+?)\t(.+?)\t(\d{1,3})%\t(\S+)\s*$/;
+const USAGE_LINE = /^(.+?)(?:\t|\s{2,})(.+?)(?:\t|\s{2,})(\d{1,3})%(?:\t|\s+)(\S+)\s*$/;
 
 export function parseAntigravityUsage(output) {
   const windows = String(output).split(/\r?\n/).flatMap((line) => {

@@ -35,6 +35,14 @@ test("Codex rate windows cover the five-hour and weekly limits", () => {
   assert.deepEqual(codexRateWindows(undefined), []);
 });
 
+test("Codex rate windows accept live app-server fields", () => {
+  const windows = codexRateWindows({
+    primary: { usedPercent: 11, resetsAt: 1_800_000_000, windowDurationMins: 300 },
+    secondary: { usedPercent: 33, resetsAt: 1_800_500_000, windowDurationMins: 10_080 },
+  });
+  assert.deepEqual(windows.map((item) => [item.label, item.remainingPercent]), [["5h", 89], ["Semaine", 67]]);
+});
+
 test("Claude statusline rate limits expose five-hour and weekly quota", () => {
   const quota = parseClaudeRateLimits({
     five_hour: { used_percentage: 31.2, resets_at: 1_800_000_000 },
@@ -45,6 +53,16 @@ test("Claude statusline rate limits expose five-hour and weekly quota", () => {
   assert.equal(quota.fiveHour.resetsAt, "2027-01-15T08:00:00.000Z");
   const apiQuota = parseClaudeRateLimits({ five_hour: { utilization: 0.42, resets_at: "2027-01-15T08:00:00Z" } });
   assert.equal(apiQuota.fiveHour.remainingPercent, 58);
+  const oauthQuota = parseClaudeRateLimits({
+    five_hour: { utilization: 1.0, resets_at: "2026-09-04T08:59:59.934464+00:00" },
+    seven_day: { utilization: 45.0, resets_at: "2026-09-06T00:59:59.934488+00:00" },
+    limits: [
+      { kind: "session", group: "session", percent: 1, resets_at: "2026-09-04T08:59:59.934464+00:00" },
+      { kind: "weekly_all", group: "weekly", percent: 45, resets_at: "2026-09-06T00:59:59.934488+00:00" },
+    ],
+  });
+  assert.equal(oauthQuota.fiveHour.remainingPercent, 99);
+  assert.equal(oauthQuota.sevenDay.remainingPercent, 55);
 });
 
 test("Claude usage includes cache tokens and marks estimate", () => {

@@ -99,3 +99,62 @@ test("glisser-deposer: la tache se pose avant une autre du meme dossier", async 
   const last = await service.placeBefore(moved.todos[0].id, null);
   assert.deepEqual(last.todos.map((todo) => todo.text), ["Une", "Deux", "Trois"]);
 });
+
+test("trois états de tâche: todo, review (à tester), done", async () => {
+  const { file, service } = await fixture("- [ ] À faire\n- [/] À vérifier\n- [x] Terminé\n");
+  const { todos } = await service.list();
+  assert.equal(todos.length, 3);
+  assert.equal(todos[0].status, "todo");
+  assert.equal(todos[0].completed, false);
+  assert.equal(todos[1].status, "review");
+  assert.equal(todos[1].completed, false);
+  assert.equal(todos[2].status, "done");
+  assert.equal(todos[2].completed, true);
+
+  // Passage en review
+  const reviewed = await service.update(todos[0].id, { status: "review" });
+  assert.equal(reviewed.todo.status, "review");
+  assert.equal(reviewed.todo.completed, false);
+
+  const content = await fs.readFile(file, "utf8");
+  assert.match(content, /- \[\/\] À faire/);
+
+  // Passage en done
+  const finished = await service.update(todos[0].id, { status: "done" });
+  assert.equal(finished.todo.status, "done");
+  assert.equal(finished.todo.completed, true);
+
+  // Retour en todo
+  const reopened = await service.update(todos[0].id, { status: "todo" });
+  assert.equal(reopened.todo.status, "todo");
+  assert.equal(reopened.todo.completed, false);
+});
+
+test("commentaires sur les tâches: ajout, suppression et persistance à l'infini", async () => {
+  const { file, service } = await fixture("- [ ] Tâche avec discussion\n");
+  const { todos } = await service.list();
+  const todoId = todos[0].id;
+
+  const added1 = await service.addComment(todoId, { text: "Premier retour de test", author: "Camille" });
+  assert.equal(added1.todo.comments.length, 1);
+  assert.equal(added1.todo.comments[0].text, "Premier retour de test");
+  assert.equal(added1.todo.comments[0].author, "Camille");
+
+  const added2 = await service.addComment(todoId, { text: "Deuxième note de suivi", author: "Antigravity" });
+  assert.equal(added2.todo.comments.length, 2);
+  assert.equal(added2.todo.comments[1].text, "Deuxième note de suivi");
+
+  const content = await fs.readFile(file, "utf8");
+  assert.match(content, /Premier retour de test/);
+  assert.match(content, /Deuxième note de suivi/);
+
+  // Relecture du fichier depuis une nouvelle instance
+  const fresh = new TodoService({ file });
+  const reloaded = await fresh.list();
+  assert.equal(reloaded.todos[0].comments.length, 2);
+
+  // Suppression d'un commentaire
+  const removed = await service.removeComment(todoId, added1.comment.id);
+  assert.equal(removed.todo.comments.length, 1);
+  assert.equal(removed.todo.comments[0].text, "Deuxième note de suivi");
+});

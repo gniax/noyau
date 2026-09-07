@@ -310,16 +310,22 @@ function formatTokens(value) {
 
 function providerQuota(quotas, assistant) {
   if (assistant === "codex") {
-    const window = (quotas?.codex?.windows || [])[0];
-    return window ? { percent: window.remainingPercent, resetsAt: window.resetsAt } : null;
+    const windows = quotas?.codex?.windows || [];
+    if (!windows.length) return null;
+    const min = windows.reduce((prev, curr) => (Number(curr.remainingPercent) < Number(prev.remainingPercent) ? curr : prev), windows[0]);
+    return { percent: min.remainingPercent, resetsAt: min.resetsAt };
   }
   if (["claude", "claude-design"].includes(assistant)) {
-    const window = quotas?.claude?.fiveHour || quotas?.claude?.sevenDay;
-    return window ? { percent: window.remainingPercent, resetsAt: window.resetsAt } : null;
+    const windows = [quotas?.claude?.fiveHour, quotas?.claude?.sevenDay].filter(Boolean);
+    if (!windows.length) return null;
+    const min = windows.reduce((prev, curr) => (Number(curr.remainingPercent) < Number(prev.remainingPercent) ? curr : prev), windows[0]);
+    return { percent: min.remainingPercent, resetsAt: min.resetsAt };
   }
   if (assistant === "antigravity") {
-    const window = (quotas?.antigravity?.windows || [])[0];
-    return window ? { percent: window.remainingPercent, resetsAt: window.resetsAt } : null;
+    const windows = quotas?.antigravity?.windows || [];
+    if (!windows.length) return null;
+    const min = windows.reduce((prev, curr) => (Number(curr.remainingPercent) < Number(prev.remainingPercent) ? curr : prev), windows[0]);
+    return { percent: min.remainingPercent, resetsAt: min.resetsAt };
   }
   return null;
 }
@@ -562,6 +568,7 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite }) {
 
 function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavorite, onProjects, onFinances, onRefreshQuotas }) {
   const [refreshingQuotas, setRefreshingQuotas] = useState(false);
+  const [quotaRefreshState, setQuotaRefreshState] = useState("");
   const [weather, setWeather] = useState(() => {
     try {
       const cached = JSON.parse(localStorage.getItem("noyau-weather"));
@@ -635,7 +642,7 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
 
       <section className="metrics">
         <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div className="active-agents-content"><small>AGENTS ACTIFS</small><div className="active-agents-data"><div className="active-total-block"><strong className="active-total">{sessions.length}</strong><em>en ligne</em></div><div className="agent-breakdown"><span><b>{codexCount}</b><em>Codex</em></span><span><b>{claudeCount}</b><em>Claude</em></span>{antigravityCount > 0 && <span><b>{antigravityCount}</b><em>Antigravity</em></span>}<span><b>{shellCount}</b><em>Terminal</em></span></div></div><p className="active-agents-footer"><span>{linkedProjects} projet{linkedProjects > 1 ? "s" : ""} lié{linkedProjects > 1 ? "s" : ""}</span><span>{favoriteCount} favori{favoriteCount > 1 ? "s" : ""}</span></p></div></article>
-        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">QUOTAS IA<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); try { await onRefreshQuotas(); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label="Rafraîchir quotas" title="Rafraîchir quotas"><span aria-hidden="true">↻</span></button></small><div className="quota-providers"><div className="quota-codex"><span>CODEX</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Aucun agent Codex actif</em></div>}</div><div className="quota-antigravity"><span>ANTIGRAVITY</span>{antigravityWindows.length ? <div className="quota-dials">{antigravityWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
+        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">QUOTAS IA<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); setQuotaRefreshState("Actualisation…"); try { const result = await onRefreshQuotas(); const failed = Object.entries(result?.refreshed || {}).filter(([, state]) => !state.ok).map(([provider]) => provider); setQuotaRefreshState(failed.length ? `Échec: ${failed.join(", ")}` : `Actualisé ${new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`); } catch (error) { setQuotaRefreshState(error.message || "Actualisation impossible"); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label="Rafraîchir quotas" title="Rafraîchir quotas"><span aria-hidden="true">↻</span></button><em className="quota-refresh-state">{quotaRefreshState}</em></small><div className="quota-providers"><div className="quota-codex"><span>CODEX</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-antigravity"><span>ANTIGRAVITY</span>{antigravityWindows.length ? <div className="quota-dials">{antigravityWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
       </section>
 
       <section className="panel agents-panel">
@@ -891,7 +898,8 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
   async function startBuild(platform) {
     if (busy || isRunning) return;
     const label = platform === "ios" ? "IPA (iOS)" : "APK (Android)";
-    if (!window.confirm(`Lancer la production du build ${label} par un agent disponible ?`)) return;
+    const executor = platform === "android" && deviceBuild.capabilities?.localAndroid ? "sur machine Noyau" : "par agent disponible";
+    if (!window.confirm(`Lancer production build ${label} ${executor} ?`)) return;
     setBusy(platform);
     try {
       await onBuild?.(module.id, platform);
@@ -910,6 +918,21 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
       } else {
         window.alert("Builds synchronisés.");
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openBuild(build, install = false) {
+    if (busy) return;
+    setBusy(`${install ? "install" : "download"}:${build.id}`);
+    try {
+      const access = await api(`/api/modules/${encodeURIComponent(module.id)}/builds/${encodeURIComponent(build.id)}/access`, { method: "POST" });
+      const target = install ? access.installUrl : access.downloadUrl;
+      if (!target) throw new Error(install ? "Installation OTA indisponible." : "Téléchargement indisponible.");
+      window.location.assign(target);
+    } catch (error) {
+      window.alert(error.message);
     } finally {
       setBusy(false);
     }
@@ -935,9 +958,9 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
               className="primary"
               onClick={() => startBuild("android")}
               disabled={!!busy || isRunning}
-              title="Produire et installer APK Android sur device"
+              title="Compiler APK sur machine Noyau puis tenter installation ADB"
             >
-              {isRunning && run?.platform === "android" ? `APK en cours… (${formatElapsed(elapsed)})` : busy === "android" ? "Lancement…" : "Installer APK"}
+              {isRunning && run?.platform === "android" ? `APK en cours… (${formatElapsed(elapsed)})` : busy === "android" ? "Lancement…" : "Construire APK"}
             </button>
           )}
           {hasIos && (
@@ -945,9 +968,9 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
               className={hasAndroid ? "secondary" : "primary"}
               onClick={() => startBuild("ios")}
               disabled={!!busy || isRunning}
-              title="Produire build IPA iOS pour appareil"
+              title="Produire IPA via Mac/Xcode ou agent disponible"
             >
-              {isRunning && run?.platform === "ios" ? `IPA en cours… (${formatElapsed(elapsed)})` : busy === "ios" ? "Lancement…" : "Installer IPA"}
+              {isRunning && run?.platform === "ios" ? `IPA en cours… (${formatElapsed(elapsed)})` : busy === "ios" ? "Lancement…" : "Construire IPA"}
             </button>
           )}
         </div>
@@ -957,7 +980,7 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
           {isRunning && <span className="module-build-spinner" />}
           <span>
             {run.state === "installed" && `✓ APK installée sur ${run.device?.serial || "l'appareil"}${run.output ? ` · ${run.output}` : ""}`}
-            {run.state === "download-ready" && `APK prête au téléchargement · ${run.output || ""}`}
+            {run.state === "download-ready" && `${run.platform === "ios" ? "IPA" : "APK"} prête · ${run.output || ""}`}
             {run.state === "installation-requested" && `IPA prête · ${run.output || "Demande transmise à l'agent."}`}
             {run.state === "building" && `Production en cours (${run.platform === "ios" ? "IPA iOS" : "APK Android"} · ${run.agent?.name || "agent"}) · ${run.output || ""}`}
             {run.state === "queued" && `En attente (${run.platform === "ios" ? "IPA" : "APK"} · ${run.agent?.name || "agent"})…`}
@@ -983,11 +1006,14 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
                   <small>· {new Date(build.createdAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
                 </div>
               </div>
-              {build.downloadUrl ? (
-                <a href={build.downloadUrl} download={build.name} target="_blank" rel="noreferrer">
+              <div className="module-build-buttons">
+                {build.platform === "ios" && deviceBuild.capabilities?.iosOta && (
+                  <button onClick={() => openBuild(build, true)} disabled={!!busy}>Installer IPA</button>
+                )}
+                <button onClick={() => openBuild(build, false)} disabled={!!busy}>
                   Télécharger {build.platform === "ios" ? "IPA" : "APK"}
-                </a>
-              ) : null}
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -1110,9 +1136,12 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
   useEffect(() => { loadTodos(); }, [loadTodos]);
 
   async function toggleTodo(todo) {
+    const current = todo.status || (todo.completed ? "done" : "todo");
+    const next = current === "todo" ? "review" : current === "review" ? "done" : "todo";
     setTodoBusy(todo.id);
+    setTodos((prev) => prev.map((t) => t.id === todo.id ? { ...t, status: next, completed: next === "done" } : t));
     try {
-      await api(`/api/todos/${todo.id}`, { method: "PATCH", body: JSON.stringify({ completed: !todo.completed }) });
+      await api(`/api/todos/${todo.id}`, { method: "PATCH", body: JSON.stringify({ status: next }) });
       await loadTodos();
     } catch (error) {
       window.alert(error.message);
@@ -1125,8 +1154,8 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
     if (event.pointerType === "mouse" && event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    const order = projects.map((p) => p.id);
-    dragRef.current = { pointerId: event.pointerId, id: project.id, order, initialOrder: order };
+    const order = projects.map((item) => item.id);
+    dragRef.current = { pointerId: event.pointerId, id: project.id, order, initialOrder: [...order] };
     setDraggedProject(project.id);
   }
 
@@ -1134,29 +1163,37 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
-    const cards = drag.order.map((id) => ({ id, node: cardRefs.current.get(id) })).filter((c) => c.node);
-    const hovered = cards.find((card) => {
-      const box = card.node.getBoundingClientRect();
-      return event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom;
-    });
-    if (!hovered || hovered.id === drag.id) return;
-    const nextOrder = drag.order.filter((id) => id !== drag.id);
-    const at = nextOrder.indexOf(hovered.id);
-    nextOrder.splice(at < 0 ? nextOrder.length : at, 0, drag.id);
-    if (nextOrder.join() === drag.order.join()) return;
-    drag.order = nextOrder;
-    onReorder(nextOrder, false);
+    const currentIndex = drag.order.indexOf(drag.id);
+    if (currentIndex < 0) return;
+
+    for (let i = 0; i < drag.order.length; i++) {
+      if (i === currentIndex) continue;
+      const cardId = drag.order[i];
+      const node = cardRefs.current.get(cardId);
+      if (!node) continue;
+      const rect = node.getBoundingClientRect();
+      if (event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) {
+        const midY = rect.top + rect.height / 2;
+        if ((i > currentIndex && event.clientY > midY) || (i < currentIndex && event.clientY < midY)) {
+          const nextOrder = drag.order.filter((id) => id !== drag.id);
+          nextOrder.splice(i, 0, drag.id);
+          drag.order = nextOrder;
+          onReorder?.(nextOrder, false);
+          break;
+        }
+      }
+    }
   }
 
   async function endDrag(event) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const finalOrder = [...drag.order];
-    const changed = finalOrder.join() !== drag.initialOrder.join();
+    const initialOrder = drag.initialOrder || [];
     dragRef.current = null;
     setDraggedProject("");
-    if (changed) {
-      await onReorder(finalOrder, true);
+    if (finalOrder.join() !== initialOrder.join()) {
+      await onReorder?.(finalOrder, true);
     }
   }
 
@@ -1173,7 +1210,9 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
             .filter((module) => module.projectId === project.id)
             .sort((a, b) => (b.id?.includes("build") ? 1 : 0) - (a.id?.includes("build") ? 1 : 0));
           const projectTodos = todos.filter((todo) => todo.projectId === project.id);
-          const openTodos = projectTodos.filter((todo) => !todo.completed);
+          const openTodos = projectTodos.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo");
+          const reviewTodos = projectTodos.filter((todo) => todo.status === "review");
+          const doneTodos = projectTodos.filter((todo) => todo.status === "done" || todo.completed);
           return (
             <article
               className={`panel project-card ${draggedProject === project.id ? "dragging" : ""}`}
@@ -1186,13 +1225,33 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
                 {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {session.agentStatus?.label || "Disponible"}</small></span><b>›</b></button>)}
                 {!agents.length && <span className="project-empty">Aucun agent rattaché.</span>}
               </div>
-              <details className="project-todos"><summary><span>Todo</span><small>{openTodos.length} en cours · {projectTodos.length - openTodos.length} faite{projectTodos.length - openTodos.length > 1 ? "s" : ""}</small><b>›</b></summary><div className="project-todo-list">
-                {projectTodos.map((todo) => (
-                  <label className={todo.completed ? "project-todo done" : "project-todo"} key={todo.id}>
-                    <input type="checkbox" checked={todo.completed} disabled={todoBusy === todo.id} onChange={() => toggleTodo(todo)} />
-                    <span><strong>{todo.text}</strong><small className={todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed ? "overdue" : ""}>{todoDueLabel(todo.dueDate)}</small></span>
-                  </label>
-                ))}
+              <details className="project-todos"><summary><span>Todo</span><small>{openTodos.length} en cours{reviewTodos.length ? ` · ${reviewTodos.length} à vérifier` : ""} · {doneTodos.length} faite{doneTodos.length > 1 ? "s" : ""}</small><b>›</b></summary><div className="project-todo-list">
+                {projectTodos.map((todo) => {
+                  const status = todo.status || (todo.completed ? "done" : "todo");
+                  const isDone = status === "done";
+                  const isReview = status === "review";
+                  return (
+                    <div className={isDone ? "project-todo done" : isReview ? "project-todo review" : "project-todo"} key={todo.id}>
+                      <button
+                        type="button"
+                        className={`todo-tri-box status-${status}`}
+                        onClick={() => toggleTodo(todo)}
+                        disabled={todoBusy === todo.id}
+                        title={status === "todo" ? "À faire (cliquer pour : À vérifier)" : isReview ? "À vérifier (cliquer pour : Terminée)" : "Terminée (cliquer pour : À faire)"}
+                      >
+                        {isDone && <span className="todo-tri-icon done-check">✓</span>}
+                        {isReview && <span className="todo-tri-icon review-bar" />}
+                      </button>
+                      <span>
+                        <strong>{todo.text}</strong>
+                        <small className={todo.dueDate && todo.dueDate < localIsoDate() && !isDone ? "overdue" : isReview ? "status-review-label" : ""}>
+                          {isReview ? "◐ À vérifier / tester" : todoDueLabel(todo.dueDate)}
+                          {todo.comments?.length ? ` · 💬 ${todo.comments.length}` : ""}
+                        </small>
+                      </span>
+                    </div>
+                  );
+                })}
                 {!projectTodos.length && <span className="project-empty">Aucune tâche liée.</span>}
                 <button className="project-todo-link" onClick={onOpenTodos}>Ouvrir la liste complète ›</button>
               </div></details>
@@ -2089,6 +2148,13 @@ function completedLabel(value) {
   return `Terminé le ${date.toLocaleDateString("fr-FR")} à ${date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+function formatCommentDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
 function TodosView() {
   const cached = cachedView("todos");
   const [todos, setTodos] = useState(() => (Array.isArray(cached) ? cached : cached?.todos) || []);
@@ -2098,6 +2164,9 @@ function TodosView() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [datePanel, setDatePanel] = useState(null);
+  const [openComments, setOpenComments] = useState({});
+  const [newComment, setNewComment] = useState({});
+  const [filterTab, setFilterTab] = useState("all");
   const [openFolder, setOpenFolder] = useState(() => { try { return localStorage.getItem(profileCacheKey("todo-folder")) || null; } catch { return null; } });
   const [showDone, setShowDone] = useState({});
   const [dragging, setDragging] = useState("");
@@ -2154,13 +2223,47 @@ function TodosView() {
     });
   }
 
-  const update = (todo, changes) => run(todo.id, () => api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify(changes) }));
+  const update = (todo, changes) => {
+    // Optimistic update
+    setTodos((prev) => prev.map((item) => {
+      if (item.id !== todo.id) return item;
+      const next = { ...item, ...changes };
+      if (changes.status !== undefined) {
+        next.status = changes.status;
+        next.completed = changes.status === "done";
+        if (changes.status === "done" && !next.completedAt) next.completedAt = new Date().toISOString();
+        if (changes.status !== "done") next.completedAt = null;
+      } else if (changes.completed !== undefined) {
+        next.completed = changes.completed === true;
+        next.status = next.completed ? "done" : "todo";
+        next.completedAt = next.completed ? (next.completedAt || new Date().toISOString()) : null;
+      }
+      return next;
+    }));
+    return run(todo.id, () => api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify(changes) }));
+  };
   const move = (todo, direction) => run(todo.id, () => api(`/api/todos/${encodeURIComponent(todo.id)}/move`, { method: "POST", body: JSON.stringify({ direction }) }));
+
+  async function addComment(todo, event) {
+    event?.preventDefault();
+    const commentText = (newComment[todo.id] || "").trim();
+    if (!commentText) return;
+    await run(`comment:${todo.id}`, async () => {
+      const result = await api(`/api/todos/${encodeURIComponent(todo.id)}/comments`, { method: "POST", body: JSON.stringify({ text: commentText }) });
+      setNewComment((prev) => ({ ...prev, [todo.id]: "" }));
+      return result;
+    });
+  }
+
+  async function removeComment(todo, commentId) {
+    await run(`comment-del:${commentId}`, () => api(`/api/todos/${encodeURIComponent(todo.id)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" }));
+  }
 
   // Un dossier a la fois: la page liste les dossiers, le clic ouvre son contenu.
   function selectFolder(id) {
     setOpenFolder(id);
     setDatePanel(null);
+    setFilterTab("all");
     try {
       if (id) localStorage.setItem(profileCacheKey("todo-folder"), id);
       else localStorage.removeItem(profileCacheKey("todo-folder"));
@@ -2193,13 +2296,20 @@ function TodosView() {
       .filter((section) => section.folder.id !== ROOT_FOLDER || section.items.length);
   }, [folders, todos]);
 
-  // Glisser-deposer: on reordonne localement pendant le geste, on confirme au relachement.
+  // Glisser-deposer: on reordonne localement avec hysteresis sans jitter, on confirme au relachement.
   function startDrag(event, todo, items) {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const order = items.map((item) => item.id);
-    dragRef.current = { pointerId: event.pointerId, id: todo.id, folderId: todo.folderId || ROOT_FOLDER, order };
+    dragRef.current = {
+      pointerId: event.pointerId,
+      id: todo.id,
+      folderId: todo.folderId || ROOT_FOLDER,
+      order,
+      initialOrder: [...order],
+      isDoneList: todo.completed || todo.status === "done",
+    };
     setDragging(todo.id);
   }
 
@@ -2207,86 +2317,197 @@ function TodosView() {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
-    const rows = drag.order.map((id) => ({ id, node: rowRefs.current.get(id) })).filter((row) => row.node);
-    const hovered = rows.find((row) => {
-      const box = row.node.getBoundingClientRect();
-      return event.clientY < box.bottom - box.height / 2;
-    });
-    const nextOrder = drag.order.filter((id) => id !== drag.id);
-    const at = hovered && hovered.id !== drag.id ? nextOrder.indexOf(hovered.id) : nextOrder.length;
-    nextOrder.splice(at < 0 ? nextOrder.length : at, 0, drag.id);
-    if (nextOrder.join() === drag.order.join()) return;
-    drag.order = nextOrder;
-    setTodos((items) => {
-      const inFolder = new Map(items.filter((item) => nextOrder.includes(item.id)).map((item) => [item.id, item]));
-      const queue = nextOrder.map((id) => inFolder.get(id));
-      return items.map((item) => (inFolder.has(item.id) ? queue.shift() : item));
-    });
+    const currentIndex = drag.order.indexOf(drag.id);
+    if (currentIndex < 0) return;
+
+    for (let i = 0; i < drag.order.length; i++) {
+      if (i === currentIndex) continue;
+      const rowId = drag.order[i];
+      const node = rowRefs.current.get(rowId);
+      if (!node) continue;
+      const rect = node.getBoundingClientRect();
+      if (event.clientY >= rect.top && event.clientY <= rect.bottom) {
+        const midY = rect.top + rect.height / 2;
+        if ((i > currentIndex && event.clientY > midY) || (i < currentIndex && event.clientY < midY)) {
+          const nextOrder = drag.order.filter((id) => id !== drag.id);
+          nextOrder.splice(i, 0, drag.id);
+          drag.order = nextOrder;
+          setTodos((prev) => {
+            const map = new Map(prev.filter((item) => nextOrder.includes(item.id)).map((item) => [item.id, item]));
+            const queue = nextOrder.map((id) => map.get(id)).filter(Boolean);
+            return prev.map((item) => (map.has(item.id) ? queue.shift() : item));
+          });
+          break;
+        }
+      }
+    }
   }
 
   async function endDrag(event) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    const finalOrder = [...drag.order];
+    const initialOrder = drag.initialOrder || [];
+    const isDone = drag.isDoneList;
     dragRef.current = null;
     setDragging("");
-    const position = drag.order.indexOf(drag.id);
-    const beforeId = drag.order[position + 1] || null;
+
+    if (finalOrder.join() === initialOrder.join()) return;
+
+    const position = finalOrder.indexOf(drag.id);
+    let beforeId = finalOrder[position + 1] || null;
+
+    // Si on dépose une tâche active en bas de la liste en cours et qu'il y a des tâches terminées dans le dossier
+    if (!beforeId && !isDone) {
+      const activeDone = todos.filter((t) => (t.folderId || ROOT_FOLDER) === (drag.folderId || ROOT_FOLDER) && (t.completed || t.status === "done"));
+      if (activeDone.length > 0) {
+        beforeId = activeDone[0].id;
+      }
+    }
+
     await run(drag.id, () => api(`/api/todos/${encodeURIComponent(drag.id)}/move`, { method: "POST", body: JSON.stringify({ beforeId }) }));
   }
 
   function folderRow(todo, items) {
-    const overdue = todo.dueDate && todo.dueDate < localIsoDate() && !todo.completed;
+    const status = todo.status || (todo.completed ? "done" : "todo");
+    const isDone = status === "done";
+    const isReview = status === "review";
+    const overdue = todo.dueDate && todo.dueDate < localIsoDate() && !isDone;
+    const commentsCount = todo.comments?.length || 0;
+    const commentsOpen = !!openComments[todo.id];
+
+    function cycleStatus() {
+      const next = status === "todo" ? "review" : status === "review" ? "done" : "todo";
+      update(todo, { status: next });
+    }
+
     return (
-      <article
-        className={`${todo.completed ? "completed" : ""} ${dragging === todo.id ? "dragging" : ""}`}
-        ref={(node) => { if (node) rowRefs.current.set(todo.id, node); else rowRefs.current.delete(todo.id); }}
-        key={todo.id}
-      >
-        <button
-          className="todo-drag"
-          onPointerDown={(event) => startDrag(event, todo, items)}
-          onPointerMove={dragOver}
-          onPointerUp={endDrag}
-          onPointerCancel={endDrag}
-          aria-label={`Déplacer ${todo.text}`}
-        >⠿</button>
-        <label className="todo-check">
-          <input type="checkbox" checked={todo.completed} onChange={(event) => update(todo, { completed: event.target.checked })} disabled={busy === todo.id} />
-          <span>
-            <strong>{todo.text}</strong>
-            <small className={overdue ? "overdue" : ""}>{todo.completed ? completedLabel(todo.completedAt) || "Terminée" : todoDueLabel(todo.dueDate)}</small>
-          </span>
-        </label>
-        <div className="todo-actions">
-          <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
-          <select value={todo.folderId || ROOT_FOLDER} onChange={(event) => update(todo, { folderId: event.target.value })} disabled={busy === todo.id} aria-label="Dossier">{folders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
-        </div>
-        {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
-      </article>
+      <React.Fragment key={todo.id}>
+        <article
+          className={`${isDone ? "completed" : ""} ${isReview ? "in-review" : ""} ${dragging === todo.id ? "dragging" : ""}`}
+          ref={(node) => { if (node) rowRefs.current.set(todo.id, node); else rowRefs.current.delete(todo.id); }}
+        >
+          <button
+            className="todo-drag"
+            onPointerDown={(event) => startDrag(event, todo, items)}
+            onPointerMove={dragOver}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            aria-label={`Déplacer ${todo.text}`}
+          >⠿</button>
+          <div className="todo-item-main">
+            <button
+              type="button"
+              className={`todo-tri-box status-${status}`}
+              onClick={cycleStatus}
+              disabled={busy === todo.id}
+              title={
+                status === "todo" ? "À faire (cliquer pour : À vérifier / tester)" :
+                status === "review" ? "À vérifier (cliquer pour : Terminée)" :
+                "Terminée (cliquer pour : À faire)"
+              }
+              aria-label={`Changer état de ${todo.text}`}
+            >
+              {isDone && <span className="todo-tri-icon done-check">✓</span>}
+              {isReview && <span className="todo-tri-icon review-bar" />}
+            </button>
+            <div className="todo-text-group">
+              <strong>{todo.text}</strong>
+              <small className={overdue ? "overdue" : isReview ? "status-review-label" : ""}>
+                {isDone ? completedLabel(todo.completedAt) || "Terminée" : isReview ? "◐ À vérifier / tester" : todoDueLabel(todo.dueDate)}
+              </small>
+            </div>
+          </div>
+          <div className="todo-actions">
+            <button
+              className={`todo-comments-trigger ${commentsCount > 0 ? "has-comments" : ""} ${commentsOpen ? "active" : ""}`}
+              onClick={() => setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
+              title={`Commentaires (${commentsCount})`}
+            >
+              💬{commentsCount > 0 ? ` ${commentsCount}` : ""}
+            </button>
+            <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
+            <select value={todo.folderId || ROOT_FOLDER} onChange={(event) => update(todo, { folderId: event.target.value })} disabled={busy === todo.id} aria-label="Dossier">{folders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
+          </div>
+          {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
+        </article>
+        {commentsOpen && (
+          <div className="todo-comments-panel">
+            <div className="todo-comments-header">
+              <strong>Commentaires ({commentsCount})</strong>
+              <small>Discussions et notes illimitées</small>
+            </div>
+            <div className="todo-comments-list">
+              {todo.comments && todo.comments.map((comment) => (
+                <div className="todo-comment-item" key={comment.id}>
+                  <div className="todo-comment-meta">
+                    {comment.author && <strong className="todo-comment-author">{comment.author}</strong>}
+                    <span className="todo-comment-time">{formatCommentDate(comment.createdAt)}</span>
+                    <button
+                      className="todo-comment-delete"
+                      onClick={() => removeComment(todo, comment.id)}
+                      disabled={busy === `comment-del:${comment.id}`}
+                      title="Supprimer ce commentaire"
+                    >×</button>
+                  </div>
+                  <p className="todo-comment-text">{comment.text}</p>
+                </div>
+              ))}
+              {(!todo.comments || !todo.comments.length) && (
+                <p className="todo-comments-empty">Aucun commentaire pour le moment.</p>
+              )}
+            </div>
+            <form className="todo-comment-form" onSubmit={(e) => addComment(todo, e)}>
+              <input
+                value={newComment[todo.id] || ""}
+                onChange={(e) => setNewComment({ ...newComment, [todo.id]: e.target.value })}
+                placeholder="Ajouter un commentaire ou une note…"
+                maxLength="2000"
+              />
+              <button className="primary" disabled={busy === `comment:${todo.id}` || !(newComment[todo.id] || "").trim()}>
+                {busy === `comment:${todo.id}` ? "…" : "Commenter"}
+              </button>
+            </form>
+          </div>
+        )}
+      </React.Fragment>
     );
   }
 
-  const openCount = todos.filter((todo) => !todo.completed).length;
+  const openCount = todos.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo").length;
+  const reviewCount = todos.filter((todo) => todo.status === "review").length;
+  const doneCount = todos.filter((todo) => (todo.status === "done" || todo.completed)).length;
   const active = sections.find((section) => section.folder.id === openFolder) || null;
 
   if (!active) {
     return (
       <div className="page todos-page">
         <section className="hero-row todos-hero">
-          <div><p className="eyebrow">OBSIDIAN · NAS</p><h1>Todo.</h1><p className="muted">{openCount} tâche{openCount > 1 ? "s" : ""} à faire · {storage}</p></div>
+          <div>
+            <p className="eyebrow">OBSIDIAN · NAS</p>
+            <h1>Todo.</h1>
+            <p className="muted">
+              {openCount} à faire
+              {reviewCount > 0 ? ` · ${reviewCount} à vérifier` : ""}
+              {doneCount > 0 ? ` · ${doneCount} terminée${doneCount > 1 ? "s" : ""}` : ""} · {storage}
+            </p>
+          </div>
           <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
         </section>
         {error && <p className="finance-error todo-error">{error}</p>}
         <section className="todo-folder-grid">
           {sections.map(({ folder, items }) => {
-            const open = items.filter((todo) => !todo.completed);
-            const late = open.filter((todo) => todo.dueDate && todo.dueDate < localIsoDate()).length;
+            const folderTodos = items.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo");
+            const folderReviews = items.filter((todo) => todo.status === "review");
+            const folderDone = items.filter((todo) => todo.status === "done" || todo.completed);
+            const late = folderTodos.filter((todo) => todo.dueDate && todo.dueDate < localIsoDate()).length;
             return (
               <button className="panel todo-folder-card" onClick={() => selectFolder(folder.id)} key={folder.id}>
                 <span className="todo-folder-name">{folder.name || "Dossier"}</span>
                 <span className="todo-folder-meta">
-                  {open.length ? `${open.length} à faire` : "Rien à faire"}
-                  {items.length - open.length ? ` · ${items.length - open.length} terminée${items.length - open.length > 1 ? "s" : ""}` : ""}
+                  {folderTodos.length ? `${folderTodos.length} à faire` : "0 à faire"}
+                  {folderReviews.length ? ` · ${folderReviews.length} à vérifier` : ""}
+                  {folderDone.length ? ` · ${folderDone.length} terminée${folderDone.length > 1 ? "s" : ""}` : ""}
                   {late ? ` · ${late} en retard` : ""}
                 </span>
                 {(folder.projectId || folder.ownerProfileId) && (
@@ -2305,15 +2526,29 @@ function TodosView() {
   }
 
   const { folder, items } = active;
-  const open = items.filter((todo) => !todo.completed);
-  const done = items.filter((todo) => todo.completed);
+  const todoItems = items.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo");
+  const reviewItems = items.filter((todo) => todo.status === "review");
+  const doneItems = items.filter((todo) => todo.status === "done" || todo.completed);
+
+  const displayedItems = filterTab === "todo" ? todoItems
+    : filterTab === "review" ? reviewItems
+    : filterTab === "done" ? doneItems
+    : items;
+
+  const openList = displayedItems.filter((t) => t.status !== "done" && !t.completed);
+  const doneList = displayedItems.filter((t) => t.status === "done" || t.completed);
+
   return (
     <div className="page todos-page">
       <section className="hero-row todos-hero">
         <div>
           <button className="todo-back" onClick={() => selectFolder(null)}>‹ Tous les dossiers</button>
           <h1>{folder.name}</h1>
-          <p className="muted">{open.length} à faire{done.length ? ` · ${done.length} terminée${done.length > 1 ? "s" : ""}` : ""}</p>
+          <p className="muted">
+            {todoItems.length} à faire
+            {reviewItems.length ? ` · ${reviewItems.length} à vérifier` : ""}
+            {doneItems.length ? ` · ${doneItems.length} terminée${doneItems.length > 1 ? "s" : ""}` : ""}
+          </p>
         </div>
         {!folder.projectId && folder.id !== ROOT_FOLDER && (
           <div className="todo-folder-actions">
@@ -2326,16 +2561,22 @@ function TodosView() {
         <input value={text} onChange={(event) => setText(event.target.value)} placeholder={`Ajouter dans ${folder.name}…`} maxLength="300" />
         <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : "Ajouter"}</button>
       </form>
+      <div className="todo-filter-tabs">
+        <button className={filterTab === "all" ? "active" : ""} onClick={() => setFilterTab("all")}>Toutes ({items.length})</button>
+        <button className={filterTab === "todo" ? "active" : ""} onClick={() => setFilterTab("todo")}>À faire ({todoItems.length})</button>
+        <button className={filterTab === "review" ? "active" : ""} onClick={() => setFilterTab("review")}>À vérifier / tester ({reviewItems.length})</button>
+        <button className={filterTab === "done" ? "active" : ""} onClick={() => setFilterTab("done")}>Terminées ({doneItems.length})</button>
+      </div>
       {error && <p className="finance-error todo-error">{error}</p>}
       <section className="panel todo-list">
-        {open.map((todo) => folderRow(todo, open))}
-        {!open.length && !done.length && <p className="finance-empty">Dossier vide.</p>}
-        {done.length > 0 && (
+        {openList.map((todo) => folderRow(todo, openList))}
+        {!openList.length && !doneList.length && <p className="finance-empty">Aucune tâche dans cette vue.</p>}
+        {doneList.length > 0 && (
           <>
             <button className="todo-done-toggle" onClick={() => setShowDone((current) => ({ ...current, [folder.id]: !current[folder.id] }))}>
-              {showDone[folder.id] ? "▾" : "▸"} {done.length} terminée{done.length > 1 ? "s" : ""}
+              {showDone[folder.id] ? "▾" : "▸"} {doneList.length} terminée{doneList.length > 1 ? "s" : ""}
             </button>
-            {showDone[folder.id] && done.map((todo) => folderRow(todo, done))}
+            {showDone[folder.id] && doneList.map((todo) => folderRow(todo, doneList))}
           </>
         )}
       </section>
@@ -3218,14 +3459,14 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
         <div className="terminal-actions">
           <span className="usage-pill" title="Contexte restant">{session.usage?.estimated ? "~" : ""}{formatTokens(session.usage?.remainingTokens)} · {session.usage?.contextPercent ?? "—"}%</span>
           {["codex", "claude", "antigravity"].includes(session.assistant) && (
-            <label className="provider-switch" title="Changer de fournisseur en gardant le contexte">
-              <select value={session.assistant} onChange={(event) => migrate(event.target.value)} disabled={migrating} aria-label="Fournisseur">
+            <label className="provider-switch" title={migrating ? "Bascule en cours… (choisir pour forcer immédiatement)" : "Changer de fournisseur en gardant le contexte"}>
+              <select value={session.assistant} onChange={(event) => migrate(event.target.value)} aria-label="Fournisseur">
                 {["codex", "claude", "antigravity"].filter((id) => id === session.assistant || assistants?.[id] !== false).map((id) => {
                   const quota = providerQuota(quotas, id);
                   return <option value={id} key={id}>{assistantMeta[id].label}{quota ? ` · ${quota.percent}%` : ""}</option>;
                 })}
               </select>
-              {migrating && <em>…</em>}
+              {migrating && <em title="Passation en cours…">…</em>}
             </label>
           )}
           {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
@@ -3418,9 +3659,13 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
         <form onSubmit={submit}>
           <label htmlFor="edit-name">Nom</label>
           <input id="edit-name" value={name} onChange={(event) => setName(event.target.value)} />
-          {["codex", "claude"].includes(session.assistant) && <>
+          {["codex", "claude", "antigravity"].includes(session.assistant) && <>
             <label htmlFor="edit-assistant">Agent</label>
-            <select id="edit-assistant" value={assistant} onChange={(event) => setAssistant(event.target.value)}><option value="codex">Codex</option><option value="claude">Claude</option></select>
+            <select id="edit-assistant" value={assistant} onChange={(event) => setAssistant(event.target.value)}>
+              <option value="codex">Codex</option>
+              <option value="claude">Claude</option>
+              <option value="antigravity">Antigravity</option>
+            </select>
             {assistant !== session.assistant && <p className="form-hint">Bascule immédiate: historique de la dernière conversation transmis au nouvel agent.</p>}
           </>}
           <label htmlFor="edit-project">Projet</label>
@@ -3545,10 +3790,9 @@ function App() {
   }, []);
 
   const refreshQuotas = useCallback(async () => {
-    try {
-      const result = await api("/api/quotas/refresh", { method: "POST" });
-      if (result?.quotas) setQuotas(result.quotas);
-    } catch { /* quotas indisponibles, on garde l'affichage courant */ }
+    const result = await api(`/api/quotas/refresh?refresh=${Date.now()}`, { method: "POST", cache: "no-store" });
+    if (result?.quotas) setQuotas(result.quotas);
+    return result;
   }, []);
 
   const advance = useCallback((percent, step) => {

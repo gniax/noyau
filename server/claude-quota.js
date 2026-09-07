@@ -20,32 +20,52 @@ export class ClaudeQuotaService {
   }
 
   async refresh() {
-    const credentials = JSON.parse(await fs.readFile(this.credentialsFile, "utf8"));
-    const token = credentials.claudeAiOauth?.accessToken;
-    if (!token) {
+    let credentials;
+    try {
+      credentials = JSON.parse(await fs.readFile(this.credentialsFile, "utf8"));
+    } catch {
       await this.store.set("claude", { status: "loggedOut", updatedAt: new Date().toISOString() });
       return;
     }
+    const oauth = credentials.claudeAiOauth;
+    const token = oauth?.accessToken;
+    if (!token && !oauth?.refreshToken) {
+      await this.store.set("claude", { status: "loggedOut", updatedAt: new Date().toISOString() });
+      return;
+    }
+    if (!token) return this.store.get("claude");
+
     const response = await this.fetch("https://api.anthropic.com/api/oauth/usage", {
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(8000),
     });
     if (response.ok) {
       const quota = parseClaudeRateLimits(await response.json());
       if (quota) await this.store.set("claude", quota);
-      return;
+      return quota;
     }
     if (response.status === 429) {
       const seconds = Number(response.headers.get("retry-after"));
       const previous = this.store.get("claude") || {};
-      await this.store.set("claude", {
+      const quota = {
         ...previous,
         fiveHour: {
           remainingPercent: 0,
           resetsAt: Number.isFinite(seconds) ? new Date(Date.now() + seconds * 1000).toISOString() : previous.fiveHour?.resetsAt || null,
         },
         updatedAt: new Date().toISOString(),
-      });
+      };
+      await this.store.set("claude", quota);
+      return quota;
     }
+    if (response.status === 401 || response.status === 403) {
+      const previous = this.store.get("claude");
+      if (oauth?.refreshToken || previous?.fiveHour || previous?.sevenDay) {
+        return previous;
+      }
+      await this.store.set("claude", { status: "loggedOut", updatedAt: new Date().toISOString() });
+      return;
+    }
+    throw new Error(`Relevé quota Claude: HTTP ${response.status}`);
   }
 }

@@ -23,7 +23,9 @@ import { HandoverService } from "./handover.js";
 import { SessionReaper } from "./session-reaper.js";
 import { AntigravityQuotaService } from "./antigravity-quota.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
+import { CodexQuotaService } from "./codex-quota.js";
 import { ModuleService } from "./module-service.js";
+import { createBuildGrant, iosInstallManifest, verifyBuildGrant } from "./build-grant.js";
 import { KnowledgeService } from "./knowledge-service.js";
 import { normalizeProjectOrder, sortProjects } from "./project-order.js";
 import { FinanceService } from "./finance-service.js";
@@ -31,10 +33,13 @@ import { FinanceAdvisor } from "./finance-advisor.js";
 import { EnableBankingService } from "./enable-banking.js";
 import { agentStatus } from "./agent-status.js";
 import { ROOT_FOLDER, TodoService } from "./todo-service.js";
+import { TextCorrector } from "./text-corrector.js";
 import { ProfileService } from "./profile-service.js";
 import { QuotaNotifier } from "./quota-notifier.js";
 import { CodexCapacityRetry } from "./codex-capacity-retry.js";
 import { ClaudeDesignTool } from "./claude-design-tool.js";
+import { AgentCommunicationService } from "./agent-tools.js";
+import { createLoginThrottle, loadAccessToken, sameWebSocketOrigin } from "./security.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -68,19 +73,6 @@ await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
 const uploadsDir = path.join(dataDir, "uploads");
 await fs.mkdir(uploadsDir, { recursive: true, mode: 0o700 });
 
-async function getAccessToken() {
-  if (process.env.NOYAU_TOKEN) return process.env.NOYAU_TOKEN;
-  const file = path.join(dataDir, "access-token");
-  try {
-    return (await fs.readFile(file, "utf8")).trim();
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    const token = crypto.randomBytes(18).toString("base64url");
-    await fs.writeFile(file, `${token}\n`, { mode: 0o600 });
-    return token;
-  }
-}
-
 async function commandPath(name) {
   try {
     return (await execFileAsync("which", [name])).stdout.trim() || name;
@@ -98,7 +90,10 @@ async function firstCommandPath(names) {
   return names[0];
 }
 
-const accessToken = await getAccessToken();
+const accessTokenState = await loadAccessToken(path.join(dataDir, "access-token"), process.env.NOYAU_TOKEN);
+const accessToken = accessTokenState.token;
+if (accessTokenState.rotated) console.warn("Clé d’accès Noyau faible remplacée. Reconnexion requise avec .data/access-token.");
+const buildGrantSecret = crypto.randomBytes(32);
 const store = new SessionStore(path.join(dataDir, "sessions.json"));
 await store.load();
 const projects = new SessionStore(path.join(dataDir, "projects.json"));
@@ -200,7 +195,7 @@ const moduleService = new ModuleService({
   },
   onBuildComplete: async ({ module, run }) => {
     const profileId = projects.get(module.projectId)?.profileId || primaryProfileId;
-    const platformLabel = module.deviceBuild?.platform === "android" ? "APK" : "IPA";
+    const platformLabel = run.platform === "android" ? "APK" : "IPA";
     let title = `${module.name} · Build ${platformLabel}`;
     let body = "";
     if (run.state === "installed") {
@@ -264,6 +259,11 @@ const antigravityQuota = new AntigravityQuotaService({
   binary: installedAssistants.antigravity ? antigravityBinary : null,
   cwd: workspaceRoot,
 });
+const codexQuota = new CodexQuotaService({
+  store: providerState,
+  binary: installedAssistants.codex ? codexBinary : null,
+  fallback: () => usage.latestCodexRateWindows(),
+});
 await tmux.applyScrollDefaults();
 const restorePlan = await tmux.initializeRestorePlan();
 const restoreResult = await tmux.restorePersisted();
@@ -287,6 +287,7 @@ function preferredAiProvider() {
 }
 
 const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, claudeBinary, cwd: root, pickProvider: () => preferredAiProvider() });
+const textCorrector = new TextCorrector({ binary: codexBinary, claudeBinary, cwd: root, pickProvider: () => preferredAiProvider() });
 const profileRuntimes = new Map();
 
 function configureFinanceRuntime(profileId, runtime) {
@@ -346,6 +347,7 @@ const quotaNotifier = new QuotaNotifier({
 });
 const codexCapacityRetry = new CodexCapacityRetry({ tmux, providerState });
 const claudeDesignTool = new ClaudeDesignTool({ claudeBinary, store, projects, workspaceRoot: root });
+const agentCommunication = new AgentCommunicationService({ tmux, store, projects, handover, agentStatus, workspaceRoot: root });
 const fileUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024, files: 1 },
 });
@@ -581,6 +583,29 @@ function authenticated(request) {
   return tokenMatches(bearer || cookie || "");
 }
 
+function httpsOrigin(request) {
+  if (!request.secure) {
+    const error = new Error("HTTPS requis pour installer ou télécharger build sur appareil distant.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const host = String(request.headers.host || "");
+  if (!/^(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\])(?::\d{1,5})?$/.test(host)) {
+    const error = new Error("Hôte HTTPS invalide.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return `https://${host}`;
+}
+
+async function grantedBuild(request) {
+  const grant = verifyBuildGrant(buildGrantSecret, request.params.grant);
+  if (!grant || !moduleOwned(grant.profileId, grant.moduleId)) return null;
+  const artifact = await moduleService.buildFile(grant.moduleId, grant.buildId).catch(() => null);
+  if (!artifact) return null;
+  return { grant, artifact, module: moduleService.get(grant.moduleId) };
+}
+
 function loopbackRequest(request) {
   const address = String(request.socket.remoteAddress || "").replace(/^::ffff:/, "");
   const hostname = String(request.hostname || "").replace(/^\[|\]$/g, "");
@@ -588,6 +613,7 @@ function loopbackRequest(request) {
 }
 
 const app = express();
+const loginThrottle = createLoginThrottle();
 app.disable("x-powered-by");
 app.use((request, response, next) => {
   response.setHeader("X-Content-Type-Options", "nosniff");
@@ -598,7 +624,14 @@ app.use((request, response, next) => {
     "Content-Security-Policy",
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; frame-ancestors 'none'",
   );
+  if (request.secure) response.setHeader("Strict-Transport-Security", "max-age=31536000");
   next();
+});
+app.use((request, response, next) => {
+  if (request.secure || request.path === "/noyau-ca.cer" || request.path.startsWith("/api/hooks/")) return next();
+  const host = String(request.headers.host || "");
+  if (!/^(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\])(?::\d{1,5})?$/.test(host)) return response.status(400).end();
+  response.redirect(308, `https://${host}${request.originalUrl}`);
 });
 app.use((request, response, next) => {
   if (request.path === "/sw.js" || request.headers.accept?.includes("text/html")) {
@@ -609,17 +642,26 @@ app.use((request, response, next) => {
 app.use(express.json({ limit: "32kb" }));
 
 app.post("/api/auth", (request, response) => {
-  if (!tokenMatches(request.body?.token)) return response.status(401).json({ error: "Clé incorrecte." });
-  const secureCookie = request.secure || request.headers["x-forwarded-proto"] === "https";
+  const remote = String(request.socket.remoteAddress || "inconnu");
+  const retryAfter = loginThrottle.retryAfter(remote);
+  if (retryAfter) {
+    response.setHeader("Retry-After", String(retryAfter));
+    return response.status(429).json({ error: "Trop de tentatives. Réessaie plus tard.", retryAfter });
+  }
+  if (!tokenMatches(request.body?.token)) {
+    loginThrottle.fail(remote);
+    return response.status(401).json({ error: "Clé incorrecte." });
+  }
+  loginThrottle.clear(remote);
   response.setHeader(
     "Set-Cookie",
-    `noyau_session=${encodeURIComponent(accessToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secureCookie ? "; Secure" : ""}`,
+    `noyau_session=${encodeURIComponent(accessToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000; Secure`,
   );
   response.json({ ok: true });
 });
 
 app.post("/api/logout", (_request, response) => {
-  response.setHeader("Set-Cookie", "noyau_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+  response.setHeader("Set-Cookie", "noyau_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0; Secure");
   response.json({ ok: true });
 });
 
@@ -674,6 +716,36 @@ app.get("/manifest.webmanifest", (request, response) => {
       { src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
     ],
   }));
+});
+
+app.get("/install/build/:grant/manifest.plist", async (request, response, next) => {
+  try {
+    const resolved = await grantedBuild(request);
+    if (!resolved || resolved.artifact.platform !== "ios" || !resolved.module.deviceBuild?.ios) return response.status(404).end();
+    const origin = httpsOrigin(request);
+    const artifactUrl = `${origin}/install/build/${encodeURIComponent(request.params.grant)}/${encodeURIComponent(resolved.artifact.name)}`;
+    response.setHeader("Cache-Control", "no-store");
+    response.type("text/xml").send(iosInstallManifest({
+      artifactUrl,
+      bundleId: resolved.module.deviceBuild.ios.bundleId,
+      bundleVersion: resolved.module.deviceBuild.ios.bundleVersion,
+      title: resolved.module.deviceBuild.ios.title,
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/install/build/:grant/:filename", async (request, response, next) => {
+  try {
+    const resolved = await grantedBuild(request);
+    if (!resolved || request.params.filename !== resolved.artifact.name) return response.status(404).end();
+    response.setHeader("Cache-Control", "no-store");
+    response.type(resolved.artifact.platform === "ios" ? "application/octet-stream" : "application/vnd.android.package-archive");
+    response.download(resolved.artifact.file, resolved.artifact.name, { dotfiles: "allow" });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Icone de notification: le navigateur la telecharge hors session applicative, donc sans cle.
@@ -948,22 +1020,25 @@ app.delete("/api/finance/banking/connections/:bankId", async (request, response,
 
 app.post("/api/quotas/refresh", async (_request, response, next) => {
   try {
-    const [, , codexWindows] = await Promise.all([
-      claudeQuota.refresh().catch((error) => console.error(`Quota Claude: ${error.message}`)),
-      antigravityQuota.refresh().catch((error) => console.error(`Quota Antigravity: ${error.message}`)),
-      usage.latestCodexRateWindows().catch(() => []),
-    ]);
-    if (codexWindows.length) await providerState.set("codex", { windows: codexWindows, updatedAt: new Date().toISOString() });
+    const entries = [["claude", claudeQuota.refresh()], ["antigravity", antigravityQuota.refresh()], ["codex", codexQuota.refresh()]];
+    const settled = await Promise.allSettled(entries.map(([, promise]) => promise));
+    const refreshed = Object.fromEntries(settled.map((result, index) => {
+      const provider = entries[index][0];
+      if (result.status === "fulfilled") return [provider, { ok: true, source: result.value?.source || "live" }];
+      console.error(`Quota ${provider}: ${result.reason?.message || "échec"}`);
+      return [provider, { ok: false, error: result.reason?.message || "Relevé impossible." }];
+    }));
     void quotaNotifier.check().catch(() => {});
     const codex = providerState.get("codex");
     response.json({
       quotas: {
         codex: codex?.windows?.length
-          ? refreshExpiredQuota({ remainingPercent: codex.windows[0].remainingPercent, resetsAt: codex.windows[0].resetsAt, windowMinutes: codex.windows[0].windowMinutes, windows: codex.windows })
+          ? refreshExpiredQuota({ remainingPercent: codex.windows[0].remainingPercent, resetsAt: codex.windows[0].resetsAt, windowMinutes: codex.windows[0].windowMinutes, windows: codex.windows, updatedAt: codex.updatedAt, source: codex.source })
           : null,
         claude: refreshExpiredQuota(providerState.get("claude")) || null,
         antigravity: refreshExpiredQuota(providerState.get("antigravity")) || null,
       },
+      refreshed,
     });
   } catch (error) {
     next(error);
@@ -1064,8 +1139,10 @@ app.post("/api/todos", async (request, response, next) => {
     const projectId = request.body?.projectId || null;
     if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
     const folderId = request.body?.folderId || null;
+    const rawText = String(request.body?.text || "");
+    const text = rawText.trim() ? await textCorrector.correct(rawText, { context: "todo" }).catch(() => rawText) : rawText;
     const runtime = await todoRuntime(request.profile, { folderId });
-    const { todo } = await runtime.todoService.add({ text: request.body?.text, dueDate: request.body?.dueDate || null, projectId, folderId });
+    const { todo } = await runtime.todoService.add({ text, dueDate: request.body?.dueDate || null, projectId, folderId });
     response.status(201).json({ todo, ...(await todosView(request.profile)) });
   } catch (error) {
     next(error);
@@ -1076,8 +1153,10 @@ app.patch("/api/todos/:id", async (request, response, next) => {
   try {
     const changes = {};
     if (request.body?.text !== undefined) changes.text = request.body.text;
+    if (request.body?.status !== undefined) changes.status = request.body.status;
     if (request.body?.completed !== undefined) changes.completed = request.body.completed === true;
     if (request.body?.dueDate !== undefined) changes.dueDate = request.body.dueDate || null;
+    if (request.body?.comments !== undefined) changes.comments = request.body.comments;
     if (request.body?.projectId !== undefined) {
       changes.projectId = request.body.projectId || null;
       if (changes.projectId && !projectVisible(request.profile.id, changes.projectId)) throw new Error("Projet introuvable.");
@@ -1096,9 +1175,36 @@ app.patch("/api/todos/:id", async (request, response, next) => {
       text: changes.text ?? current.text,
       dueDate: changes.dueDate === undefined ? current.dueDate : changes.dueDate,
       folderId: changes.folderId,
+      status: changes.status ?? current.status,
     });
+    if (current.comments?.length) {
+      await target.todoService.update(todo.id, { comments: current.comments });
+    }
     await source.todoService.remove(request.params.id);
     response.json({ todo, ...(await todosView(request.profile)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/todos/:id/comments", async (request, response, next) => {
+  try {
+    const runtime = await todoRuntime(request.profile, { todoId: request.params.id });
+    const author = request.profile?.name || null;
+    const rawText = String(request.body?.text || "");
+    const text = rawText.trim() ? await textCorrector.correct(rawText, { context: "comment" }).catch(() => rawText) : rawText;
+    const result = await runtime.todoService.addComment(request.params.id, { text, author });
+    response.status(201).json({ ...result, ...(await todosView(request.profile)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/todos/:id/comments/:commentId", async (request, response, next) => {
+  try {
+    const runtime = await todoRuntime(request.profile, { todoId: request.params.id });
+    const result = await runtime.todoService.removeComment(request.params.id, request.params.commentId);
+    response.json({ ...result, ...(await todosView(request.profile)) });
   } catch (error) {
     next(error);
   }
@@ -1221,11 +1327,37 @@ app.post("/api/modules/:id/builds/refresh", async (request, response, next) => {
   }
 });
 
+app.post("/api/modules/:id/builds/:buildId/access", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    const artifact = await moduleService.buildFile(request.params.id, request.params.buildId);
+    const module = moduleService.get(request.params.id);
+    if (artifact.platform === "ios" && !module.deviceBuild?.ios) throw new Error("Installation OTA iOS non configurée.");
+    const origin = httpsOrigin(request);
+    const expiresAt = Date.now() + 10 * 60_000;
+    const grant = createBuildGrant(buildGrantSecret, {
+      moduleId: request.params.id,
+      buildId: artifact.id,
+      profileId: request.profile.id,
+      expiresAt,
+    });
+    const downloadUrl = `${origin}/install/build/${encodeURIComponent(grant)}/${encodeURIComponent(artifact.name)}`;
+    const manifestUrl = `${origin}/install/build/${encodeURIComponent(grant)}/manifest.plist`;
+    response.json({
+      downloadUrl,
+      installUrl: artifact.platform === "ios" ? `itms-services://?action=download-manifest&url=${encodeURIComponent(manifestUrl)}` : null,
+      expiresAt: new Date(expiresAt).toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/modules/:id/builds/:buildId", async (request, response, next) => {
   try {
     if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
     const artifact = await moduleService.buildFile(request.params.id, request.params.buildId);
-    response.download(artifact.file, artifact.name);
+    response.download(artifact.file, artifact.name, { dotfiles: "allow" });
   } catch (error) {
     next(error);
   }
@@ -1518,29 +1650,36 @@ app.get("/api/sessions", async (request, response, next) => {
       const pane = await tmux.capture(session.id);
       return { ...session, canEdit: session.profileId === request.profile.id, owner: { id: owner.id, name: owner.name }, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session, request.profile.id), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane), usage: await usage.get({ ...session, ...metadata }, pane) };
     }));
-    // Les quotas sont ceux du compte: chaque agent Codex n'en voit qu'une partie selon sa conversation.
-    const codexWindows = new Map();
-    for (const session of enriched) {
-      if (session.assistant !== "codex") continue;
-      for (const window of session.usage?.rateWindows || []) {
+    // Les quotas sont ceux du compte: on préserve le relevé direct (live) s'il existe.
+    let codexState = providerState.get("codex");
+    if (!codexState?.windows?.length || codexState.source === "session") {
+      const codexWindows = new Map();
+      for (const session of enriched) {
+        if (session.assistant !== "codex") continue;
+        for (const window of session.usage?.rateWindows || []) {
+          const current = codexWindows.get(window.windowMinutes);
+          const fresher = !current || String(window.resetsAt) > String(current.resetsAt);
+          if (fresher) codexWindows.set(window.windowMinutes, window);
+        }
+      }
+      for (const window of codexState?.windows || []) {
         const current = codexWindows.get(window.windowMinutes);
-        const fresher = !current
-          || String(window.resetsAt) > String(current.resetsAt)
-          || (window.resetsAt === current.resetsAt && window.remainingPercent < current.remainingPercent);
+        const fresher = !current || String(window.resetsAt) > String(current.resetsAt);
         if (fresher) codexWindows.set(window.windowMinutes, window);
       }
+      const codexQuota = [...codexWindows.values()].sort((left, right) => (left.windowMinutes || 0) - (right.windowMinutes || 0));
+      if (codexQuota.length && JSON.stringify(codexQuota) !== JSON.stringify(codexState?.windows || [])) {
+        await providerState.set("codex", { windows: codexQuota, source: "session", updatedAt: new Date().toISOString() });
+        codexState = providerState.get("codex");
+      }
     }
-    for (const window of providerState.get("codex")?.windows || []) {
-      const current = codexWindows.get(window.windowMinutes);
-      if (!current || String(window.resetsAt) > String(current.resetsAt)) codexWindows.set(window.windowMinutes, window);
-    }
-    const codexQuota = [...codexWindows.values()].sort((left, right) => (left.windowMinutes || 0) - (right.windowMinutes || 0));
-    if (codexQuota.length) await providerState.set("codex", { windows: codexQuota, updatedAt: new Date().toISOString() });
     response.json({
       assistants: installedAssistants,
       sessions: enriched,
       quotas: {
-        codex: codexQuota.length ? refreshExpiredQuota({ remainingPercent: codexQuota[0].remainingPercent, resetsAt: codexQuota[0].resetsAt, windowMinutes: codexQuota[0].windowMinutes, windows: codexQuota }) : null,
+        codex: codexState?.windows?.length
+          ? refreshExpiredQuota({ remainingPercent: codexState.windows[0].remainingPercent, resetsAt: codexState.windows[0].resetsAt, windowMinutes: codexState.windows[0].windowMinutes, windows: codexState.windows, updatedAt: codexState.updatedAt, source: codexState.source })
+          : null,
         claude: refreshExpiredQuota(providerState.get("claude")) || null,
         antigravity: refreshExpiredQuota(providerState.get("antigravity")) || null,
       },
@@ -1570,6 +1709,40 @@ app.post("/api/agent-tools/claude-design", async (request, response, next) => {
     }
     const cwd = request.body?.cwd ? String(request.body.cwd) : null;
     response.json(await claudeDesignTool.run({ callerSessionId, cwd, prompt: request.body?.prompt }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/agent-tools/agents", async (request, response, next) => {
+  try {
+    const agents = await agentCommunication.list({ profileId: request.profile.id });
+    response.json({ agents });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/agent-tools/agents/:target/context", async (request, response, next) => {
+  try {
+    const data = await agentCommunication.context(request.params.target, { profileId: request.profile.id });
+    response.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/agent-tools/agents/:target/send", async (request, response, next) => {
+  try {
+    const callerSessionId = request.body?.callerSessionId ? String(request.body.callerSessionId) : null;
+    const callerName = request.body?.callerName ? String(request.body.callerName) : null;
+    const result = await agentCommunication.send(request.params.target, {
+      message: request.body?.message,
+      callerSessionId,
+      callerName,
+      profileId: request.profile.id,
+    });
+    response.json(result);
   } catch (error) {
     next(error);
   }
@@ -1606,7 +1779,8 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
     const assistant = request.body?.assistant;
     if (assistant && assistant !== session.assistant) {
-      if (!["codex", "claude"].includes(assistant) || !["codex", "claude"].includes(session.assistant)) throw new Error("Bascule réservée aux agents Codex/Claude.");
+      if (!["codex", "claude", "antigravity"].includes(assistant) || !["codex", "claude", "antigravity"].includes(session.assistant)) throw new Error("Bascule réservée aux agents conversationnels.");
+      if (installedAssistants[assistant] === false) throw new Error(`${assistantLabel(assistant)} n'est pas installé sur ce PC.`);
       const metadata = { ...current, name, yolo, projectLogo, projectId, favorite, shared };
       const { prompt, history } = await handoverPrompt({ session, metadata, target: assistant });
       const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target: assistant, prompt, replace: true });
@@ -1833,7 +2007,9 @@ async function upgradeTerminal(request, socket, head) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const match = url.pathname.match(/^\/ws\/terminal\/([a-zA-Z0-9_-]+)$/);
   const profile = profileService.resolve(url.searchParams.get("profile"));
-  if (!match || !authenticated(request) || !sessionVisible(profile.id, match[1]) || !(await tmux.exists(match[1]))) {
+  const secure = Boolean(request.socket.encrypted);
+  const validOrigin = sameWebSocketOrigin({ origin: request.headers.origin, host: request.headers.host, secure });
+  if (!match || !secure || !validOrigin || !authenticated(request) || !sessionVisible(profile.id, match[1]) || !(await tmux.exists(match[1]))) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
@@ -2002,8 +2178,8 @@ frontDoor.listen(port, host, () => {
     .flat()
     .filter((item) => item?.family === "IPv4" && !item.internal)
     .map((item) => item.address);
-  console.log(`Noyau actif: http://localhost:${port}`);
-  for (const address of addresses) console.log(`Réseau/VPN: http://${address}:${port}${secureServer ? ` et https://${address}:${port}` : ""}`);
+  console.log(`Noyau actif: ${secureServer ? "https" : "http"}://localhost:${port}`);
+  for (const address of addresses) console.log(`Réseau/VPN: ${secureServer ? "https" : "http"}://${address}:${port}`);
 });
 
 if (secureServer) {
@@ -2015,19 +2191,9 @@ if (secureServer) {
 promptWatcher.start();
 claudeQuota.start();
 antigravityQuota.start();
+codexQuota.start();
 quotaNotifier.start();
 codexCapacityRetry.start();
-
-// Releve Codex periodique: les quotas se renouvellent meme quand aucun agent ne parle.
-async function refreshCodexQuota() {
-  const windows = await usage.latestCodexRateWindows().catch(() => []);
-  if (windows.length) {
-    await providerState.set("codex", { windows, updatedAt: new Date().toISOString() });
-    void quotaNotifier.check().catch(() => {});
-  }
-}
-void refreshCodexQuota();
-setInterval(() => { refreshCodexQuota().catch(() => {}); }, 5 * 60 * 1000).unref();
 // Synchro bancaire du matin: une seule passe par profil et par jour, des 6h heure de Paris.
 let morningSyncRunning = false;
 async function morningBankSync() {

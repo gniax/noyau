@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile);
 const TODO_ID = /^todo-[a-z0-9]+-[a-f0-9]{6}$/;
 const FOLDER_ID = /^folder-[a-z0-9]+-[a-f0-9]{6}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const TASK = /^(\s*[-*]\s+\[)([ xX])(\]\s+)(.*)$/;
+const TASK = /^(\s*[-*]\s+\[)([ xX/?\-])(\]\s+)(.*)$/;
 const HEADING = /^(#{1,6}\s+)(.*)$/;
 const METADATA = /\s*<!--\s*noyau:(\{.*\})\s*-->\s*$/;
 const DUE_DATE = /\s+📅\s*(\d{4}-\d{2}-\d{2})\s*$/;
@@ -22,6 +22,10 @@ function newId(kind) {
 
 function cleanText(value) {
   return String(value || "").replace(/<!--.*?-->/g, "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+function cleanCommentText(value) {
+  return String(value || "").replace(/<!--.*?-->/g, "").replace(/[\r\n]+/g, "\n").trim().slice(0, 2000);
 }
 
 function validDate(value) {
@@ -81,15 +85,31 @@ function parseDocument(content) {
     const dueDate = validDate(metadata.dueDate) ? metadata.dueDate : dueMatch?.[1] || null;
     if (dueMatch) body = body.replace(DUE_DATE, "").trimEnd();
     const id = TODO_ID.test(metadata.id) ? metadata.id : newId("todo");
-    const completed = match[2].toLowerCase() === "x";
+    const rawMark = match[2];
+    const isDone = rawMark.toLowerCase() === "x";
+    const isReview = rawMark === "/" || rawMark === "?";
+    const status = (metadata.status === "done" || metadata.status === "review" || metadata.status === "todo")
+      ? metadata.status
+      : (isDone ? "done" : isReview ? "review" : "todo");
+    const completed = status === "done";
     const reminderKey = completed ? null : typeof metadata.reminderKey === "string" ? metadata.reminderKey : null;
     const completedAt = completed && validTimestamp(metadata.completedAt) ? metadata.completedAt : null;
-    if (id !== metadata.id || metadata.dueDate !== dueDate || metadata.reminderKey !== reminderKey || (metadata.completedAt || null) !== completedAt) dirty = true;
+    const comments = Array.isArray(metadata.comments)
+      ? metadata.comments.filter((c) => c && typeof c.text === "string" && c.text.trim()).map((c) => ({
+          id: typeof c.id === "string" && c.id ? c.id : newId("comment"),
+          text: cleanCommentText(c.text),
+          createdAt: validTimestamp(c.createdAt) ? c.createdAt : new Date().toISOString(),
+          ...(typeof c.author === "string" && c.author ? { author: cleanText(c.author).slice(0, 50) } : {}),
+        }))
+      : [];
+    if (id !== metadata.id || metadata.dueDate !== dueDate || metadata.reminderKey !== reminderKey || (metadata.completedAt || null) !== completedAt || metadata.status !== status) dirty = true;
     tasks.push({
       id,
       text: cleanText(body),
       completed,
       completedAt,
+      status,
+      comments,
       dueDate,
       projectId: typeof metadata.projectId === "string" ? metadata.projectId : null,
       folderId: currentFolder,
@@ -102,8 +122,21 @@ function parseDocument(content) {
 }
 
 function renderTask(task) {
-  const metadata = JSON.stringify({ id: task.id, projectId: task.projectId || null, dueDate: task.dueDate || null, reminderKey: task.reminderKey || null, completedAt: task.completedAt || null });
-  return `${task.prefix.slice(0, -2)}${task.completed ? "x" : " "}] ${cleanText(task.text)}${task.dueDate ? ` 📅 ${task.dueDate}` : ""} <!-- noyau:${metadata} -->`;
+  const status = task.status === "done" || task.completed ? "done" : task.status === "review" ? "review" : "todo";
+  const mark = status === "done" ? "x" : status === "review" ? "/" : " ";
+  const metadataObj = {
+    id: task.id,
+    projectId: task.projectId || null,
+    dueDate: task.dueDate || null,
+    reminderKey: task.reminderKey || null,
+    completedAt: task.completedAt || null,
+    status,
+  };
+  if (Array.isArray(task.comments) && task.comments.length > 0) {
+    metadataObj.comments = task.comments;
+  }
+  const metadata = JSON.stringify(metadataObj);
+  return `${task.prefix.slice(0, -2)}${mark}] ${cleanText(task.text)}${task.dueDate ? ` 📅 ${task.dueDate}` : ""} <!-- noyau:${metadata} -->`;
 }
 
 function renderFolder(folder) {
@@ -222,7 +255,12 @@ export class TodoService {
       ...document.folders.map(({ lineIndex, prefix, ...folder }) => folder),
       { id: ROOT_FOLDER, name: ROOT_NAME, projectId: null },
     ];
-    const todos = document.tasks.map(({ lineIndex, prefix, reminderKey, ...task }, order) => ({ ...task, order }));
+    const todos = document.tasks.map(({ lineIndex, prefix, reminderKey, ...task }, order) => ({
+      ...task,
+      status: task.status || (task.completed ? "done" : "todo"),
+      comments: task.comments || [],
+      order,
+    }));
     return { todos, folders };
   }
 
@@ -328,7 +366,7 @@ export class TodoService {
     });
   }
 
-  add({ text, dueDate = null, projectId = null, folderId = null }) {
+  add({ text, dueDate = null, projectId = null, folderId = null, status = "todo" }) {
     return this.enqueue(async () => {
       const value = cleanText(text);
       if (!value) throw new Error("Texte tâche requis.");
@@ -338,11 +376,16 @@ export class TodoService {
         || (projectId ? document.folders.find((item) => item.projectId === projectId) : null);
       const target = folder?.id || ROOT_FOLDER;
       const id = newId("todo");
+      const st = status === "done" || status === "review" ? status : "todo";
+      const completed = st === "done";
+      const completedAt = completed ? new Date().toISOString() : null;
       const task = {
         id,
         text: value,
-        completed: false,
-        completedAt: null,
+        completed,
+        completedAt,
+        status: st,
+        comments: [],
         dueDate: dueDate || null,
         projectId: folder ? folder.projectId || projectId || null : projectId || null,
         reminderKey: null,
@@ -385,12 +428,33 @@ export class TodoService {
         task.reminderKey = null;
       }
       let completedNow = false;
-      if (changes.completed !== undefined && changes.completed !== task.completed) {
+      if (changes.status !== undefined && ["todo", "review", "done"].includes(changes.status)) {
+        const prevStatus = task.status;
+        task.status = changes.status;
+        if (task.status === "done") {
+          task.completed = true;
+          task.completedAt = task.completedAt || new Date().toISOString();
+          task.reminderKey = null;
+          completedNow = !task.completed || prevStatus !== "done";
+        } else {
+          task.completed = false;
+          task.completedAt = null;
+        }
+      } else if (changes.completed !== undefined && changes.completed !== task.completed) {
         task.completed = changes.completed === true;
+        task.status = task.completed ? "done" : "todo";
         task.completedAt = task.completed ? new Date().toISOString() : null;
         completedNow = task.completed;
       }
       if (task.completed) task.reminderKey = null;
+      if (changes.comments !== undefined && Array.isArray(changes.comments)) {
+        task.comments = changes.comments.filter((c) => c && typeof c.text === "string" && c.text.trim()).map((c) => ({
+          id: typeof c.id === "string" && c.id ? c.id : newId("comment"),
+          text: cleanCommentText(c.text),
+          createdAt: validTimestamp(c.createdAt) ? c.createdAt : new Date().toISOString(),
+          ...(typeof c.author === "string" && c.author ? { author: cleanText(c.author).slice(0, 50) } : {}),
+        }));
+      }
       // Tache barree: elle descend au bas de son dossier, hors du champ de travail.
       const targetFolder = destination || (completedNow ? task.folderId : null);
       if (!targetFolder) {
@@ -400,6 +464,39 @@ export class TodoService {
       const lines = this.relocate(document, task, this.dropLine(document, targetFolder));
       const next = await this.saveAndRead(lines);
       return { ...this.payload(next), todo: this.taskPayload(next, id) };
+    });
+  }
+
+  addComment(id, { text, author = null }) {
+    return this.enqueue(async () => {
+      if (!TODO_ID.test(id)) throw new Error("Tâche invalide.");
+      const clean = cleanCommentText(text);
+      if (!clean) throw new Error("Texte commentaire requis.");
+      const document = await this.readDocument();
+      const task = document.tasks.find((item) => item.id === id);
+      if (!task) throw new Error("Tâche introuvable.");
+      if (!Array.isArray(task.comments)) task.comments = [];
+      const comment = {
+        id: newId("comment"),
+        text: clean,
+        createdAt: new Date().toISOString(),
+        ...(author ? { author: cleanText(author).slice(0, 50) } : {}),
+      };
+      task.comments.push(comment);
+      await this.writeDocument(document);
+      return { ...this.payload(document), todo: this.taskPayload(document, id), comment };
+    });
+  }
+
+  removeComment(id, commentId) {
+    return this.enqueue(async () => {
+      if (!TODO_ID.test(id)) throw new Error("Tâche invalide.");
+      const document = await this.readDocument();
+      const task = document.tasks.find((item) => item.id === id);
+      if (!task) throw new Error("Tâche introuvable.");
+      task.comments = (task.comments || []).filter((c) => c.id !== commentId);
+      await this.writeDocument(document);
+      return { ...this.payload(document), todo: this.taskPayload(document, id) };
     });
   }
 

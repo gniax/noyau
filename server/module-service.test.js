@@ -114,6 +114,39 @@ test("module action state persists through completion and service reload", async
   assert.equal(payload.actions[0].run.output, "next template ready");
 });
 
+test("runAction loads .env from project and working directories", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-env-test-"));
+  const workDir = path.join(tmpDir, "sub");
+  await fs.mkdir(workDir, { recursive: true });
+  await fs.writeFile(path.join(tmpDir, ".env"), "FOO=bar\nOVERRIDE=base\n");
+  await fs.writeFile(path.join(workDir, ".env"), "OVERRIDE=subval\nBAZ=qux\n");
+
+  const store = new MemoryStore();
+  const id = "test-env-mod";
+  store.data[id] = {
+    id,
+    projectRoot: tmpDir,
+    workingDirectory: workDir,
+    actions: [{ id: "test", command: { file: "/usr/bin/node", args: ["test.js"] } }],
+  };
+
+  let capturedOptions = null;
+  let finishNotification;
+  const notified = new Promise((resolve) => { finishNotification = resolve; });
+  const run = async (file, args, options) => {
+    capturedOptions = options;
+    return { stdout: "ok" };
+  };
+
+  const service = new ModuleService({ workspaceRoot: tmpDir, store, run, onActionComplete: finishNotification });
+  service.runAction(id, "test");
+  await notified;
+
+  assert.equal(capturedOptions?.env?.FOO, "bar");
+  assert.equal(capturedOptions?.env?.OVERRIDE, "subval");
+  assert.equal(capturedOptions?.env?.BAZ, "qux");
+});
+
 test("parseAdbDevices parses USB and network devices", () => {
   const output = `List of devices attached
 emulator-5554	device
@@ -154,11 +187,81 @@ test("deviceBuild module normalizes Android and iOS configurations", async () =>
     project: "MyApp",
     deviceBuild: {
       platforms: ["android", "ios"],
+      android: { workingDirectory: "mobile", syncScript: "android:sync", variant: "debug" },
+      ios: { bundleId: "com.example.app", bundleVersion: "2.0", title: "My App" },
     },
   }, projectRoot, path.join(projectRoot, "dual.json"), [["project-myapp", { name: "MyApp" }]]);
 
   assert.deepEqual(dualModule.deviceBuild.platforms, ["android", "ios"]);
   assert.equal(dualModule.deviceBuild.instructions, "Produire version installable de l'application (APK signée pour Android, IPA pour iOS).");
+  assert.equal(dualModule.deviceBuild.android.workingDirectory, path.join(projectRoot, "mobile"));
+  assert.equal(dualModule.deviceBuild.android.variant, "debug");
+  assert.equal(dualModule.deviceBuild.ios.bundleId, "com.example.app");
+});
+
+test("requestBuild compiles Android locally without available agent", async () => {
+  const store = new MemoryStore();
+  const id = "project-app--build";
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-build-local-"));
+  const webRoot = path.join(workspaceRoot, "web");
+  const androidRoot = path.join(webRoot, "android");
+  const apkDirectory = path.join(androidRoot, "app", "build", "outputs", "apk", "debug");
+  const exportDirectory = path.join(webRoot, ".next-export", "downloads");
+  const outputDirectory = path.join(workspaceRoot, ".noyau", "builds", "build");
+  await fs.mkdir(apkDirectory, { recursive: true });
+  await fs.mkdir(exportDirectory, { recursive: true });
+  await fs.mkdir(path.join(webRoot, "node_modules", ".bin"), { recursive: true });
+  await fs.mkdir(outputDirectory, { recursive: true });
+  await fs.writeFile(path.join(webRoot, "package.json"), JSON.stringify({ version: "1.2.3" }));
+  await fs.writeFile(path.join(androidRoot, "gradlew"), "#!/bin/sh\n");
+  await fs.writeFile(path.join(webRoot, "node_modules", ".bin", "cap"), "#!/bin/sh\n");
+  await fs.writeFile(path.join(exportDirectory, "old.apk"), "must not ship");
+  await fs.writeFile(path.join(exportDirectory, "keep.txt"), "web asset");
+
+  store.data[id] = {
+    id,
+    moduleId: "build",
+    projectId: "project-app",
+    name: "Builds",
+    workingDirectory: workspaceRoot,
+    deviceBuild: {
+      platforms: ["android", "ios"],
+      android: { workingDirectory: webRoot, buildScript: "build:mobile", variant: "debug" },
+      instructions: "Build app",
+      outputDirectory,
+    },
+  };
+
+  let completed = null;
+  const commands = [];
+  const service = new ModuleService({
+    workspaceRoot,
+    store,
+    listProjectAgents: async () => [],
+    findNpm: async () => "/usr/bin/npm",
+    findJavaHome: async () => "/usr/lib/jvm/test-jdk",
+    findAdb: async () => null,
+    run: async (file, args) => {
+      commands.push([file, ...args]);
+      if (args.includes("rev-parse")) return { stdout: "abc1234\n" };
+      if (file.endsWith("gradlew")) await fs.writeFile(path.join(apkDirectory, "app-debug.apk"), "local apk");
+      return { stdout: "ok\n" };
+    },
+    onBuildComplete: async ({ run }) => { completed = run; },
+  });
+
+  const started = await service.requestBuild(id);
+  assert.equal(started.executor, "local");
+  const deadline = Date.now() + 1500;
+  while (!completed && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(completed?.state, "download-ready");
+  assert.ok(commands.some(([file, ...args]) => file === "/usr/bin/npm" && args.join(" ") === "run build:mobile"));
+  assert.ok(commands.some(([file, ...args]) => file.endsWith("/cap") && args.join(" ") === "sync android"));
+  assert.ok(commands.some(([file, ...args]) => file.endsWith("gradlew") && args[0] === "assembleDebug"));
+  await assert.rejects(() => fs.stat(path.join(exportDirectory, "old.apk")), /ENOENT/);
+  assert.equal(await fs.readFile(path.join(exportDirectory, "keep.txt"), "utf8"), "web asset");
+  const builds = await service.builds(store.get(id));
+  assert.equal(builds[0].name, "build-1.2.3-abc1234.apk");
 });
 
 test("requestBuild rejects when no agent is available in project", async () => {

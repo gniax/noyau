@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +14,7 @@ const EXECUTABLE_ROOTS = ["/bin/", "/usr/bin/", "/usr/local/bin/"];
 const ADB_SERIAL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}$/;
 const BUILD_PLATFORMS = new Set(["android", "ios"]);
 const BUILD_RUNNING_STATES = new Set(["queued", "building", "installing"]);
+const ANDROID_VARIANTS = new Set(["debug", "release"]);
 
 function within(root, target) {
   return target === root || target.startsWith(`${root}${path.sep}`);
@@ -65,10 +67,31 @@ function deviceBuildConfig(value, moduleId, projectRoot) {
   if (!platforms.length) platforms = ["android", "ios"];
   const adbSerial = value.adbSerial ? String(value.adbSerial).trim() : null;
   if (adbSerial && !ADB_SERIAL_PATTERN.test(adbSerial)) throw new Error("Build appareil ADB invalide.");
+  let android = null;
+  if (value.android?.workingDirectory) {
+    const workingDirectory = path.resolve(projectRoot, String(value.android.workingDirectory));
+    const variant = String(value.android.variant || "debug").toLowerCase();
+    const syncScript = cleanText(value.android.syncScript, "android:sync", 80);
+    const buildScript = value.android.buildScript ? cleanText(value.android.buildScript, "", 80) : null;
+    if (!within(projectRoot, workingDirectory) || !ANDROID_VARIANTS.has(variant) || !/^[a-zA-Z0-9:_-]{1,80}$/.test(syncScript) || (buildScript && !/^[a-zA-Z0-9:_-]{1,80}$/.test(buildScript))) throw new Error("Build Android local invalide.");
+    android = { workingDirectory, variant, syncScript, buildScript };
+  }
+  let ios = null;
+  if (value.ios?.bundleId) {
+    const bundleId = cleanText(value.ios.bundleId, "", 180);
+    if (!/^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/.test(bundleId)) throw new Error("Bundle ID iOS invalide.");
+    ios = {
+      bundleId,
+      bundleVersion: cleanText(value.ios.bundleVersion, "1.0", 40),
+      title: cleanText(value.ios.title, "Application", 80),
+    };
+  }
   return {
     platforms,
     instructions: cleanText(value.instructions, "Produire version installable de l'application (APK signée pour Android, IPA pour iOS).", 2000),
     adbSerial,
+    android,
+    ios,
     outputDirectory: path.join(projectRoot, ".noyau", "builds", moduleId),
   };
 }
@@ -102,11 +125,11 @@ function timerTime(value, fallback) {
 }
 
 async function defaultRun(file, args, options = {}) {
-  return execFileAsync(file, args, { cwd: options.cwd, timeout: options.timeout || 300_000, maxBuffer: 1024 * 1024 });
+  return execFileAsync(file, args, { cwd: options.cwd, env: options.env, timeout: options.timeout || 300_000, maxBuffer: 1024 * 1024 });
 }
 
 export class ModuleService {
-  constructor({ workspaceRoot, store, homeDir = os.homedir(), run = defaultRun, onActionComplete = null, onBuildComplete = null, listProjectAgents = async () => [], submitAgent = async () => {}, findAdb = null, sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)), buildPollInterval = 2000, buildTimeout = 15 * 60_000 }) {
+  constructor({ workspaceRoot, store, homeDir = os.homedir(), run = defaultRun, onActionComplete = null, onBuildComplete = null, listProjectAgents = async () => [], submitAgent = async () => {}, findAdb = null, findNpm = null, findJavaHome = null, sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)), buildPollInterval = 2000, buildTimeout = 30 * 60_000 }) {
     this.workspaceRoot = path.resolve(workspaceRoot);
     this.store = store;
     this.homeDir = path.resolve(homeDir);
@@ -116,6 +139,8 @@ export class ModuleService {
     this.listProjectAgents = listProjectAgents;
     this.submitAgent = submitAgent;
     this.findAdb = findAdb || (() => this.defaultAdbPath());
+    this.findNpm = findNpm || (() => this.defaultNpmPath());
+    this.findJavaHome = findJavaHome || (() => this.defaultJavaHome());
     this.sleep = sleep;
     this.buildPollInterval = buildPollInterval;
     this.buildTimeout = buildTimeout;
@@ -257,6 +282,10 @@ export class ModuleService {
       knowledge: module.knowledge || null,
       deviceBuild: module.deviceBuild ? {
         platforms: module.deviceBuild.platforms || ["android", "ios"],
+        capabilities: {
+          localAndroid: Boolean(module.deviceBuild.android),
+          iosOta: Boolean(module.deviceBuild.ios?.bundleId),
+        },
         run: this.buildMonitors.get(module.id)?.run || module.buildRun || null,
         builds,
       } : null,
@@ -327,12 +356,67 @@ export class ModuleService {
     return null;
   }
 
+  async defaultNpmPath() {
+    const nvmRoot = path.join(this.homeDir, ".nvm", "versions", "node");
+    const nvmVersions = await fs.readdir(nvmRoot, { withFileTypes: true }).catch(() => []);
+    const modernNpm = nvmVersions
+      .filter((entry) => entry.isDirectory() && /^v\d+/.test(entry.name))
+      .sort((left, right) => Number.parseInt(right.name.slice(1), 10) - Number.parseInt(left.name.slice(1), 10))
+      .map((entry) => path.join(nvmRoot, entry.name, "bin", "npm"));
+    const candidates = [
+      ...modernNpm,
+      path.join(path.dirname(process.execPath), "npm"),
+      "/usr/bin/npm",
+      "/usr/local/bin/npm",
+    ];
+    for (const candidate of candidates) {
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isFile()) return candidate;
+      } catch { /* prochain chemin connu */ }
+    }
+    return null;
+  }
+
+  async defaultJavaHome() {
+    const candidates = [
+      process.env.JAVA_HOME,
+      path.join(this.homeDir, ".local", "share", "noyau", "jdk-21-home"),
+      "/usr/lib/jvm/java-21-openjdk-amd64",
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      try {
+        const stat = await fs.stat(path.join(candidate, "bin", "javac"));
+        if (stat.isFile()) return candidate;
+      } catch { /* prochain JDK */ }
+    }
+    return null;
+  }
+
   async currentCommit(dir) {
     try {
       const { stdout } = await this.run("/usr/bin/git", ["-C", dir, "rev-parse", "--short", "HEAD"], { timeout: 5000 });
       return stdout.trim() || null;
     } catch {
       return null;
+    }
+  }
+
+  async sourceState(dir) {
+    const commit = await this.currentCommit(dir);
+    try {
+      const { stdout = "" } = await this.run("/usr/bin/git", ["-C", dir, "status", "--porcelain=v1", "-z", "--untracked-files=no"], { timeout: 10_000 });
+      if (!stdout) return { commit, revision: commit, dirty: false };
+      const details = [];
+      for (const record of String(stdout).split("\0").filter(Boolean)) {
+        const relative = record.slice(3);
+        const stat = await fs.stat(path.join(dir, relative)).catch(() => null);
+        details.push(`${record}:${stat?.size || 0}:${stat?.mtimeMs || 0}`);
+      }
+      const dirtyHash = crypto.createHash("sha256").update(details.sort().join("\n")).digest("hex").slice(0, 10);
+      return { commit, revision: `${commit || "worktree"}-dirty-${dirtyHash}`, dirty: true };
+    } catch {
+      return { commit, revision: commit, dirty: false };
     }
   }
 
@@ -382,6 +466,7 @@ export class ModuleService {
         modifiedAtMs: stat.mtimeMs,
         version: meta.version || null,
         commit: meta.commit || null,
+        revision: meta.revision || null,
         platform: isAndroid ? "android" : "ios",
       };
     }));
@@ -396,7 +481,7 @@ export class ModuleService {
       const seen = new Set();
       const deduped = [];
       for (const artifact of list) {
-        const key = artifact.commit ? `commit-${artifact.commit}` : (artifact.version ? `version-${artifact.version}` : null);
+        const key = artifact.commit ? `commit-${artifact.commit}` : (artifact.revision ? `revision-${artifact.revision}` : (artifact.version ? `version-${artifact.version}` : null));
         if (key && seen.has(key)) {
           toDelete.push(artifact);
         } else {
@@ -430,6 +515,80 @@ export class ModuleService {
     if (monitor) monitor.run = run;
   }
 
+  async androidArtifact(config) {
+    const variantDir = path.join(config.workingDirectory, "android", "app", "build", "outputs", "apk", config.variant);
+    const entries = await fs.readdir(variantDir, { withFileTypes: true }).catch(() => []);
+    const artifacts = await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".apk"))
+      .map(async (entry) => {
+        const file = path.join(variantDir, entry.name);
+        return { file, stat: await fs.stat(file) };
+      }));
+    return artifacts.sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs)[0] || null;
+  }
+
+  async removePackagedBuildArtifacts(directory) {
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) await this.removePackagedBuildArtifacts(target);
+      else if (entry.isFile() && /\.(?:apk|ipa)$/i.test(entry.name)) await fs.unlink(target);
+    }
+  }
+
+  async runLocalAndroidBuild(module, initialRun) {
+    const config = module.deviceBuild.android;
+    try {
+      const npm = await this.findNpm();
+      const javaHome = await this.findJavaHome();
+      const gradlew = path.join(config.workingDirectory, "android", "gradlew");
+      if (!npm) throw new Error("npm introuvable sur machine Noyau.");
+      if (!javaHome) throw new Error("JDK 21 avec javac introuvable sur machine Noyau.");
+      if (!(await fs.stat(gradlew).catch(() => null))?.isFile()) throw new Error("Wrapper Gradle Android introuvable.");
+
+      let run = { ...initialRun, state: "building", startedAt: new Date().toISOString(), output: `Synchronisation Android locale sur ${os.hostname()}…` };
+      await this.saveBuildRun(module.id, run);
+      const buildEnvironment = { ...process.env, JAVA_HOME: javaHome, PATH: `${path.dirname(npm)}:${path.join(javaHome, "bin")}:${process.env.PATH || ""}` };
+      if (config.buildScript) {
+        await this.run(npm, ["run", config.buildScript], { cwd: config.workingDirectory, env: buildEnvironment, timeout: this.buildTimeout });
+        await this.removePackagedBuildArtifacts(path.join(config.workingDirectory, ".next-export"));
+        const capacitor = path.join(config.workingDirectory, "node_modules", ".bin", "cap");
+        if (!(await fs.stat(capacitor).catch(() => null))?.isFile()) throw new Error("CLI Capacitor locale introuvable.");
+        await this.run(capacitor, ["sync", "android"], { cwd: config.workingDirectory, env: buildEnvironment, timeout: this.buildTimeout });
+      } else {
+        await this.run(npm, ["run", config.syncScript], { cwd: config.workingDirectory, env: buildEnvironment, timeout: this.buildTimeout });
+      }
+
+      run = { ...run, output: `Compilation APK ${config.variant} locale…` };
+      await this.saveBuildRun(module.id, run);
+      const task = `assemble${config.variant[0].toUpperCase()}${config.variant.slice(1)}`;
+      await this.run(gradlew, [task], { cwd: path.join(config.workingDirectory, "android"), env: buildEnvironment, timeout: this.buildTimeout });
+
+      const built = await this.androidArtifact(config);
+      if (!built || built.stat.size <= 0) throw new Error("Gradle terminé sans APK exploitable.");
+      const source = await this.sourceState(module.workingDirectory);
+      const version = await this.currentVersion(config.workingDirectory) || await this.currentVersion(module.workingDirectory);
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
+      const stem = cleanText(module.moduleId || module.name, "app", 50).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "app";
+      const suffix = [version?.replace(/^v/, ""), source.commit || stamp].filter(Boolean).join("-");
+      const filename = `${stem}-${suffix}.apk`;
+      const target = path.join(module.deviceBuild.outputDirectory, filename);
+      await fs.copyFile(built.file, target);
+      await this.saveArtifactMeta(target, { version, commit: source.commit, revision: source.revision, createdAt: new Date().toISOString() });
+      const artifact = (await this.artifactEntries(module)).find((candidate) => candidate.id === filename);
+      if (!artifact) throw new Error("APK locale copiée mais introuvable.");
+      await this.finishBuild(module, artifact, "android");
+    } catch (error) {
+      const current = this.get(module.id).buildRun || initialRun;
+      const detail = String(error.stderr || error.stdout || error.message || error).trim().slice(-500);
+      const run = { ...current, state: "error", finishedAt: new Date().toISOString(), output: detail || "Échec build Android local." };
+      await this.saveBuildRun(module.id, run);
+      await this.onBuildComplete?.({ module, run });
+    } finally {
+      this.buildMonitors.delete(module.id);
+    }
+  }
+
   buildPrompt(module, targetPlatform = "android") {
     const kind = targetPlatform === "ios" ? "IPA" : "APK";
     const install = targetPlatform === "android"
@@ -453,21 +612,41 @@ export class ModuleService {
     if (!BUILD_PLATFORMS.has(targetPlatform)) throw new Error("Plateforme invalide.");
     if (BUILD_RUNNING_STATES.has(module.buildRun?.state) || this.buildMonitors.has(id)) throw new Error("Build déjà en cours.");
 
-    const currentCommit = await this.currentCommit(module.workingDirectory);
+    const source = await this.sourceState(module.workingDirectory);
+    const currentCommit = source.commit;
     const existingBuilds = await this.builds(module);
     const matchingPlatformBuilds = existingBuilds.filter((b) => b.platform === targetPlatform);
-    if (!force && currentCommit && matchingPlatformBuilds.some((b) => b.commit === currentCommit)) {
-      const matching = matchingPlatformBuilds.find((b) => b.commit === currentCommit);
+    const matching = matchingPlatformBuilds.find((build) => build.revision ? build.revision === source.revision : (!source.dirty && build.commit === currentCommit));
+    if (!force && matching) {
       const label = [matching.version, currentCommit].filter(Boolean).join(" · ");
       throw new Error(`Dernier build ${targetPlatform === "android" ? "APK" : "IPA"} déjà disponible (${label || "à jour"}).`);
     }
 
+    await fs.mkdir(module.deviceBuild.outputDirectory, { recursive: true, mode: 0o700 });
+    if (targetPlatform === "android" && module.deviceBuild.android) {
+      const run = {
+        state: "queued",
+        requestedAt: new Date().toISOString(),
+        agent: { id: "local", name: os.hostname() },
+        executor: "local",
+        platform: targetPlatform,
+        output: "Build Android planifié sur machine Noyau.",
+        sourceRevision: source.revision,
+      };
+      await this.saveBuildRun(module.id, run);
+      this.buildMonitors.set(module.id, { run });
+      void this.runLocalAndroidBuild(module, run);
+      return run;
+    }
+
     const agents = await this.listProjectAgents(module.projectId);
     const agent = agents.find((candidate) => candidate.state === "available");
-    if (!agent) throw new Error("Aucun agent disponible dans ce projet.");
-    await fs.mkdir(module.deviceBuild.outputDirectory, { recursive: true, mode: 0o700 });
+    if (!agent) {
+      const detail = targetPlatform === "ios" ? "Aucun Mac/Xcode ni agent disponible pour produire IPA." : "Aucun agent disponible dans ce projet.";
+      throw new Error(detail);
+    }
     const before = new Map((await this.artifactEntries(module)).map((artifact) => [artifact.id, artifact.modifiedAtMs]));
-    let run = { state: "queued", requestedAt: new Date().toISOString(), agent: { id: agent.id, name: agent.name }, platform: targetPlatform };
+    let run = { state: "queued", requestedAt: new Date().toISOString(), agent: { id: agent.id, name: agent.name }, platform: targetPlatform, sourceRevision: source.revision };
     await this.saveBuildRun(module.id, run);
     try {
       await this.submitAgent(agent.id, this.buildPrompt(module, targetPlatform));
@@ -520,11 +699,13 @@ export class ModuleService {
     const current = this.get(module.id);
     if (!BUILD_RUNNING_STATES.has(current.buildRun?.state)) return current.buildRun;
 
-    const commit = await this.currentCommit(module.workingDirectory);
-    const version = await this.currentVersion(module.workingDirectory);
+    const source = await this.sourceState(module.workingDirectory);
+    const previousMeta = await this.artifactMeta(artifact.file);
+    const version = await this.currentVersion(module.workingDirectory) || previousMeta.version || null;
     await this.saveArtifactMeta(artifact.file, {
       version,
-      commit,
+      commit: source.commit || previousMeta.commit || null,
+      revision: previousMeta.revision || source.revision || null,
       createdAt: artifact.createdAt || new Date().toISOString(),
     });
 
@@ -532,7 +713,7 @@ export class ModuleService {
     let run = { ...current.buildRun, state: "installing", artifact: artifact.id, platform: isIos ? "ios" : "android", output: "Build reçu. Traitement…" };
     await this.saveBuildRun(module.id, run);
     if (isIos) {
-      run = { ...run, state: "installation-requested", finishedAt: new Date().toISOString(), output: "IPA prête. Demande d'installation transmise à l'agent." };
+      run = { ...run, state: "download-ready", finishedAt: new Date().toISOString(), output: "IPA prête au téléchargement et à l'installation OTA." };
     } else {
       try {
         const { adb, device } = await this.connectedAndroidDevice(module);
@@ -568,7 +749,8 @@ export class ModuleService {
     ];
 
     const existing = new Set((await this.artifactEntries(module)).map((a) => a.id));
-    const commit = await this.currentCommit(module.workingDirectory);
+    const source = await this.sourceState(module.workingDirectory);
+    const commit = source.commit;
     const version = await this.currentVersion(module.workingDirectory);
     let imported = [];
 
@@ -588,6 +770,7 @@ export class ModuleService {
               await this.saveArtifactMeta(destFile, {
                 version,
                 commit,
+                revision: source.revision,
                 createdAt: srcStat.mtime.toISOString(),
               });
               imported.push(entry.name);
@@ -595,7 +778,7 @@ export class ModuleService {
             } else {
               const meta = await this.artifactMeta(destFile);
               if (!meta.commit && commit) {
-                await this.saveArtifactMeta(destFile, { version: meta.version || version, commit, createdAt: meta.createdAt || srcStat.mtime.toISOString() });
+                await this.saveArtifactMeta(destFile, { version: meta.version || version, commit, revision: meta.revision || source.revision, createdAt: meta.createdAt || srcStat.mtime.toISOString() });
               }
             }
           }
@@ -615,6 +798,29 @@ export class ModuleService {
     return artifact;
   }
 
+  async loadModuleEnv(module) {
+    const env = { ...process.env };
+    const candidates = [
+      module.projectRoot ? path.join(module.projectRoot, ".env") : null,
+      module.workingDirectory ? path.join(module.workingDirectory, ".env") : null,
+    ].filter(Boolean);
+    for (const file of candidates) {
+      try {
+        const raw = await fs.readFile(file, "utf8");
+        for (const line of raw.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eq = trimmed.indexOf("=");
+          if (eq === -1) continue;
+          const key = trimmed.slice(0, eq).trim();
+          const val = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+          if (key) env[key] = val;
+        }
+      } catch {}
+    }
+    return env;
+  }
+
   runAction(id, actionId) {
     const module = this.get(id);
     const action = module.actions.find((item) => item.id === actionId);
@@ -627,7 +833,8 @@ export class ModuleService {
     void (async () => {
       let result;
       try {
-        const { stdout = "", stderr = "" } = await this.run(action.command.file, action.command.args, { cwd: module.workingDirectory, timeout: action.command.timeout });
+        const env = await this.loadModuleEnv(module);
+        const { stdout = "", stderr = "" } = await this.run(action.command.file, action.command.args, { cwd: module.workingDirectory, env, timeout: action.command.timeout });
         result = { state: "success", startedAt: run.startedAt, finishedAt: new Date().toISOString(), output: String(stdout || stderr).trim().slice(-500) };
       } catch (error) {
         result = { state: "error", startedAt: run.startedAt, finishedAt: new Date().toISOString(), output: String(error.stderr || error.message).trim().slice(-500) };

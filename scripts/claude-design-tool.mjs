@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +30,7 @@ try {
   }
 
   const profileId = callerSessionId ? sessions[callerSessionId]?.profileId || "" : "";
-  const response = await fetch("http://127.0.0.1:4242/api/agent-tools/claude-design", {
+  const response = await fetch("https://127.0.0.1:4242/api/agent-tools/claude-design", {
     method: "POST",
     signal: AbortSignal.timeout(11 * 60_000),
     headers: {
