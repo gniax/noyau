@@ -1273,6 +1273,63 @@ function TodoInlineText({ text, onSave, disabled, expanded = false, placeholder 
   );
 }
 
+// Module de suivi: le projet et chacun de ses agents peuvent couper le reporting evolutions / bugs.
+function ProjectReporting({ project, agents, todos, onRefresh }) {
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const projectOn = project.todoTracking !== false;
+  const activeAgents = agents.filter((session) => session.todoTracking !== false).length;
+  const pending = todos.filter((todo) => todo.status === "review").length;
+
+  async function toggle(key, request) {
+    setBusy(key);
+    setError("");
+    try {
+      await request();
+      await onRefresh?.();
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <details className="project-reporting">
+      <summary>
+        <span>Suivi évolutions / bugs</span>
+        <small>{projectOn ? `${activeAgents}/${agents.length} agent${agents.length > 1 ? "s" : ""} · ${pending} à valider` : "désactivé"}</small>
+        <b>›</b>
+      </summary>
+      <div className="project-reporting-body">
+        <p className="project-reporting-hint">Chaque demande envoyée à un agent suivi crée un to-do du projet, ou commente celui qui existe déjà. L'agent le passe ensuite en « À tester / valider » — jamais en « Terminé », c'est toi qui valides.</p>
+        <label className="reporting-switch">
+          <input
+            type="checkbox"
+            checked={projectOn}
+            disabled={busy === "project" || project.canEdit === false}
+            onChange={(event) => toggle("project", () => api(`/api/projects/${project.id}`, { method: "PATCH", body: JSON.stringify({ name: project.name, shared: Boolean(project.shared), todoTracking: event.target.checked }) }))}
+          />
+          <span><strong>Projet {project.name}</strong><small>Coupe le suivi pour tous ses agents</small></span>
+        </label>
+        {agents.map((session) => (
+          <label className="reporting-switch agent" key={session.id}>
+            <input
+              type="checkbox"
+              checked={projectOn && session.todoTracking !== false}
+              disabled={!projectOn || busy === session.id || session.canEdit === false}
+              onChange={(event) => toggle(session.id, () => api(`/api/sessions/${session.id}`, { method: "PATCH", body: JSON.stringify({ todoTracking: event.target.checked }) }))}
+            />
+            <span><strong>{session.name}</strong><small>{assistantMeta[session.assistant]?.label || session.assistant}</small></span>
+          </label>
+        ))}
+        {!agents.length && <span className="project-empty">Aucun agent rattaché à suivre.</span>}
+        {error && <p className="form-error">{error}</p>}
+      </div>
+    </details>
+  );
+}
+
 function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onModuleBuild, onModuleBuildRefresh, onOpenTodos, onReorder, onRefresh }) {
   // Le cache Todo porte { todos, folders } depuis la refonte par dossier: on accepte les deux formes.
   const [todos, setTodos] = useState(() => {
@@ -1397,6 +1454,7 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
                 {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {session.agentStatus?.label || "Disponible"}</small></span><b>›</b></button>)}
                 {!agents.length && <span className="project-empty">Aucun agent rattaché.</span>}
               </div>
+              <ProjectReporting project={project} agents={agents} todos={projectTodos} onRefresh={onRefresh} />
               <details className="project-todos"><summary><span>Todo</span><small>{openTodos.length} en cours{reviewTodos.length ? ` · ${reviewTodos.length} à vérifier` : ""} · {doneTodos.length} faite{doneTodos.length > 1 ? "s" : ""}</small><b>›</b></summary><div className="project-todo-list">
                 {projectTodos.map((todo) => {
                   const status = todo.status || (todo.completed ? "done" : "todo");
@@ -2350,6 +2408,7 @@ function TodosView() {
   const [showDone, setShowDone] = useState({});
   const [columns, setColumns] = useState(() => (Array.isArray(cached) ? null : cached?.columns) || DEFAULT_COLUMNS);
   const [expandedCards, setExpandedCards] = useState({});
+  const [correction, setCorrection] = useState(() => (Array.isArray(cached) ? true : cached?.correction !== false));
   const [collapsedColumns, setCollapsedColumns] = useState(() => {
     // La colonne « Terminé » demarre repliee: elle ne mange pas la largeur utile du tableau.
     try { return JSON.parse(localStorage.getItem(profileCacheKey("todo-collapsed-columns"))) || { done: true }; } catch { return { done: true }; }
@@ -2364,10 +2423,12 @@ function TodosView() {
     const nextTodos = result.todos || [];
     const nextFolders = result.folders || [];
     const nextColumns = result.columns?.length ? result.columns : DEFAULT_COLUMNS;
+    const nextCorrection = result.correction !== false;
     setTodos(nextTodos);
     setFolders(nextFolders);
     setColumns(nextColumns);
-    storeView("todos", { todos: nextTodos, folders: nextFolders, columns: nextColumns });
+    setCorrection(nextCorrection);
+    storeView("todos", { todos: nextTodos, folders: nextFolders, columns: nextColumns, correction: nextCorrection });
   }, []);
 
   const load = useCallback(async () => {
@@ -2495,6 +2556,12 @@ function TodosView() {
   async function removeColumn(column) {
     if (!window.confirm(`Supprimer la zone « ${column.name} » ? Ses tâches repartent dans « À faire ».`)) return;
     await run(`column:${column.id}`, () => api(`/api/todos/columns/${encodeURIComponent(column.id)}`, { method: "DELETE" }));
+  }
+
+  async function toggleCorrection() {
+    const next = !correction;
+    setCorrection(next);
+    await run("correction", () => api("/api/todos/settings", { method: "PATCH", body: JSON.stringify({ correction: next }) }));
   }
 
   function toggleColumn(column) {
@@ -2963,6 +3030,15 @@ function TodosView() {
                 <span className="view-icon">📋</span> Classique
               </button>
             </div>
+            <button
+              type="button"
+              className={`todo-correction-toggle ${correction ? "active" : ""}`}
+              onClick={toggleCorrection}
+              disabled={busy === "correction"}
+              title={correction ? "Reformulation LLM active — cliquer pour désactiver" : "Reformulation LLM désactivée — cliquer pour activer"}
+            >
+              <span className="view-icon">✨</span> {correction ? "LLM on" : "LLM off"}
+            </button>
             <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
           </div>
         </section>
@@ -3047,6 +3123,15 @@ function TodosView() {
               <span className="view-icon">📋</span> Classique
             </button>
           </div>
+          <button
+            type="button"
+            className={`todo-correction-toggle ${correction ? "active" : ""}`}
+            onClick={toggleCorrection}
+            disabled={busy === "correction"}
+            title={correction ? "Reformulation LLM active à la création d'un to-do ou d'un commentaire — cliquer pour désactiver" : "Reformulation LLM désactivée — cliquer pour activer"}
+          >
+            <span className="view-icon">✨</span> {correction ? "LLM on" : "LLM off"}
+          </button>
           {!folder.projectId && folder.id !== ROOT_FOLDER && folder.id !== "all" && (
             <div className="todo-folder-actions">
               <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>Renommer</button>
@@ -3067,7 +3152,7 @@ function TodosView() {
         <div className="todo-board-wrap">
           <div className="todo-board-toolbar">
             <small>{columns.length} zone{columns.length > 1 ? "s" : ""} · {items.length} tâche{items.length > 1 ? "s" : ""}</small>
-            <button className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title="Ajouter une zone">＋ Zone</button>
+            <button className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title="Ajouter une zone" aria-label="Ajouter une zone">＋</button>
           </div>
           <div className="todo-board">
             {columns.map((column, index) => {

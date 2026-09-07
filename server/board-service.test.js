@@ -40,3 +40,23 @@ test("ajout, renommage, réordonnancement et suppression d'une zone personnalis�
 
   await fs.rm(directory, { recursive: true, force: true });
 });
+
+test("la reformulation LLM se coupe par profil sans perdre les zones", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-board-correction-"));
+  const service = new BoardService({ file: path.join(directory, "todo-boards.json") });
+
+  assert.equal((await service.settings("principal")).correction, true);
+  const { column } = await service.add("principal", "Bloqué");
+
+  await service.setCorrection("principal", false);
+  const settings = await service.settings("principal");
+  assert.equal(settings.correction, false);
+  assert.ok(settings.columns.some((item) => item.id === column.id));
+
+  // Le reglage survit au rechargement, et reste propre a ce profil.
+  const reloaded = new BoardService({ file: path.join(directory, "todo-boards.json") });
+  assert.equal((await reloaded.settings("principal")).correction, false);
+  assert.equal((await reloaded.settings("guest")).correction, true);
+
+  await fs.rm(directory, { recursive: true, force: true });
+});

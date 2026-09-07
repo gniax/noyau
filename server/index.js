@@ -504,7 +504,9 @@ async function todosView(profile) {
     merged.folders.push(...shared.map((folder) => ({ ...folder, ownerProfileId: ownerId, ownerName: owner.name })));
     merged.todos.push(...remote.todos.filter((todo) => folderIds.has(todo.folderId)));
   }
-  merged.columns = await boardService.columns(profile.id);
+  const boardSettings = await boardService.settings(profile.id);
+  merged.columns = boardSettings.columns;
+  merged.correction = boardSettings.correction;
   return merged;
 }
 
@@ -1148,10 +1150,20 @@ app.post("/api/todos", async (request, response, next) => {
     if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
     const folderId = request.body?.folderId || null;
     const rawText = String(request.body?.text || "");
-    const text = rawText.trim() ? await textCorrector.correct(rawText, { context: "todo" }).catch(() => rawText) : rawText;
+    const { correction } = await boardService.settings(request.profile.id);
+    const text = correction && rawText.trim() ? await textCorrector.correct(rawText, { context: "todo" }).catch(() => rawText) : rawText;
     const runtime = await todoRuntime(request.profile, { folderId });
     const { todo } = await runtime.todoService.add({ text, dueDate: request.body?.dueDate || null, projectId, folderId });
     response.status(201).json({ todo, ...(await todosView(request.profile)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/todos/settings", async (request, response, next) => {
+  try {
+    if (request.body?.correction !== undefined) await boardService.setCorrection(request.profile.id, request.body.correction);
+    response.json(await todosView(request.profile));
   } catch (error) {
     next(error);
   }
@@ -1200,7 +1212,8 @@ app.post("/api/todos/:id/comments", async (request, response, next) => {
     const runtime = await todoRuntime(request.profile, { todoId: request.params.id });
     const author = request.profile?.name || null;
     const rawText = String(request.body?.text || "");
-    const text = rawText.trim() ? await textCorrector.correct(rawText, { context: "comment" }).catch(() => rawText) : rawText;
+    const { correction } = await boardService.settings(request.profile.id);
+    const text = correction && rawText.trim() ? await textCorrector.correct(rawText, { context: "comment" }).catch(() => rawText) : rawText;
     const result = await runtime.todoService.addComment(request.params.id, { text, author });
     response.status(201).json({ ...result, ...(await todosView(request.profile)) });
   } catch (error) {

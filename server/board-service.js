@@ -77,17 +77,37 @@ export class BoardService {
     }
   }
 
+  // Un tableau peut avoir ete stocke en simple liste de colonnes: on lit les deux formes.
+  entry(boards, profileId) {
+    const stored = boards[profileId];
+    const columns = normalize(Array.isArray(stored) ? stored : stored?.columns);
+    const correction = Array.isArray(stored) ? true : stored?.correction !== false;
+    return { columns, correction };
+  }
+
   async columns(profileId) {
+    return this.enqueue(async () => this.entry(await this.read(), profileId).columns);
+  }
+
+  async settings(profileId) {
+    return this.enqueue(async () => this.entry(await this.read(), profileId));
+  }
+
+  async setCorrection(profileId, correction) {
     return this.enqueue(async () => {
       const boards = await this.read();
-      return normalize(boards[profileId]);
+      const current = this.entry(boards, profileId);
+      const next = { ...current, correction: Boolean(correction) };
+      await this.write({ ...boards, [profileId]: next });
+      return next;
     });
   }
 
   async save(profileId, columns) {
     const list = normalize(columns);
     const boards = await this.read();
-    await this.write({ ...boards, [profileId]: list });
+    const current = this.entry(boards, profileId);
+    await this.write({ ...boards, [profileId]: { ...current, columns: list } });
     return list;
   }
 
@@ -95,7 +115,7 @@ export class BoardService {
     return this.enqueue(async () => {
       const label = cleanName(name);
       if (!label) throw new Error("Nom de zone requis.");
-      const current = normalize((await this.read())[profileId]);
+      const current = this.entry(await this.read(), profileId).columns;
       if (current.length >= 12) throw new Error("Maximum 12 zones.");
       const column = { id: `col-${crypto.randomBytes(4).toString("hex")}`, name: label, kind: "custom" };
       // La nouvelle zone se pose avant « Terminé » pour garder la colonne finale a droite.
@@ -110,7 +130,7 @@ export class BoardService {
     return this.enqueue(async () => {
       const label = cleanName(name);
       if (!label) throw new Error("Nom de zone requis.");
-      const current = normalize((await this.read())[profileId]);
+      const current = this.entry(await this.read(), profileId).columns;
       if (!current.some((column) => column.id === id)) throw new Error("Zone introuvable.");
       return this.save(profileId, current.map((column) => (column.id === id ? { ...column, name: label } : column)));
     });
@@ -119,7 +139,7 @@ export class BoardService {
   async remove(profileId, id) {
     return this.enqueue(async () => {
       if (BUILTIN.some((column) => column.id === id)) throw new Error("Zone de base non supprimable.");
-      const current = normalize((await this.read())[profileId]);
+      const current = this.entry(await this.read(), profileId).columns;
       if (!current.some((column) => column.id === id)) throw new Error("Zone introuvable.");
       return this.save(profileId, current.filter((column) => column.id !== id));
     });
@@ -127,7 +147,7 @@ export class BoardService {
 
   async reorder(profileId, ids) {
     return this.enqueue(async () => {
-      const current = normalize((await this.read())[profileId]);
+      const current = this.entry(await this.read(), profileId).columns;
       const byId = new Map(current.map((column) => [column.id, column]));
       const ordered = (Array.isArray(ids) ? ids : []).map((id) => byId.get(id)).filter(Boolean);
       for (const column of current) if (!ordered.some((item) => item.id === column.id)) ordered.push(column);

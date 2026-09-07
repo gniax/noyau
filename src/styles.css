@@ -1987,7 +1987,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .todo-board-add-column small { font-size: 10px; font-weight: 600; }
 
 /* Texte de tâche: deux lignes au repos, complet une fois déplié ou en édition */
-textarea.todo-text-input { resize: none; overflow: hidden; line-height: 1.35; max-height: 2.7em; white-space: pre-wrap; }
+textarea.todo-text-input { resize: none; overflow: hidden; line-height: 1.35; max-height: 4.05em; white-space: pre-wrap; }
 textarea.todo-text-input.open { max-height: none; overflow: visible; }
 .todo-card-expand {
   flex: none; width: 20px; height: 20px; padding: 0; display: grid; place-items: center;
@@ -2052,7 +2052,7 @@ textarea.todo-text-input.open { max-height: none; overflow: visible; }
   background: var(--c-101512); color: var(--c-8d9690); font-size: 11px; font-weight: 600; cursor: pointer;
 }
 .todo-add-column-btn:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
-.todo-board > .todo-board-column { flex: 1 0 300px; min-width: 300px; max-width: 420px; }
+.todo-board > .todo-board-column { flex: 1 1 0; min-width: 280px; }
 .todo-board > .todo-board-column.collapsed {
   flex: 0 0 46px; min-width: 46px; max-width: 46px; min-height: 220px; padding: 12px 6px;
   display: flex; flex-direction: column; align-items: center; gap: 12px; cursor: pointer;
@@ -2111,3 +2111,38 @@ textarea.todo-text-input.open { max-height: none; overflow: visible; }
 .agent-card-archive:hover { color: var(--green); border-color: var(--c-58743d); }
 .agent-archives > summary strong::before { content: "⇩"; margin-right: 6px; color: var(--c-8d9690); }
 .agent-archives { background: var(--c-0d110f); }
+
+/* Tableau: colonnes qui remplissent la largeur, bouton de zone reduit a une icone */
+.todo-add-column-btn { width: 28px; padding: 0; font-size: 13px; }
+.todos-page .todo-board-wrap { width: 100%; }
+@media (max-width: 900px) {
+  .todo-board > .todo-board-column { flex: 0 0 85vw; min-width: 0; }
+  .todo-board > .todo-board-column.collapsed { flex: 0 0 46px; }
+}
+.todos-page { max-width: 1600px; }
+
+/* Reformulation LLM: bascule a cote du choix de vue */
+.todo-correction-toggle {
+  display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px;
+  border: 1px solid var(--c-2c3730); border-radius: 7px; background: var(--c-101512);
+  color: var(--c-8d9690); font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.todo-correction-toggle.active { border-color: var(--c-58743d); color: var(--green); background: var(--c-141d15); }
+.todo-correction-toggle:disabled { opacity: .5; }
+
+/* Module de suivi évolutions / bugs sur la carte projet */
+.project-reporting { margin-top: 13px; border: 1px solid var(--c-262e29); border-radius: 8px; overflow: hidden; background: var(--c-0b0f0d); }
+.project-reporting > summary { min-height: 43px; display: grid; grid-template-columns: minmax(0,1fr) auto 12px; align-items: center; gap: 9px; padding: 0 12px; list-style: none; cursor: pointer; }
+.project-reporting > summary::-webkit-details-marker { display: none; }
+.project-reporting > summary span { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; }
+.project-reporting > summary small { color: var(--c-67716b); font-size: 8px; }
+.project-reporting > summary b { color: var(--green); font-size: 17px; transition: transform .15s ease; }
+.project-reporting[open] > summary b { transform: rotate(90deg); }
+.project-reporting-body { display: grid; gap: 7px; padding: 10px; border-top: 1px solid var(--c-242b27); }
+.project-reporting-hint { margin: 0 0 2px; color: var(--c-67716b); font-size: 9px; line-height: 1.5; }
+.reporting-switch { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid var(--c-232b26); border-radius: 6px; background: var(--c-0d1210); cursor: pointer; }
+.reporting-switch.agent { margin-left: 14px; }
+.reporting-switch input { flex: none; width: 16px; height: 16px; accent-color: var(--green); }
+.reporting-switch strong { display: block; color: var(--c-d3dbd6); font-size: 10px; }
+.reporting-switch small { display: block; margin-top: 3px; color: var(--c-66716a); font-size: 8px; }
+.reporting-switch input:disabled + span { opacity: .5; }
