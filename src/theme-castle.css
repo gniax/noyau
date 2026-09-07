@@ -25,7 +25,7 @@
   inset: -6%;
   z-index: 0;
   pointer-events: none;
-  background: url("/backgrounds/guest-castle-4k.webp") 55% center / cover no-repeat;
+  background: url("/backgrounds/aurora-castle-4k.webp") 55% center / cover no-repeat;
   filter: saturate(.92) brightness(.72) contrast(1.05);
   opacity: .86;
   animation: castle-wallpaper-drift 72s linear infinite;
