@@ -1,113 +1,111 @@
 # Noyau
 
-Centre de contrôle local pour agents IA en ligne de commande. Noyau lance Codex, Claude Code et Antigravity dans des sessions `tmux`, les expose dans une interface web utilisable au clavier comme au doigt, et garde le suivi du travail (to-do, projets, budget) au même endroit.
+Local control center for CLI coding agents. Noyau runs Codex, Claude Code and Antigravity in persistent `tmux` sessions, exposes them in a web UI that works with a keyboard or a touchscreen, and keeps the work tracking (tasks, projects, budget) in the same place.
 
-Tout tourne sur la machine : aucun service tiers, pas de base de données, les données vivent dans des fichiers locaux et un vault Obsidian.
+Everything runs on your machine: no third-party service, no database, plain files and an Obsidian vault.
 
-![Accueil](docs/screenshots/dashboard.png)
+![Dashboard](docs/screenshots/dashboard.png)
 
-## Ce que ça fait
+## Features
 
-**Agents** — Chaque agent est une session `tmux` persistante : elle survit à la fermeture de l'onglet, au redémarrage du serveur et à la coupure réseau. Le terminal est rendu par xterm.js sur un WebSocket, avec une barre de touches pensée pour l'écran tactile (Ctrl, Alt, Échap, collage, envoi de fichier, capture du texte de l'écran).
+**Agents** — Each agent is a persistent `tmux` session, so it survives a closed tab, a server restart or a dropped connection. The terminal is xterm.js over a WebSocket, with a key bar built for touch (Ctrl, Alt, Esc, paste, file upload, screen capture).
 
-- bascule d'un fournisseur à l'autre en gardant le contexte de la conversation ;
-- quotas Codex / Claude / Antigravity relevés et affichés en continu ;
-- notifications push (Web Push) quand un agent attend une réponse ;
-- archivage : fermer un agent conserve son fil de discussion, une entrée « Agents archivés » le relance là où il s'était arrêté ;
-- outils inter-agents : lister les agents actifs, lire leur contexte, leur transmettre une tâche.
+- switch provider mid-conversation, context handed over;
+- Codex / Claude / Antigravity quotas polled and displayed;
+- Web Push notifications when an agent waits for an answer;
+- archiving: closing an agent keeps its thread, one click brings it back where it stopped;
+- agent-to-agent tools: list running agents, read their context, hand them a task.
 
-**Projets** — Regroupent les agents par travail, sans imposer de dossier commun. Un projet peut exposer des modules décrits par un manifeste `.noyau/modules/*.json` : contrôle de services systemd, actions déclenchables, liens externes, builds Android/iOS installables depuis le téléphone, sources de connaissance.
+**Projects** — Group agents by work without forcing a shared folder. A project can expose modules declared in `.noyau/modules/*.json`: systemd unit control, one-click actions, external links, Android/iOS builds installable from the phone, knowledge sources.
 
-**To-do** — Un tableau façon Trello, avec des zones personnalisables (créer, renommer, réordonner, replier), ou une liste classique.
+**Tasks** — A Trello-style board with custom zones (create, rename, reorder, fold), or a plain list.
 
-![Tableau des tâches](docs/screenshots/todos-board.png)
+![Task board](docs/screenshots/todos-board.png)
 
-- stockage en Markdown lisible à la main dans un vault Obsidian : `- [ ] texte 📅 2026-09-12 <!-- noyau:{…} -->` ;
-- référence courte `*A1B2` par tâche, cliquable dans le terminal d'un agent ;
-- commentaires horodatés, avec distinction entre ce que tu écris et ce qu'écrit un agent ;
-- pastilles de nouveautés à trois niveaux (onglet, projet, tâche) ;
-- reformulation optionnelle du texte par un LLM à la saisie.
+- stored as hand-editable Markdown in an Obsidian vault: `- [ ] text 📅 2026-09-12 <!-- noyau:{…} -->`;
+- short `*A1B2` reference per task, clickable inside an agent terminal;
+- timestamped comments, agent-written ones marked apart from yours;
+- unread badges at three levels (tab, project, card);
+- optional LLM rewrite of what you type.
 
-**Suivi automatique** — Un hook `UserPromptSubmit` (Claude Code et Codex) donne à l'agent les tâches ouvertes du projet courant et lui demande de tracer chaque évolution ou bug : créer la tâche si elle n'existe pas, sinon la commenter. Quand l'agent a traité une demande, il la passe en « À tester / valider » avec la date et le commit — jamais en « Terminé », cette validation reste manuelle. Le suivi se coupe par projet et par agent.
+**Automatic tracking** — A `UserPromptSubmit` hook (Claude Code and Codex) hands the agent the open tasks of the current project and asks it to record every change or bug: create the task, or comment the existing one. Once handled, the agent moves it to "to verify" with the date and commit — never to "done", that stays a manual call. Tracking can be switched off per project and per agent.
 
-**Budget** — Suivi de dépenses par enveloppes, catégorisation assistée par LLM, connexion bancaire optionnelle (Enable Banking) avec redirection en HTTPS local.
+**Budget** — Envelope-based expense tracking, LLM-assisted categorisation, optional bank connection (Enable Banking) over local HTTPS.
 
-![Projets](docs/screenshots/projects.png)
+![Projects](docs/screenshots/projects.png)
 
 ## Architecture
 
 ```
-server/      API Express + WebSocket, un module par domaine
-  tmux.js            création, restauration et capture des sessions
-  session-store.js   persistance JSON atomique
-  todo-service.js    lecture/écriture du vault Markdown
-  board-service.js   zones du tableau, réglages par profil
-  module-service.js  modules projet, systemd, builds appareil
-  finance-*.js       budget, banque, conseiller
-src/         interface React (une application, pas de routeur)
-scripts/     outils appelés par les agents (to-do, inter-agents, design)
-test/        tests unitaires node:test
+server/      Express API + WebSocket, one module per domain
+  tmux.js            session creation, restore and capture
+  session-store.js   atomic JSON persistence
+  todo-service.js    Markdown vault read/write
+  board-service.js   board zones, per-profile settings
+  module-service.js  project modules, systemd, device builds
+  finance-*.js       budget, banking, advisor
+src/         React UI (single view, no router)
+scripts/     tools the agents call (tasks, agent-to-agent, design)
+test/        node:test unit tests
 ```
 
-Pas de framework serveur au-delà d'Express, pas de state manager côté client, pas de dépendance de base de données. Les tests tournent avec le lanceur intégré de Node.
+No server framework beyond Express, no client state manager, no database. Tests run on Node's built-in runner.
 
-## Installation
+## Install
 
-Prérequis : Node 20+, `tmux`, et au moins un agent CLI installé (`codex`, `claude` ou `antigravity`).
+Requires Node 20+, `tmux`, and at least one agent CLI (`codex`, `claude` or `antigravity`).
 
 ```bash
 npm install
 npm run build
-NOYAU_TOKEN="une-clé-longue-et-aléatoire" npm start
+NOYAU_TOKEN="a-long-random-key" npm start
 ```
 
-L'interface écoute sur `http://localhost:4242`. La clé d'accès est demandée à la première connexion ; elle est ensuite conservée dans `.data/access-token`.
+The UI listens on `http://localhost:4242`. The access key is asked once, then kept in `.data/access-token`.
 
-### Variables d'environnement
+### Environment
 
-| Variable | Rôle |
+| Variable | Purpose |
 | --- | --- |
-| `NOYAU_TOKEN` | Clé d'accès à l'interface (obligatoire au premier lancement) |
-| `PORT` / `HOST` | Écoute HTTP (par défaut `4242` / `0.0.0.0`) |
-| `NOYAU_HTTPS_HOST` / `NOYAU_HTTPS_PORT` | Écoute HTTPS pour l'accès via VPN |
-| `NOYAU_TLS_CERT` / `NOYAU_TLS_KEY` / `NOYAU_CA_CERT` | Certificats de l'écoute HTTPS |
-| `NOYAU_DATA_DIR` | Dossier de données (par défaut `.data/`) |
-| `NOYAU_WORKSPACE_ROOT` | Racine des dépôts proposés à la création d'un agent |
-| `NOYAU_TODO_FILE` | Fichier Markdown du vault Obsidian |
-| `NOYAU_TODO_MOUNT_URI` | Montage GVFS à effectuer si le vault est sur un NAS |
+| `NOYAU_TOKEN` | UI access key (required on first run) |
+| `PORT` / `HOST` | HTTP listener (default `4242` / `0.0.0.0`) |
+| `NOYAU_HTTPS_HOST` / `NOYAU_HTTPS_PORT` | HTTPS listener for VPN access |
+| `NOYAU_TLS_CERT` / `NOYAU_TLS_KEY` / `NOYAU_CA_CERT` | HTTPS certificates |
+| `NOYAU_DATA_DIR` | Data directory (default `.data/`) |
+| `NOYAU_WORKSPACE_ROOT` | Root of the repositories offered when creating an agent |
+| `NOYAU_TODO_FILE` | Markdown file of the Obsidian vault |
+| `NOYAU_TODO_MOUNT_URI` | GVFS mount to perform when the vault sits on a NAS |
 
-`noyau.service` fournit une unité systemd utilisateur prête à adapter, et `desktop/` les entrées pour lancer l'interface en plein écran sur un poste tactile.
+`noyau.service` is a user systemd unit to adapt, `desktop/` holds the entries to run the UI fullscreen on a touch machine.
 
-### Accès depuis le téléphone
+### Phone
 
-L'écoute HTTPS sert la même interface en application installable (PWA) : notifications push, terminal tactile, installation des builds iOS/Android produits par les modules. Le certificat local se télécharge depuis `/noyau-ca.cer`.
+The HTTPS listener serves the same UI as an installable PWA: push notifications, touch terminal, install of the iOS/Android builds produced by the modules. The local certificate is at `/noyau-ca.cer`.
 
-![Terminal d'un agent](docs/screenshots/terminal.png)
+![Agent terminal](docs/screenshots/terminal.png)
 
-## Outils pour les agents
-
-Les agents pilotés par Noyau disposent de commandes pour se coordonner et tenir le suivi :
+## Agent commands
 
 ```bash
-node scripts/noyau-agent.mjs list                      # agents actifs, projet, état
-node scripts/noyau-agent.mjs send "Nom" "Message"      # transmettre une tâche
-node scripts/noyau-todo.mjs list                       # tâches du projet courant
-node scripts/noyau-todo.mjs add "Texte"                # créer une tâche
-node scripts/noyau-todo.mjs report *A1B2 "Ce qui a été fait"
+node scripts/noyau-agent.mjs list                      # running agents, project, state
+node scripts/noyau-agent.mjs send "Name" "Message"     # hand over a task
+node scripts/noyau-todo.mjs list                       # tasks of the current project
+node scripts/noyau-todo.mjs add "Text"                 # create a task
+node scripts/noyau-todo.mjs report *A1B2 "What changed"
 ```
 
-`server/todo-track-hook.js` s'installe comme hook `UserPromptSubmit` dans `~/.claude/settings.json` et `~/.codex/hooks.json`.
+`server/todo-track-hook.js` installs as a `UserPromptSubmit` hook in `~/.claude/settings.json` and `~/.codex/hooks.json`.
 
-## Développement
+## Development
 
 ```bash
-npm run dev     # serveur avec rechargement
-npm test        # suite complète (node:test)
-npm run build   # bundle de production
+npm run dev     # server with reload
+npm test        # full suite (node:test)
+npm run build   # production bundle
 ```
 
-Les captures d'écran de ce README sont produites à partir d'une instance de démonstration : les agents, projets et tâches qui y figurent sont fictifs.
+Screenshots come from a demo instance: the agents, projects and tasks shown are fictional.
 
-## Licence
+## License
 
 MIT.
