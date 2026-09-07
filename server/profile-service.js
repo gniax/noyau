@@ -42,7 +42,7 @@ export class ProfileService {
     this.dataDir = path.resolve(dataDir);
     this.primaryTodoFile = path.resolve(primaryTodoFile);
     this.primaryTodoMountUri = primaryTodoMountUri || null;
-    this.primaryName = cleanName(primaryName) || "Gniax";
+    this.primaryName = cleanName(primaryName) || "Noyau";
   }
 
   profileTodoFile(id) {

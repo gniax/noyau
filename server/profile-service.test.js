@@ -26,7 +26,7 @@ test("profile service seeds a single primary profile", async () => {
 });
 
 test("profile service creates and updates safe profile settings", async () => {
-  const store = new MemoryStore({ gniax: { name: "Noyau", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
+  const store = new MemoryStore({ principal: { name: "Noyau", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
   const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
   await service.initialize();
   const profile = await service.create({ name: "Camille Martin", theme: "aurora" });

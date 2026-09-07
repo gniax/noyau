@@ -35,7 +35,7 @@ test("AgentArchiveService archives, lists, filters by profile, and removes entri
   assert.equal(listAll[1].id, "noyau-codex-1");
 
   const listPrincipal = await service.list({ profileId: "principal" });
-  assert.equal(listPrincipal.length, 2); // includes gniax and shared guest
+  assert.equal(listPrincipal.length, 2); // includes the primary profile and the shared guest one
 
   const listInvité = await service.list({ profileId: "guest" });
   assert.equal(listInvité.length, 1); // includes only guest
