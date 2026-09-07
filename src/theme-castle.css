@@ -93,11 +93,11 @@
   filter: drop-shadow(0 2px 3px #05060c88);
   transition: transform .18s ease, filter .18s ease;
 }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(1) > span { background-image: url("/icons/guest/castle.svg"); }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(2) > span { background-image: url("/icons/guest/projects.svg"); }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(3) > span { background-image: url("/icons/guest/todos.svg"); }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(4) > span { background-image: url("/icons/guest/wallet.svg"); }
-:root[data-theme="aurora"] .main-nav button:nth-of-type(5) > span { background-image: url("/icons/guest/settings.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(1) > span { background-image: url("/icons/aurora/castle.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(2) > span { background-image: url("/icons/aurora/projects.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(3) > span { background-image: url("/icons/aurora/todos.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(4) > span { background-image: url("/icons/aurora/wallet.svg"); }
+:root[data-theme="aurora"] .main-nav button:nth-of-type(5) > span { background-image: url("/icons/aurora/settings.svg"); }
 :root[data-theme="aurora"] .main-nav button:hover > span,
 :root[data-theme="aurora"] .main-nav button.active > span { transform: translateY(-1px) scale(1.08); filter: drop-shadow(0 3px 5px #e1b04755); }
 :root[data-theme="aurora"] .main-nav .nav-settings-icon svg { display: none; }
