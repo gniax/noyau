@@ -53,11 +53,11 @@ export class ProfileService {
     const entries = Object.entries(this.store.all());
     if (!entries.length) {
       const now = new Date().toISOString();
+      // Un seul profil au demarrage: les suivants se creent depuis les reglages.
       await this.store.setMany([
-        ["principal", { name: this.primaryName, theme: "noyau", primary: true, todoFile: this.primaryTodoFile, todoMountUri: this.primaryTodoMountUri, quotaResetNotify: cleanQuotaResetNotify(), createdAt: now, updatedAt: now }],
-        ["guest", { name: "Invité", theme: "aurora", primary: false, todoFile: this.profileTodoFile("guest"), todoMountUri: null, quotaResetNotify: cleanQuotaResetNotify(), createdAt: now, updatedAt: now }],
+        [this.primaryId(), { name: this.primaryName, theme: "noyau", primary: true, todoFile: this.primaryTodoFile, todoMountUri: this.primaryTodoMountUri, quotaResetNotify: cleanQuotaResetNotify(), createdAt: now, updatedAt: now }],
       ]);
-      return { created: 2, migrated: 0 };
+      return { created: 1, migrated: 0 };
     }
     const primaryId = entries.find(([, profile]) => profile.primary)?.[0] || entries[0][0];
     const updates = entries.map(([id, profile]) => [id, {

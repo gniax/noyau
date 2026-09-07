@@ -10,15 +10,19 @@ class MemoryStore {
   async setMany(entries) { for (const [id, value] of entries) this.data[id] = value; }
 }
 
-test("profile service seeds isolated primary and partner profiles", async () => {
+test("profile service seeds a single primary profile", async () => {
   const store = new MemoryStore();
   const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/principal/TO DO.md", primaryTodoMountUri: "smb://nas/data" });
-  await service.initialize();
+  const seeded = await service.initialize();
+  assert.equal(seeded.created, 1);
   assert.equal(service.primaryId(), "principal");
   assert.equal(service.get("principal").theme, "noyau");
-  assert.equal(service.get("guest").theme, "aurora");
-  assert.equal(service.get("guest").todoFile, "/tmp/noyau/profiles/guest/TO DO.md");
-  assert.notEqual(service.get("principal").todoFile, service.get("guest").todoFile);
+  assert.equal(service.list().length, 1);
+
+  // Les profils suivants restent isoles: leur vault ne touche pas celui du profil principal.
+  const guest = await service.create({ name: "Invité", theme: "aurora" });
+  assert.equal(guest.todoFile, "/tmp/noyau/profiles/invite/TO DO.md");
+  assert.notEqual(service.get("principal").todoFile, guest.todoFile);
 });
 
 test("profile service creates and updates safe profile settings", async () => {
