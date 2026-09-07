@@ -2196,3 +2196,10 @@ textarea.todo-text-input.open { max-height: none; overflow: visible; }
 .todo-picker-scope { display: flex; gap: 6px; margin-top: 8px; }
 .todo-picker-scope button { flex: 1; min-height: 28px; border: 1px solid var(--c-2c3730); border-radius: 6px; background: var(--c-101512); color: var(--c-8d9690); font-size: 10px; cursor: pointer; }
 .todo-picker-scope button.active { border-color: var(--green); color: var(--green); background: var(--c-141d15); }
+
+/* Dépliage: toute la zone à droite du texte réagit, pas seulement la flèche */
+.todo-card-top { cursor: default; }
+.todo-card-expand { width: 26px; min-height: 34px; align-self: stretch; }
+.todo-card-menu-move { display: flex; align-items: center; gap: 7px; padding: 4px 9px; }
+.todo-card-menu-move span { color: var(--c-c3ccc6); font-size: 11px; }
+.todo-card-menu-move select { flex: 1; min-width: 0; height: 26px; padding: 0 6px; border: 1px solid var(--c-303a34); border-radius: 5px; background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 10px; }

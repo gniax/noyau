@@ -1335,7 +1335,7 @@ function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefr
   );
 }
 
-function TodoInlineText({ text, onSave, disabled, expanded = false, placeholder = "Tâche sans titre…" }) {
+function TodoInlineText({ text, onSave, disabled, expanded = false, onOverflow = null, placeholder = "Tâche sans titre…" }) {
   const [val, setVal] = useState(text || "");
   const [editing, setEditing] = useState(false);
   const field = React.useRef(null);
@@ -1349,14 +1349,13 @@ function TodoInlineText({ text, onSave, disabled, expanded = false, placeholder 
     const node = field.current;
     if (!node) return;
     node.style.height = "auto";
-    if (editing || expanded) {
-      node.style.height = `${node.scrollHeight}px`;
-      return;
-    }
-    // Au repos la carte montre trois lignes au maximum, le reste attend le depliage.
+    const full = node.scrollHeight;
     const line = parseFloat(getComputedStyle(node).lineHeight) || 18;
-    node.style.height = `${Math.min(node.scrollHeight, Math.round(line * 3) + 8)}px`;
-  }, [val, editing, expanded]);
+    const clamped = Math.round(line * 3) + 8;
+    // Au repos la carte montre trois lignes au maximum, le reste attend le depliage.
+    node.style.height = `${editing || expanded ? full : Math.min(full, clamped)}px`;
+    onOverflow?.(full > clamped + 1);
+  }, [val, editing, expanded, onOverflow]);
 
   const commit = () => {
     const trimmed = val.trim();
@@ -2533,6 +2532,7 @@ function TodosView() {
   const [showDone, setShowDone] = useState({});
   const [columns, setColumns] = useState(() => (Array.isArray(cached) ? null : cached?.columns) || DEFAULT_COLUMNS);
   const [expandedCards, setExpandedCards] = useState({});
+  const [overflowCards, setOverflowCards] = useState({});
   const [correction, setCorrection] = useState(() => (Array.isArray(cached) ? true : cached?.correction !== false));
   const [collapsedColumns, setCollapsedColumns] = useState(() => {
     // La colonne « Terminé » demarre repliee: elle ne mange pas la largeur utile du tableau.
@@ -2655,6 +2655,10 @@ function TodosView() {
   async function removeComment(todo, commentId) {
     await run(`comment-del:${commentId}`, () => api(`/api/todos/${encodeURIComponent(todo.id)}/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" }));
   }
+
+  const noteOverflow = useCallback((id, value) => {
+    setOverflowCards((current) => (current[id] === value ? current : { ...current, [id]: value }));
+  }, []);
 
   async function removeTodo(todo) {
     if (!window.confirm(`Supprimer la tâche « ${todo.text} » ? Action définitive.`)) return;
@@ -2864,6 +2868,7 @@ function TodosView() {
     const commentsCount = todo.comments?.length || 0;
     const commentsOpen = !!openComments[todo.id];
     const expanded = !!expandedCards[todo.id];
+    const overflows = !!overflowCards[todo.id];
     const folderObj = folders.find((f) => f.id === (todo.folderId || ROOT_FOLDER));
     const reference = todoRef(todo.id);
 
@@ -2877,11 +2882,14 @@ function TodosView() {
           e.dataTransfer.effectAllowed = "move";
         }}
       >
-        <div className="todo-card-top">
+        <div
+          className="todo-card-top"
+          onClick={() => { if (overflows || expanded) setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}
+        >
           <button
             type="button"
             className={`todo-tri-box status-${column?.kind || "custom"}`}
-            onClick={() => update(todo, { status: (columns[(columnIndex + 1) % columns.length] || columns[0]).id })}
+            onClick={(event) => { event.stopPropagation(); update(todo, { status: (columns[(columnIndex + 1) % columns.length] || columns[0]).id }); }}
             disabled={busy === todo.id}
             title={`${column?.name || "Zone"} — cliquer pour : ${(columns[(columnIndex + 1) % columns.length] || columns[0])?.name}`}
           >
@@ -2892,17 +2900,20 @@ function TodosView() {
             <TodoInlineText
               text={todo.text}
               expanded={expanded}
+              onOverflow={(value) => noteOverflow(todo.id, value)}
               onSave={(newText) => update(todo, { text: newText })}
               disabled={busy === todo.id}
             />
           </div>
-          <button
-            type="button"
-            className="todo-card-expand"
-            onClick={() => setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
-            title={expanded ? "Replier le texte" : "Déplier le texte"}
-            aria-label={expanded ? "Replier le texte" : "Déplier le texte"}
-          >{expanded ? "⌃" : "⌄"}</button>
+          {(overflows || expanded) && (
+            <button
+              type="button"
+              className="todo-card-expand"
+              onClick={() => setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
+              title={expanded ? "Replier le texte" : "Déplier le texte"}
+              aria-label={expanded ? "Replier le texte" : "Déplier le texte"}
+            >{expanded ? "⌃" : "⌄"}</button>
+          )}
         </div>
 
         <div className="todo-card-meta">
@@ -2962,8 +2973,19 @@ function TodosView() {
             <details className="todo-card-menu">
               <summary title="Actions sur la tâche">⋯</summary>
               <div className="todo-card-menu-panel">
-                <button onClick={() => setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}>{expanded ? "Replier le texte" : "Déplier le texte"}</button>
+                {(overflows || expanded) && <button onClick={() => setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}>{expanded ? "Replier le texte" : "Déplier le texte"}</button>}
                 <button onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}>{todo.dueDate ? "Modifier la date" : "Ajouter une date"}</button>
+                <label className="todo-card-menu-move">
+                  <span>Déplacer vers</span>
+                  <select
+                    value={todo.folderId || ROOT_FOLDER}
+                    onChange={(event) => update(todo, { folderId: event.target.value })}
+                    disabled={busy === todo.id}
+                    aria-label="Déplacer la tâche vers un autre projet ou dossier"
+                  >
+                    {folders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
+                  </select>
+                </label>
                 <button className="danger" onClick={() => removeTodo(todo)} disabled={busy === `del:${todo.id}`}>Supprimer la tâche</button>
               </div>
             </details>
