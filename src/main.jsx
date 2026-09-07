@@ -568,7 +568,7 @@ function TouchSystemBar({ sessions, onHome, onNew }) {
   );
 }
 
-function DashboardAgentCard({ session, onOpen, onEdit, onFavorite }) {
+function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) {
   return (
     <article className="agent-card">
       <button className="agent-card-open" onClick={() => onOpen(session.id)}>
@@ -576,7 +576,7 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite }) {
         <span className="agent-info"><strong><b className={`assistant-chip ${session.assistant}`} title={`${assistantMeta[session.assistant]?.label || session.assistant}${session.switchedFrom ? ` · basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}` : ""}`}>{assistantMeta[session.assistant]?.glyph || "?"}</b>{session.switchedFrom && <i className="switched-mark" title={`Basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}`}>↔</i>}<span className="agent-name">{session.name}</span>{session.canEdit === false && <b className="shared-chip" title={`Agent partagé par ${session.owner?.name || "autre profil"}`}>⇄ {session.owner?.name || "partagé"}</b>}{session.canEdit !== false && session.shared && <b className="shared-chip own" title="Agent partagé avec les autres profils">⇄ partagé</b>}</strong><small>{session.project?.name || "Sans projet"} · {session.cwd || session.id}</small><em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {session.usage?.contextPercent ?? "—"}% contexte · <RelativeTime date={session.activityAt} /></em></span>
         <span className="open-arrow">›</span>
       </button>
-      {session.managed && session.canEdit !== false && <div className="agent-card-actions"><button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button><button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`}>Éditer</button></div>}
+      {session.managed && session.canEdit !== false && <div className="agent-card-actions"><button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button>{!session.core && <button className="agent-card-archive" onClick={() => onArchive(session)} title="Archiver: ferme l'agent en gardant son fil pour le restaurer" aria-label={`Archiver ${session.name}`}>⇩</button>}<button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`}>Éditer</button></div>}
     </article>
   );
 }
@@ -599,9 +599,10 @@ function AgentArchives({ onOpen }) {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    if (!open) return undefined;
-    const timer = setInterval(load, 20_000);
-    return () => clearInterval(timer);
+    // Un archivage ailleurs dans l'ecran rafraichit immediatement la liste.
+    window.addEventListener("noyau:archives", load);
+    const timer = setInterval(load, open ? 20_000 : 60_000);
+    return () => { window.removeEventListener("noyau:archives", load); clearInterval(timer); };
   }, [open, load]);
 
   async function restore(archive) {
@@ -662,7 +663,7 @@ function AgentArchives({ onOpen }) {
   );
 }
 
-function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavorite, onProjects, onFinances, onRefreshQuotas }) {
+function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavorite, onArchive, onProjects, onFinances, onRefreshQuotas }) {
   const [refreshingQuotas, setRefreshingQuotas] = useState(false);
   const [quotaRefreshState, setQuotaRefreshState] = useState("");
   const [weather, setWeather] = useState(() => {
@@ -748,10 +749,10 @@ function Dashboard({ sessions, projects, quotas, onOpen, onNew, onEdit, onFavori
             <details className="agent-group" key={item.sessions[0].projectId}>
               <summary><span className="agent-group-chevron">›</span><strong>{item.project?.name || "Projet"}</strong><small>{item.sessions.length} agents actifs</small></summary>
               <div className="agent-group-grid">
-                {item.sessions.map((session) => <DashboardAgentCard key={session.id} session={session} onOpen={onOpen} onEdit={onEdit} onFavorite={onFavorite} />)}
+                {item.sessions.map((session) => <DashboardAgentCard key={session.id} session={session} onOpen={onOpen} onEdit={onEdit} onFavorite={onFavorite} onArchive={onArchive} />)}
               </div>
             </details>
-          ) : <DashboardAgentCard key={item.session.id} session={item.session} onOpen={onOpen} onEdit={onEdit} onFavorite={onFavorite} />)}
+          ) : <DashboardAgentCard key={item.session.id} session={item.session} onOpen={onOpen} onEdit={onEdit} onFavorite={onFavorite} onArchive={onArchive} />)}
           {!sessions.length && (
             <button className="empty-agent" onClick={onNew}><span>+</span><strong>Lancer premier agent</strong><small>Codex, Claude ou terminal</small></button>
           )}
@@ -4712,6 +4713,18 @@ function App() {
     }
   }
 
+  async function archiveAgent(session) {
+    if (!window.confirm(`Archiver « ${session.name} » ? L'agent se ferme et reste restaurable depuis « Agents archivés ».`)) return;
+    try {
+      await api(`/api/sessions/${session.id}/archive`, { method: "POST" });
+      setSessions((items) => items.filter((item) => item.id !== session.id));
+      window.dispatchEvent(new Event("noyau:archives"));
+      await refresh();
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }
+
   async function moduleRequest(path, options) {
     try {
       const result = await api(path, options);
@@ -4751,7 +4764,7 @@ function App() {
         <ViewBoundary viewKey={`${view}:${activeId || ""}`}>
         {!active ? (
           <>
-            {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onRefreshQuotas={refreshQuotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
+            {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onRefreshQuotas={refreshQuotas} onOpen={setActiveId} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onArchive={archiveAgent} onProjects={() => setView("projects")} onFinances={() => setView("finances")} /></>}
             {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={setActiveId} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onModuleBuild={buildModule} onModuleBuildRefresh={refreshModuleBuilds} onOpenTodos={() => setView("todos")} onReorder={reorderProjects} onRefresh={refresh} /></>}
             {view === "todos" && <><Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} /><TodosView /></>}
             {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}

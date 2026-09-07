@@ -2052,6 +2052,26 @@ app.delete("/api/agents/archives/:id", async (request, response, next) => {
   }
 });
 
+app.post("/api/sessions/:id/archive", async (request, response, next) => {
+  try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
+    const current = store.get(request.params.id);
+    if (!current) throw new Error("Session Noyau introuvable.");
+    if (current.core) throw new Error("Agent de base du Noyau: non archivable.");
+    // On garde le fil de discussion avant de fermer, sinon la restauration repartirait de zero.
+    let threadId = current.threadId || null;
+    if (!threadId && current.assistant === "codex") {
+      const live = (await tmux.list()).find((item) => item.id === request.params.id);
+      threadId = live ? await usage.discoverCodexThread(live.panePid).catch(() => null) : null;
+    }
+    const archived = await agentArchiveService.archive(request.params.id, { ...current, threadId }, { reason: "closed" });
+    await tmux.kill(request.params.id);
+    response.json({ archived, archives: await agentArchiveService.list({ profileId: request.profile.id }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.delete("/api/sessions/:id", async (request, response, next) => {
   try {
     if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");

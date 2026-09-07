@@ -2105,3 +2105,9 @@ textarea.todo-text-input.open { max-height: none; overflow: visible; }
 .todo-date-popover button:hover { border-color: var(--green); color: var(--green); }
 .todo-date-popover input { flex: 1; min-width: 0; height: 26px; padding: 0 6px; border: 1px solid var(--c-344038); border-radius: 5px; background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 10px; }
 .todo-date-popover button.clear { width: 26px; padding: 0; }
+
+/* Archiver un agent depuis sa carte */
+.agent-card-archive { width: 25px; border: 1px solid var(--c-303833); border-radius: 5px; background: var(--c-171c19); color: var(--c-89928c); font-size: 11px; cursor: pointer; }
+.agent-card-archive:hover { color: var(--green); border-color: var(--c-58743d); }
+.agent-archives > summary strong::before { content: "⇩"; margin-right: 6px; color: var(--c-8d9690); }
+.agent-archives { background: var(--c-0d110f); }
