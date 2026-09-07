@@ -2909,7 +2909,7 @@ function TodosView() {
             <button
               type="button"
               className="todo-card-expand"
-              onClick={() => setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
+              onClick={(event) => { event.stopPropagation(); setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}
               title={expanded ? "Replier le texte" : "Déplier le texte"}
               aria-label={expanded ? "Replier le texte" : "Déplier le texte"}
             >{expanded ? "⌃" : "⌄"}</button>
