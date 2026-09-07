@@ -1114,6 +1114,57 @@ function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefr
   );
 }
 
+function TodoInlineText({ text, onSave, disabled, placeholder = "Tâche sans titre…" }) {
+  const [val, setVal] = useState(text || "");
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (!editing) {
+      setVal(text || "");
+    }
+  }, [text, editing]);
+
+  const commit = () => {
+    const trimmed = val.trim();
+    setEditing(false);
+    if (trimmed && trimmed !== text) {
+      onSave(trimmed);
+    } else {
+      setVal(text || "");
+    }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.target.blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setVal(text || "");
+      setEditing(false);
+      e.target.blur();
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      className="todo-text-input"
+      value={val}
+      disabled={disabled}
+      placeholder={placeholder}
+      title="Cliquer pour modifier le texte"
+      aria-label="Modifier le texte de la tâche"
+      onFocus={() => setEditing(true)}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={handleKeyDown}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    />
+  );
+}
+
 function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onModuleBuild, onModuleBuildRefresh, onOpenTodos, onReorder, onRefresh }) {
   // Le cache Todo porte { todos, folders } depuis la refonte par dossier: on accepte les deux formes.
   const [todos, setTodos] = useState(() => {
@@ -1142,6 +1193,19 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
     setTodos((prev) => prev.map((t) => t.id === todo.id ? { ...t, status: next, completed: next === "done" } : t));
     try {
       await api(`/api/todos/${todo.id}`, { method: "PATCH", body: JSON.stringify({ status: next }) });
+      await loadTodos();
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      setTodoBusy("");
+    }
+  }
+
+  async function updateTodoText(todo, newText) {
+    setTodoBusy(todo.id);
+    setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, text: newText } : t)));
+    try {
+      await api(`/api/todos/${todo.id}`, { method: "PATCH", body: JSON.stringify({ text: newText }) });
       await loadTodos();
     } catch (error) {
       window.alert(error.message);
@@ -1243,7 +1307,11 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
                         {isReview && <span className="todo-tri-icon review-bar" />}
                       </button>
                       <span>
-                        <strong>{todo.text}</strong>
+                        <TodoInlineText
+                          text={todo.text}
+                          onSave={(newText) => updateTodoText(todo, newText)}
+                          disabled={todoBusy === todo.id}
+                        />
                         <small className={todo.dueDate && todo.dueDate < localIsoDate() && !isDone ? "overdue" : isReview ? "status-review-label" : ""}>
                           {isReview ? "◐ À vérifier / tester" : todoDueLabel(todo.dueDate)}
                           {todo.comments?.length ? ` · 💬 ${todo.comments.length}` : ""}
@@ -2412,7 +2480,11 @@ function TodosView() {
               {isReview && <span className="todo-tri-icon review-bar" />}
             </button>
             <div className="todo-text-group">
-              <strong>{todo.text}</strong>
+              <TodoInlineText
+                text={todo.text}
+                onSave={(newText) => update(todo, { text: newText })}
+                disabled={busy === todo.id}
+              />
               <small className={overdue ? "overdue" : isReview ? "status-review-label" : ""}>
                 {isDone ? completedLabel(todo.completedAt) || "Terminée" : isReview ? "◐ À vérifier / tester" : todoDueLabel(todo.dueDate)}
               </small>
