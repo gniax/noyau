@@ -2235,6 +2235,9 @@ function TodosView() {
   const [openComments, setOpenComments] = useState({});
   const [newComment, setNewComment] = useState({});
   const [filterTab, setFilterTab] = useState("all");
+  const [viewMode, setViewMode] = useState(() => { try { return localStorage.getItem(profileCacheKey("todo-view-mode")) || "board"; } catch { return "board"; } });
+  const [addingInColumn, setAddingInColumn] = useState(null);
+  const [columnText, setColumnText] = useState("");
   const [openFolder, setOpenFolder] = useState(() => { try { return localStorage.getItem(profileCacheKey("todo-folder")) || null; } catch { return null; } });
   const [showDone, setShowDone] = useState({});
   const [dragging, setDragging] = useState("");
@@ -2284,9 +2287,29 @@ function TodosView() {
   async function add(event) {
     event.preventDefault();
     if (!text.trim()) return;
+    const targetFolderId = !openFolder || openFolder === "all" || openFolder === ROOT_FOLDER ? null : openFolder;
     await run("new", async () => {
-      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text, folderId: !openFolder || openFolder === ROOT_FOLDER ? null : openFolder }) });
+      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text, folderId: targetFolderId }) });
       setText("");
+      return result;
+    });
+  }
+
+  async function addWithStatus(event, targetStatus) {
+    event?.preventDefault();
+    const raw = columnText.trim();
+    if (!raw) return;
+    setColumnText("");
+    setAddingInColumn(null);
+    const targetFolderId = !openFolder || openFolder === "all" || openFolder === ROOT_FOLDER ? null : openFolder;
+    await run("new", async () => {
+      const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text: raw, folderId: targetFolderId }) });
+      if (targetStatus && targetStatus !== "todo" && result.todo?.id) {
+        return await api(`/api/todos/${encodeURIComponent(result.todo.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: targetStatus }),
+        });
+      }
       return result;
     });
   }
@@ -2332,9 +2355,18 @@ function TodosView() {
     setOpenFolder(id);
     setDatePanel(null);
     setFilterTab("all");
+    setAddingInColumn(null);
+    setColumnText("");
     try {
       if (id) localStorage.setItem(profileCacheKey("todo-folder"), id);
       else localStorage.removeItem(profileCacheKey("todo-folder"));
+    } catch { /* stockage optionnel */ }
+  }
+
+  function switchViewMode(mode) {
+    setViewMode(mode);
+    try {
+      localStorage.setItem(profileCacheKey("todo-view-mode"), mode);
     } catch { /* stockage optionnel */ }
   }
 
@@ -2369,63 +2401,54 @@ function TodosView() {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    const order = items.map((item) => item.id);
     dragRef.current = {
       pointerId: event.pointerId,
       id: todo.id,
       folderId: todo.folderId || ROOT_FOLDER,
-      order,
-      initialOrder: [...order],
-      isDoneList: todo.completed || todo.status === "done",
+      items,
+      startIndex: items.findIndex((item) => item.id === todo.id),
+      targetIndex: items.findIndex((item) => item.id === todo.id),
+      startY: event.clientY,
+      lastHysteresisY: event.clientY,
     };
     setDragging(todo.id);
   }
 
   function dragOver(event) {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    const currentIndex = drag.order.indexOf(drag.id);
-    if (currentIndex < 0) return;
-
-    for (let i = 0; i < drag.order.length; i++) {
-      if (i === currentIndex) continue;
-      const rowId = drag.order[i];
-      const node = rowRefs.current.get(rowId);
+    if (!drag) return;
+    const deltaY = event.clientY - drag.lastHysteresisY;
+    const HYSTERESIS_THRESHOLD = 18;
+    if (Math.abs(deltaY) < HYSTERESIS_THRESHOLD) return;
+    let nextIndex = drag.targetIndex;
+    for (let index = 0; index < drag.items.length; index += 1) {
+      const node = rowRefs.current.get(drag.items[index].id);
       if (!node) continue;
       const rect = node.getBoundingClientRect();
       if (event.clientY >= rect.top && event.clientY <= rect.bottom) {
-        const midY = rect.top + rect.height / 2;
-        if ((i > currentIndex && event.clientY > midY) || (i < currentIndex && event.clientY < midY)) {
-          const nextOrder = drag.order.filter((id) => id !== drag.id);
-          nextOrder.splice(i, 0, drag.id);
-          drag.order = nextOrder;
-          setTodos((prev) => {
-            const map = new Map(prev.filter((item) => nextOrder.includes(item.id)).map((item) => [item.id, item]));
-            const queue = nextOrder.map((id) => map.get(id)).filter(Boolean);
-            return prev.map((item) => (map.has(item.id) ? queue.shift() : item));
-          });
-          break;
-        }
+        nextIndex = index;
+        break;
       }
+    }
+    if (nextIndex !== drag.targetIndex) {
+      drag.targetIndex = nextIndex;
+      drag.lastHysteresisY = event.clientY;
     }
   }
 
   async function endDrag(event) {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const finalOrder = [...drag.order];
-    const initialOrder = drag.initialOrder || [];
-    const isDone = drag.isDoneList;
+    if (!drag) return;
     dragRef.current = null;
     setDragging("");
+    event.currentTarget.releasePointerCapture?.(drag.pointerId);
+    if (drag.targetIndex === drag.startIndex) return;
 
-    if (finalOrder.join() === initialOrder.join()) return;
+    const source = drag.items[drag.startIndex];
+    const isDone = source.status === "done" || source.completed;
+    const target = drag.items[drag.targetIndex];
+    let beforeId = drag.targetIndex > drag.startIndex ? drag.items[drag.targetIndex + 1]?.id || null : target?.id || null;
 
-    const position = finalOrder.indexOf(drag.id);
-    let beforeId = finalOrder[position + 1] || null;
-
-    // Si on dépose une tâche active en bas de la liste en cours et qu'il y a des tâches terminées dans le dossier
     if (!beforeId && !isDone) {
       const activeDone = todos.filter((t) => (t.folderId || ROOT_FOLDER) === (drag.folderId || ROOT_FOLDER) && (t.completed || t.status === "done"));
       if (activeDone.length > 0) {
@@ -2434,6 +2457,218 @@ function TodosView() {
     }
 
     await run(drag.id, () => api(`/api/todos/${encodeURIComponent(drag.id)}/move`, { method: "POST", body: JSON.stringify({ beforeId }) }));
+  }
+
+  function handleBoardDragOver(event) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  }
+
+  function handleBoardDrop(event, targetStatus) {
+    event.preventDefault();
+    const todoId = event.dataTransfer.getData("text/plain");
+    if (!todoId) return;
+    const targetTodo = todos.find((t) => t.id === todoId);
+    if (!targetTodo) return;
+    const currentStatus = targetTodo.status || (targetTodo.completed ? "done" : "todo");
+    if (currentStatus !== targetStatus) {
+      update(targetTodo, { status: targetStatus });
+    }
+  }
+
+  function renderBoardCard(todo, currentColumn) {
+    const isDone = currentColumn === "done";
+    const isReview = currentColumn === "review";
+    const overdue = todo.dueDate && todo.dueDate < localIsoDate() && !isDone;
+    const commentsCount = todo.comments?.length || 0;
+    const commentsOpen = !!openComments[todo.id];
+    const folderObj = folders.find((f) => f.id === (todo.folderId || ROOT_FOLDER));
+
+    return (
+      <div
+        key={todo.id}
+        className={`todo-board-card ${isDone ? "completed" : ""} ${isReview ? "in-review" : ""}`}
+        draggable
+        onDragStart={(e) => {
+          e.dataTransfer.setData("text/plain", todo.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
+      >
+        <div className="todo-card-top">
+          <button
+            type="button"
+            className={`todo-tri-box status-${todo.status || (todo.completed ? "done" : "todo")}`}
+            onClick={() => {
+              const next = todo.status === "todo" ? "review" : todo.status === "review" ? "done" : "todo";
+              update(todo, { status: next });
+            }}
+            disabled={busy === todo.id}
+            title={
+              todo.status === "todo" ? "À faire (cliquer pour : À vérifier / tester)" :
+              todo.status === "review" ? "À vérifier (cliquer pour : Terminée)" :
+              "Terminée (cliquer pour : À faire)"
+            }
+          >
+            {isDone && <span className="todo-tri-icon done-check">✓</span>}
+            {isReview && <span className="todo-tri-icon review-bar" />}
+          </button>
+          <div className="todo-card-text">
+            <TodoInlineText
+              text={todo.text}
+              onSave={(newText) => update(todo, { text: newText })}
+              disabled={busy === todo.id}
+            />
+          </div>
+        </div>
+
+        <div className="todo-card-meta">
+          <div className="todo-card-pills">
+            {todo.dueDate ? (
+              <button
+                className={`todo-date-pill ${overdue ? "overdue" : ""}`}
+                onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}
+                disabled={busy === todo.id}
+                title="Modifier date limite"
+              >
+                📅 {todo.dueDate.slice(5).split("-").reverse().join("/")}
+              </button>
+            ) : (
+              <button
+                className="todo-date-pill empty"
+                onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}
+                disabled={busy === todo.id}
+                title="Ajouter une date limite"
+              >
+                + Date
+              </button>
+            )}
+            <button
+              className={`todo-comments-trigger ${commentsCount > 0 ? "has-comments" : ""} ${commentsOpen ? "active" : ""}`}
+              onClick={() => setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
+              title={`Commentaires (${commentsCount})`}
+            >
+              💬{commentsCount > 0 ? ` ${commentsCount}` : ""}
+            </button>
+            {openFolder === "all" && folderObj && (
+              <span className="todo-folder-pill" title={`Dossier : ${folderObj.name}`}>
+                {folderObj.name}
+              </span>
+            )}
+          </div>
+
+          <div className="todo-card-shift-actions">
+            {currentColumn === "todo" && (
+              <button
+                type="button"
+                className="todo-shift-btn review"
+                onClick={() => update(todo, { status: "review" })}
+                disabled={busy === todo.id}
+                title="Déplacer vers : À tester / valider"
+              >
+                À tester ›
+              </button>
+            )}
+            {currentColumn === "review" && (
+              <>
+                <button
+                  type="button"
+                  className="todo-shift-btn todo"
+                  onClick={() => update(todo, { status: "todo" })}
+                  disabled={busy === todo.id}
+                  title="Déplacer vers : À faire"
+                >
+                  ‹ À faire
+                </button>
+                <button
+                  type="button"
+                  className="todo-shift-btn done"
+                  onClick={() => update(todo, { status: "done" })}
+                  disabled={busy === todo.id}
+                  title="Déplacer vers : Terminé"
+                >
+                  Terminer ›
+                </button>
+              </>
+            )}
+            {currentColumn === "done" && (
+              <button
+                type="button"
+                className="todo-shift-btn reopen"
+                onClick={() => update(todo, { status: "todo" })}
+                disabled={busy === todo.id}
+                title="Rouvrir dans : À faire"
+              >
+                ↺ Rouvrir
+              </button>
+            )}
+          </div>
+        </div>
+
+        {datePanel === todo.id && (
+          <div className="todo-inline-panel todo-date-panel">
+            <span>Date limite</span>
+            <input
+              type="date"
+              value={todo.dueDate || ""}
+              onChange={async (event) => {
+                await update(todo, { dueDate: event.target.value || null });
+                setDatePanel(null);
+              }}
+              disabled={busy === todo.id}
+            />
+            <button
+              onClick={async () => {
+                await update(todo, { dueDate: null });
+                setDatePanel(null);
+              }}
+              disabled={busy === todo.id || !todo.dueDate}
+            >
+              Effacer
+            </button>
+          </div>
+        )}
+
+        {commentsOpen && (
+          <div className="todo-comments-panel">
+            <div className="todo-comments-header">
+              <strong>Commentaires ({commentsCount})</strong>
+              <small>Discussions et notes illimitées</small>
+            </div>
+            <div className="todo-comments-list">
+              {todo.comments && todo.comments.map((comment) => (
+                <div className="todo-comment-item" key={comment.id}>
+                  <div className="todo-comment-meta">
+                    {comment.author && <strong className="todo-comment-author">{comment.author}</strong>}
+                    <span className="todo-comment-time">{formatCommentDate(comment.createdAt)}</span>
+                    <button
+                      className="todo-comment-delete"
+                      onClick={() => removeComment(todo, comment.id)}
+                      disabled={busy === `comment-del:${comment.id}`}
+                      title="Supprimer ce commentaire"
+                    >×</button>
+                  </div>
+                  <p className="todo-comment-text">{comment.text}</p>
+                </div>
+              ))}
+              {(!todo.comments || !todo.comments.length) && (
+                <p className="todo-comments-empty">Aucun commentaire pour le moment.</p>
+              )}
+            </div>
+            <form className="todo-comment-form" onSubmit={(e) => addComment(todo, e)}>
+              <input
+                value={newComment[todo.id] || ""}
+                onChange={(e) => setNewComment({ ...newComment, [todo.id]: e.target.value })}
+                placeholder="Ajouter un commentaire ou une note…"
+                maxLength="2000"
+              />
+              <button className="primary" disabled={busy === `comment:${todo.id}` || !(newComment[todo.id] || "").trim()}>
+                {busy === `comment:${todo.id}` ? "…" : "Commenter"}
+              </button>
+            </form>
+          </div>
+        )}
+      </div>
+    );
   }
 
   function folderRow(todo, items) {
@@ -2549,7 +2784,9 @@ function TodosView() {
   const openCount = todos.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo").length;
   const reviewCount = todos.filter((todo) => todo.status === "review").length;
   const doneCount = todos.filter((todo) => (todo.status === "done" || todo.completed)).length;
-  const active = sections.find((section) => section.folder.id === openFolder) || null;
+  const active = openFolder === "all"
+    ? { folder: { id: "all", name: "Toutes les tâches" }, items: todos }
+    : (sections.find((section) => section.folder.id === openFolder) || null);
 
   if (!active) {
     return (
@@ -2564,10 +2801,36 @@ function TodosView() {
               {doneCount > 0 ? ` · ${doneCount} terminée${doneCount > 1 ? "s" : ""}` : ""} · {storage}
             </p>
           </div>
-          <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
+          <div className="todo-hero-right">
+            <div className="todo-view-switcher">
+              <button
+                type="button"
+                className={viewMode === "board" ? "active" : ""}
+                onClick={() => switchViewMode("board")}
+                title="Vue Tableau Trello (3 colonnes)"
+              >
+                <span className="view-icon">⊞</span> Trello
+              </button>
+              <button
+                type="button"
+                className={viewMode === "classic" ? "active" : ""}
+                onClick={() => switchViewMode("classic")}
+                title="Vue Liste classique"
+              >
+                <span className="view-icon">📋</span> Classique
+              </button>
+            </div>
+            <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
+          </div>
         </section>
         {error && <p className="finance-error todo-error">{error}</p>}
         <section className="todo-folder-grid">
+          <button className="panel todo-folder-card all-tasks" onClick={() => selectFolder("all")}>
+            <span className="todo-folder-name">📁 Toutes les tâches</span>
+            <span className="todo-folder-meta">
+              {openCount} à faire{reviewCount > 0 ? ` · ${reviewCount} à vérifier` : ""}{doneCount > 0 ? ` · ${doneCount} terminée${doneCount > 1 ? "s" : ""}` : ""}
+            </span>
+          </button>
           {sections.map(({ folder, items }) => {
             const folderTodos = items.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo");
             const folderReviews = items.filter((todo) => todo.status === "review");
@@ -2622,36 +2885,142 @@ function TodosView() {
             {doneItems.length ? ` · ${doneItems.length} terminée${doneItems.length > 1 ? "s" : ""}` : ""}
           </p>
         </div>
-        {!folder.projectId && folder.id !== ROOT_FOLDER && (
-          <div className="todo-folder-actions">
-            <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>Renommer</button>
-            <button onClick={() => removeFolder(folder)} disabled={busy === folder.id} aria-label={`Supprimer ${folder.name}`}>Supprimer</button>
+        <div className="todo-hero-right">
+          <div className="todo-view-switcher">
+            <button
+              type="button"
+              className={viewMode === "board" ? "active" : ""}
+              onClick={() => switchViewMode("board")}
+              title="Vue Tableau Trello (3 colonnes)"
+            >
+              <span className="view-icon">⊞</span> Trello
+            </button>
+            <button
+              type="button"
+              className={viewMode === "classic" ? "active" : ""}
+              onClick={() => switchViewMode("classic")}
+              title="Vue Liste classique"
+            >
+              <span className="view-icon">📋</span> Classique
+            </button>
           </div>
-        )}
+          {!folder.projectId && folder.id !== ROOT_FOLDER && folder.id !== "all" && (
+            <div className="todo-folder-actions">
+              <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>Renommer</button>
+              <button onClick={() => removeFolder(folder)} disabled={busy === folder.id} aria-label={`Supprimer ${folder.name}`}>Supprimer</button>
+            </div>
+          )}
+        </div>
       </section>
+
       <form className="panel todo-add" onSubmit={add}>
         <input value={text} onChange={(event) => setText(event.target.value)} placeholder={`Ajouter dans ${folder.name}…`} maxLength="300" />
         <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : "Ajouter"}</button>
       </form>
-      <div className="todo-filter-tabs">
-        <button className={filterTab === "all" ? "active" : ""} onClick={() => setFilterTab("all")}>Toutes ({items.length})</button>
-        <button className={filterTab === "todo" ? "active" : ""} onClick={() => setFilterTab("todo")}>À faire ({todoItems.length})</button>
-        <button className={filterTab === "review" ? "active" : ""} onClick={() => setFilterTab("review")}>À vérifier / tester ({reviewItems.length})</button>
-        <button className={filterTab === "done" ? "active" : ""} onClick={() => setFilterTab("done")}>Terminées ({doneItems.length})</button>
-      </div>
+
       {error && <p className="finance-error todo-error">{error}</p>}
-      <section className="panel todo-list">
-        {openList.map((todo) => folderRow(todo, openList))}
-        {!openList.length && !doneList.length && <p className="finance-empty">Aucune tâche dans cette vue.</p>}
-        {doneList.length > 0 && (
-          <>
-            <button className="todo-done-toggle" onClick={() => setShowDone((current) => ({ ...current, [folder.id]: !current[folder.id] }))}>
-              {showDone[folder.id] ? "▾" : "▸"} {doneList.length} terminée{doneList.length > 1 ? "s" : ""}
-            </button>
-            {showDone[folder.id] && doneList.map((todo) => folderRow(todo, doneList))}
-          </>
-        )}
-      </section>
+
+      {viewMode === "board" ? (
+        <div className="todo-board">
+          {/* Colonne 1: À faire */}
+          <div className="todo-board-column column-todo" onDragOver={handleBoardDragOver} onDrop={(e) => handleBoardDrop(e, "todo")}>
+            <header className="todo-column-header">
+              <div className="todo-column-title">
+                <span className="todo-column-dot todo" />
+                <h3>À faire</h3>
+                <span className="todo-column-count">{todoItems.length}</span>
+              </div>
+              <button className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === "todo" ? null : "todo"))} title="Ajouter une tâche à faire">+</button>
+            </header>
+            {addingInColumn === "todo" && (
+              <form className="todo-board-quick-add" onSubmit={(e) => addWithStatus(e, "todo")}>
+                <input
+                  autoFocus
+                  value={columnText}
+                  onChange={(e) => setColumnText(e.target.value)}
+                  placeholder="Nouvelle tâche à faire…"
+                  onKeyDown={(e) => { if (e.key === "Escape") setAddingInColumn(null); }}
+                />
+                <div className="quick-add-actions">
+                  <button type="submit" className="primary" disabled={!columnText.trim()}>Ajouter</button>
+                  <button type="button" className="ghost" onClick={() => setAddingInColumn(null)}>Annuler</button>
+                </div>
+              </form>
+            )}
+            <div className="todo-column-cards">
+              {todoItems.map((todo) => renderBoardCard(todo, "todo"))}
+              {!todoItems.length && !addingInColumn && <p className="todo-column-empty">Aucune tâche à faire</p>}
+            </div>
+          </div>
+
+          {/* Colonne 2: À tester / valider */}
+          <div className="todo-board-column column-review" onDragOver={handleBoardDragOver} onDrop={(e) => handleBoardDrop(e, "review")}>
+            <header className="todo-column-header">
+              <div className="todo-column-title">
+                <span className="todo-column-dot review" />
+                <h3>À tester / valider</h3>
+                <span className="todo-column-count">{reviewItems.length}</span>
+              </div>
+              <button className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === "review" ? null : "review"))} title="Ajouter une tâche à vérifier">+</button>
+            </header>
+            {addingInColumn === "review" && (
+              <form className="todo-board-quick-add" onSubmit={(e) => addWithStatus(e, "review")}>
+                <input
+                  autoFocus
+                  value={columnText}
+                  onChange={(e) => setColumnText(e.target.value)}
+                  placeholder="Nouvelle tâche à tester / valider…"
+                  onKeyDown={(e) => { if (e.key === "Escape") setAddingInColumn(null); }}
+                />
+                <div className="quick-add-actions">
+                  <button type="submit" className="primary" disabled={!columnText.trim()}>Ajouter</button>
+                  <button type="button" className="ghost" onClick={() => setAddingInColumn(null)}>Annuler</button>
+                </div>
+              </form>
+            )}
+            <div className="todo-column-cards">
+              {reviewItems.map((todo) => renderBoardCard(todo, "review"))}
+              {!reviewItems.length && !addingInColumn && <p className="todo-column-empty">Aucune tâche en test / validation</p>}
+            </div>
+          </div>
+
+          {/* Colonne 3: Terminé */}
+          <div className="todo-board-column column-done" onDragOver={handleBoardDragOver} onDrop={(e) => handleBoardDrop(e, "done")}>
+            <header className="todo-column-header">
+              <div className="todo-column-title">
+                <span className="todo-column-dot done" />
+                <h3>Terminé</h3>
+                <span className="todo-column-count">{doneItems.length}</span>
+              </div>
+            </header>
+            <div className="todo-column-cards">
+              {doneItems.map((todo) => renderBoardCard(todo, "done"))}
+              {!doneItems.length && <p className="todo-column-empty">Aucune tâche terminée</p>}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="todo-filter-tabs">
+            <button className={filterTab === "all" ? "active" : ""} onClick={() => setFilterTab("all")}>Toutes ({items.length})</button>
+            <button className={filterTab === "todo" ? "active" : ""} onClick={() => setFilterTab("todo")}>À faire ({todoItems.length})</button>
+            <button className={filterTab === "review" ? "active" : ""} onClick={() => setFilterTab("review")}>À vérifier / tester ({reviewItems.length})</button>
+            <button className={filterTab === "done" ? "active" : ""} onClick={() => setFilterTab("done")}>Terminées ({doneItems.length})</button>
+          </div>
+          <section className="panel todo-list">
+            {openList.map((todo) => folderRow(todo, openList))}
+            {!openList.length && !doneList.length && <p className="finance-empty">Aucune tâche dans cette vue.</p>}
+            {doneList.length > 0 && (
+              <>
+                <button className="todo-done-toggle" onClick={() => setShowDone((current) => ({ ...current, [folder.id]: !current[folder.id] }))}>
+                  {showDone[folder.id] ? "▾" : "▸"} {doneList.length} terminée{doneList.length > 1 ? "s" : ""}
+                </button>
+                {showDone[folder.id] && doneList.map((todo) => folderRow(todo, doneList))}
+              </>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }
