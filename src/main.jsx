@@ -583,19 +583,29 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
 }
 
 // Selecteur de tache pour la conversation: les plus recemment actives d'abord.
-function TodoTagPicker({ onPick, onClose }) {
+function TodoTagPicker({ onPick, onClose, projectId = null, projectName = null }) {
   const [todos, setTodos] = useState([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
 
+  const [scope, setScope] = useState(projectId ? "project" : "all");
+
   useEffect(() => {
     api("/api/todos")
-      .then((result) => setTodos([...(result.todos || [])].sort((a, b) => String(b.activityAt || "").localeCompare(String(a.activityAt || "")))))
+      .then((result) => {
+        // Les taches du projet de l'agent passent devant, puis l'activite la plus recente.
+        const folderIds = new Set((result.folders || []).filter((folder) => projectId && folder.projectId === projectId).map((folder) => folder.id));
+        const ranked = [...(result.todos || [])]
+          .map((todo) => ({ ...todo, inProject: folderIds.has(todo.folderId) }))
+          .sort((a, b) => (a.inProject === b.inProject ? String(b.activityAt || "").localeCompare(String(a.activityAt || "")) : a.inProject ? -1 : 1));
+        setTodos(ranked);
+      })
       .catch((reason) => setError(reason.message));
-  }, []);
+  }, [projectId]);
 
   const needle = query.trim().toLowerCase().replace(/^\*/, "");
   const matches = todos
+    .filter((todo) => scope !== "project" || todo.inProject)
     .filter((todo) => !needle || todo.text.toLowerCase().includes(needle) || todoRef(todo.id).toLowerCase().includes(needle))
     .slice(0, 40);
 
@@ -610,6 +620,12 @@ function TodoTagPicker({ onPick, onClose }) {
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Chercher une tâche ou une référence *A1B2…"
         />
+        {projectId && (
+          <div className="todo-picker-scope">
+            <button className={scope === "project" ? "active" : ""} onClick={() => setScope("project")}>{projectName || "Ce projet"}</button>
+            <button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}>Toutes les tâches</button>
+          </div>
+        )}
         {error && <p className="form-error">{error}</p>}
         <div className="todo-picker-list">
           {matches.map((todo) => (
@@ -670,7 +686,7 @@ function TodoDetailOverlay({ todo, onClose, onTag }) {
           {(entry.comments || []).map((item) => (
             <div className="todo-comment-item" key={item.id}>
               <div className="todo-comment-meta">
-                {item.author && <strong className="todo-comment-author">{item.author}</strong>}
+                {item.author && <strong className={`todo-comment-author ${item.kind === "agent" ? "agent" : ""}`}>{item.kind === "agent" ? `IA · ${item.author}` : item.author}</strong>}
                 <span className="todo-comment-time">{formatCommentDate(item.createdAt)}</span>
               </div>
               <p className="todo-comment-text">{item.text}</p>
@@ -2526,10 +2542,12 @@ function TodosView() {
   const [dragging, setDragging] = useState("");
   const dragRef = React.useRef(null);
   const rowRefs = React.useRef(new Map());
+  const seenRef = React.useRef(new Set());
 
   const apply = useCallback((result) => {
     if (!result) return;
-    const nextTodos = result.todos || [];
+    // Une reponse partie avant le marquage ne doit pas rallumer une pastille deja lue.
+    const nextTodos = (result.todos || []).map((todo) => (seenRef.current.has(todo.id) ? { ...todo, unread: 0 } : todo));
     const nextFolders = result.folders || [];
     const nextColumns = result.columns?.length ? result.columns : DEFAULT_COLUMNS;
     const nextCorrection = result.correction !== false;
@@ -2538,6 +2556,7 @@ function TodosView() {
     setColumns(nextColumns);
     setCorrection(nextCorrection);
     storeView("todos", { todos: nextTodos, folders: nextFolders, columns: nextColumns, correction: nextCorrection });
+    window.dispatchEvent(new CustomEvent("noyau:todos-unread", { detail: nextTodos.reduce((total, todo) => total + (todo.unread || 0), 0) }));
   }, []);
 
   const load = useCallback(async () => {
@@ -2649,9 +2668,12 @@ function TodosView() {
   async function markSeen(ids) {
     const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
     if (!list.length) return;
+    for (const id of list) seenRef.current.add(id);
     setTodos((prev) => prev.map((item) => (list.includes(item.id) ? { ...item, unread: 0 } : item)));
     try {
-      apply(await api("/api/todos/seen", { method: "POST", body: JSON.stringify({ ids: list }) }));
+      const result = await api("/api/todos/seen", { method: "POST", body: JSON.stringify({ ids: list }) });
+      for (const id of list) if ((result.todos || []).find((todo) => todo.id === id)?.unread === 0) seenRef.current.delete(id);
+      apply(result);
       window.dispatchEvent(new Event("noyau:todos"));
     } catch { /* le compteur se recalera au prochain chargement */ }
   }
@@ -2980,7 +3002,7 @@ function TodosView() {
               {todo.comments && todo.comments.map((comment) => (
                 <div className="todo-comment-item" key={comment.id}>
                   <div className="todo-comment-meta">
-                    {comment.author && <strong className="todo-comment-author">{comment.author}</strong>}
+                    {comment.author && <strong className={`todo-comment-author ${comment.kind === "agent" ? "agent" : ""}`}>{comment.kind === "agent" ? `IA · ${comment.author}` : comment.author}</strong>}
                     <span className="todo-comment-time">{formatCommentDate(comment.createdAt)}</span>
                     <button
                       className="todo-comment-delete"
@@ -3070,11 +3092,15 @@ function TodosView() {
           <div className="todo-actions">
             <button
               className={`todo-comments-trigger ${commentsCount > 0 ? "has-comments" : ""} ${commentsOpen ? "active" : ""}`}
-              onClick={() => setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
+              onClick={() => {
+                setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }));
+                if (todo.unread) markSeen(todo.id);
+              }}
               title={`Commentaires (${commentsCount})`}
             >
               💬{commentsCount > 0 ? ` ${commentsCount}` : ""}
             </button>
+            {todo.unread > 0 && <button type="button" className="todo-unread-pill" onClick={() => markSeen(todo.id)} title="Marquer comme lu">● {todo.unread}</button>}
             <button className={todo.dueDate ? "todo-date-trigger dated" : "todo-date-trigger"} onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)} disabled={busy === todo.id} aria-label="Modifier date limite"><span aria-hidden="true">▣</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}</button>
             <select value={todo.folderId || ROOT_FOLDER} onChange={(event) => update(todo, { folderId: event.target.value })} disabled={busy === todo.id} aria-label="Dossier">{folders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select>
             <button className="todo-ref-pill" onClick={() => writeClipboard(todoRef(todo.id))} title={`Référence ${todoRef(todo.id)} — cliquer pour copier`}>{todoRef(todo.id)}</button>
@@ -3092,7 +3118,7 @@ function TodosView() {
               {todo.comments && todo.comments.map((comment) => (
                 <div className="todo-comment-item" key={comment.id}>
                   <div className="todo-comment-meta">
-                    {comment.author && <strong className="todo-comment-author">{comment.author}</strong>}
+                    {comment.author && <strong className={`todo-comment-author ${comment.kind === "agent" ? "agent" : ""}`}>{comment.kind === "agent" ? `IA · ${comment.author}` : comment.author}</strong>}
                     <span className="todo-comment-time">{formatCommentDate(comment.createdAt)}</span>
                     <button
                       className="todo-comment-delete"
@@ -4381,7 +4407,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
           </section>
         </div>
       )}
-      {todoPicker && <TodoTagPicker onPick={tagTodo} onClose={() => setTodoPicker(false)} />}
+      {todoPicker && <TodoTagPicker onPick={tagTodo} onClose={() => setTodoPicker(false)} projectId={session.projectId || null} projectName={session.project?.name || null} />}
       {todoDetail && <TodoDetailOverlay todo={todoDetail} onClose={() => setTodoDetail(null)} onTag={tagTodo} />}
       <div className={`terminal-controls ${keyboardActive ? "keyboard-active" : ""}`}>
         <input
@@ -4664,9 +4690,11 @@ function App() {
     let disposed = false;
     const load = () => api("/api/todos").then((result) => { if (!disposed) setTodoUnread(result.unread || 0); }).catch(() => {});
     load();
-    const timer = setInterval(load, 30_000);
+    const timer = setInterval(load, 10_000);
+    const direct = (event) => { if (!disposed && typeof event.detail === "number") setTodoUnread(event.detail); };
     window.addEventListener("noyau:todos", load);
-    return () => { disposed = true; clearInterval(timer); window.removeEventListener("noyau:todos", load); };
+    window.addEventListener("noyau:todos-unread", direct);
+    return () => { disposed = true; clearInterval(timer); window.removeEventListener("noyau:todos", load); window.removeEventListener("noyau:todos-unread", direct); };
   }, [auth, profileId]);
 
   const refresh = useCallback(async () => {

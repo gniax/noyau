@@ -66,6 +66,7 @@ async function main() {
   const context = [
     "Suivi to-do Noyau (obligatoire pour ce message s'il décrit une évolution ou un bug) :",
     "- Tâche déjà listée ci-dessous : `node /home/user/projects/noyau/scripts/noyau-todo.mjs comment <ref> \"suivi\"`.",
+    "- Commentaires très concis : une seule phrase, 200 caractères maximum, pas de liste ni de rappel du contexte.",
     "- Sinon : `node /home/user/projects/noyau/scripts/noyau-todo.mjs add \"…\"`.",
     "- Une fois traité : `… report <ref> \"ce qui a été modifié\"` — commente avec date, heure et commit courant puis passe en « À tester ». Jamais `done` : seul l'utilisateur valide.",
     open.length ? `Tâches ouvertes${folder ? ` · ${folder.name}` : ""} :\n${open.join("\n")}` : "Aucune tâche ouverte pour ce projet.",

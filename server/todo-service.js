@@ -107,6 +107,7 @@ function parseDocument(content) {
           text: cleanCommentText(c.text),
           createdAt: validTimestamp(c.createdAt) ? c.createdAt : new Date().toISOString(),
           ...(typeof c.author === "string" && c.author ? { author: cleanText(c.author).slice(0, 50) } : {}),
+          ...(c.kind === "agent" ? { kind: "agent" } : {}),
         }))
       : [];
     if (id !== metadata.id || metadata.dueDate !== dueDate || metadata.reminderKey !== reminderKey || (metadata.completedAt || null) !== completedAt || metadata.status !== status) dirty = true;
@@ -479,7 +480,7 @@ export class TodoService {
     });
   }
 
-  addComment(id, { text, author = null }) {
+  addComment(id, { text, author = null, kind = "user" }) {
     return this.enqueue(async () => {
       if (!TODO_ID.test(id)) throw new Error("Tâche invalide.");
       const clean = cleanCommentText(text);
@@ -493,6 +494,7 @@ export class TodoService {
         text: clean,
         createdAt: new Date().toISOString(),
         ...(author ? { author: cleanText(author).slice(0, 50) } : {}),
+        ...(kind === "agent" ? { kind: "agent" } : {}),
       };
       task.comments.push(comment);
       task.activityAt = comment.createdAt;

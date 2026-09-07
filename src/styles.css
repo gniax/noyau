@@ -2189,3 +2189,10 @@ textarea.todo-text-input.open { max-height: none; overflow: visible; }
 .todo-detail-meta { margin: 0; color: var(--c-68756d); font-size: 10px; }
 .todo-detail-body .todo-comments-list { max-height: none; }
 .terminal-page { position: relative; }
+
+/* Auteur IA distinct de l'auteur humain dans les commentaires */
+.todo-comment-author.agent { color: var(--c-8fb6ff, #8fb6ff); }
+.todo-comment-item:has(.todo-comment-author.agent) { border-left: 2px solid var(--c-6c8ccb); }
+.todo-picker-scope { display: flex; gap: 6px; margin-top: 8px; }
+.todo-picker-scope button { flex: 1; min-height: 28px; border: 1px solid var(--c-2c3730); border-radius: 6px; background: var(--c-101512); color: var(--c-8d9690); font-size: 10px; cursor: pointer; }
+.todo-picker-scope button.active { border-color: var(--green); color: var(--green); background: var(--c-141d15); }

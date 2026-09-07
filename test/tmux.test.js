@@ -35,7 +35,7 @@ test("unrestricted mode uses agent-specific CLI flag", async () => {
   const lastCreation = () => commands.filter((args) => args.includes("new-session")).at(-1);
   await controller.create({ assistant: "codex", cwd: os.tmpdir(), yolo: true });
   const codexCommand = lastCreation();
-  assert.deepEqual(codexCommand.slice(codexCommand.indexOf("codex")), ["codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false"]);
+  assert.deepEqual(codexCommand.slice(codexCommand.indexOf("codex")), ["codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false", "--dangerously-bypass-hook-trust"]);
   assert.equal(saved[0].runningYolo, true);
   assert.equal(saved[0].autoRestore, true);
 

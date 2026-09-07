@@ -29,6 +29,7 @@ async function getClient() {
     .sort((a, b) => Date.parse(b[1].agentStateUpdatedAt || 0) - Date.parse(a[1].agentStateUpdatedAt || 0))[0];
   const profileId = owner?.[1]?.profileId || "";
   const projectId = owner?.[1]?.projectId || null;
+  const agentName = owner?.[1]?.name || "Agent";
 
   async function api(pathname, options = {}) {
     const response = await fetch(`https://127.0.0.1:4242${pathname}`, {
@@ -45,7 +46,7 @@ async function getClient() {
     return payload;
   }
 
-  return { api, projectId, cwd };
+  return { api, projectId, agentName, cwd };
 }
 
 // Le commit courant sert de preuve dans le suivi: on l'ajoute au commentaire quand le dossier est un depot.
@@ -76,7 +77,7 @@ function match(todos, needle) {
 }
 
 try {
-  const { api, projectId } = await getClient();
+  const { api, projectId, agentName } = await getClient();
   const view = await api("/api/todos");
   const folder = projectId ? (view.folders || []).find((item) => item.projectId === projectId) : null;
   const scoped = folder ? (view.todos || []).filter((todo) => todo.folderId === folder.id) : (view.todos || []);
@@ -93,14 +94,14 @@ try {
   } else if (["add", "new"].includes(command)) {
     const text = args.slice(1).join(" ").trim();
     if (!text) throw new Error("Usage: node scripts/noyau-todo.mjs add \"Texte de la tâche\"");
-    const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text, folderId: folder?.id || null, projectId }) });
+    const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text: text.slice(0, 200), folderId: folder?.id || null, projectId, author: agentName, authorKind: "agent" }) });
     print({ created: reference(result.todo.id), id: result.todo.id, text: result.todo.text });
   } else if (["comment", "note"].includes(command)) {
     const todo = match(scoped, args[1]);
     if (!todo) throw new Error("Tâche introuvable (référence, id ou extrait de texte attendu).");
     const text = args.slice(2).join(" ").trim();
     if (!text) throw new Error("Usage: node scripts/noyau-todo.mjs comment <ref> \"Suivi\"");
-    await api(`/api/todos/${encodeURIComponent(todo.id)}/comments`, { method: "POST", body: JSON.stringify({ text }) });
+    await api(`/api/todos/${encodeURIComponent(todo.id)}/comments`, { method: "POST", body: JSON.stringify({ text: text.slice(0, 220), author: agentName, authorKind: "agent" }) });
     print({ commented: reference(todo.id), text: todo.text });
   } else if (["status", "move"].includes(command)) {
     const todo = match(scoped, args[1]);
@@ -116,8 +117,9 @@ try {
     const summary = args.slice(2).join(" ").trim();
     if (!summary) throw new Error("Usage: node scripts/noyau-todo.mjs report <ref> \"Modifications effectuées\"");
     const commit = await headCommit();
-    const text = `${stamp()} · traité${commit ? ` · commit ${commit}` : ""}\n${summary}`;
-    await api(`/api/todos/${encodeURIComponent(todo.id)}/comments`, { method: "POST", body: JSON.stringify({ text }) });
+    // Suivi concis: une ligne, commit court en preuve.
+    const text = `${stamp()}${commit ? ` · ${commit.split(" ")[0]}` : ""} · ${summary}`.slice(0, 220);
+    await api(`/api/todos/${encodeURIComponent(todo.id)}/comments`, { method: "POST", body: JSON.stringify({ text, author: agentName, authorKind: "agent" }) });
     await api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify({ status: "review" }) });
     print({ reported: reference(todo.id), status: "review", commit, text: todo.text });
   } else if (["find", "search"].includes(command)) {
@@ -127,9 +129,9 @@ try {
     print(`Usage: node scripts/noyau-todo.mjs [list | add <texte> | comment <ref> <texte> | status <ref> <zone> | find <recherche>]
 - list                       : Tâches du projet du dossier courant, avec leur référence courte (*XXXX).
 - add "Texte"                : Crée une tâche dans le dossier du projet courant.
-- comment <ref> "Suivi"      : Ajoute un commentaire horodaté sur une tâche existante.
+- comment <ref> "Suivi"      : Commentaire horodaté, une phrase courte (220 caractères max).
 - status <ref> review        : Déplace la tâche (« done » réservé à la validation utilisateur).
-- report <ref> "Modifs"      : Commente (date, heure, commit courant, résumé) puis passe la tâche en « À tester ».
+- report <ref> "Modifs"      : Une ligne (date, commit, résumé bref) puis passe la tâche en « À tester ».
 - find "mots clés"           : Retrouve une tâche et ses commentaires.`);
   }
 } catch (error) {

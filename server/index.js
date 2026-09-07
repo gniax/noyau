@@ -1156,7 +1156,9 @@ app.post("/api/todos", async (request, response, next) => {
     const folderId = request.body?.folderId || null;
     const rawText = String(request.body?.text || "");
     const { correction } = await boardService.settings(request.profile.id);
-    const text = correction && rawText.trim() ? await textCorrector.correct(rawText, { context: "todo" }).catch(() => rawText) : rawText;
+    // Un texte ecrit par un agent est deja redige: pas de second passage LLM.
+    const byAgent = request.body?.authorKind === "agent";
+    const text = correction && !byAgent && rawText.trim() ? await textCorrector.correct(rawText, { context: "todo" }).catch(() => rawText) : rawText;
     const runtime = await todoRuntime(request.profile, { folderId });
     const { todo } = await runtime.todoService.add({ text, dueDate: request.body?.dueDate || null, projectId, folderId });
     response.status(201).json({ todo, ...(await todosView(request.profile)) });
@@ -1168,10 +1170,8 @@ app.post("/api/todos", async (request, response, next) => {
 app.post("/api/todos/seen", async (request, response, next) => {
   try {
     const view = await todosView(request.profile);
-    const ids = Array.isArray(request.body?.ids) && request.body.ids.length
-      ? request.body.ids.filter((id) => view.todos.some((todo) => todo.id === id))
-      : view.todos.map((todo) => todo.id);
-    await todoSeenService.mark(request.profile.id, ids);
+    const ids = Array.isArray(request.body?.ids) && request.body.ids.length ? new Set(request.body.ids) : null;
+    await todoSeenService.markTodos(request.profile.id, ids ? view.todos.filter((todo) => ids.has(todo.id)) : view.todos);
     response.json(await todosView(request.profile));
   } catch (error) {
     next(error);
@@ -1228,11 +1228,12 @@ app.patch("/api/todos/:id", async (request, response, next) => {
 app.post("/api/todos/:id/comments", async (request, response, next) => {
   try {
     const runtime = await todoRuntime(request.profile, { todoId: request.params.id });
-    const author = request.profile?.name || null;
+    const byAgent = request.body?.authorKind === "agent";
+    const author = byAgent ? String(request.body?.author || "Agent").slice(0, 50) : request.profile?.name || null;
     const rawText = String(request.body?.text || "");
     const { correction } = await boardService.settings(request.profile.id);
-    const text = correction && rawText.trim() ? await textCorrector.correct(rawText, { context: "comment" }).catch(() => rawText) : rawText;
-    const result = await runtime.todoService.addComment(request.params.id, { text, author });
+    const text = correction && !byAgent && rawText.trim() ? await textCorrector.correct(rawText, { context: "comment" }).catch(() => rawText) : rawText;
+    const result = await runtime.todoService.addComment(request.params.id, { text, author, kind: byAgent ? "agent" : "user" });
     response.status(201).json({ ...result, ...(await todosView(request.profile)) });
   } catch (error) {
     next(error);

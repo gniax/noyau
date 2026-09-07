@@ -47,6 +47,25 @@ export class TodoSeenService {
     return this.enqueue(async () => (await this.read())[profileId] || {});
   }
 
+  // Certaines taches portent des horodatages plus recents que l'horloge (import, saisie manuelle):
+  // on marque au moins a leur derniere trace, sinon la pastille ne s'eteint jamais.
+  stampFor(todo, now = new Date().toISOString()) {
+    const latestComment = (todo.comments || []).reduce((latest, comment) => (comment.createdAt > latest ? comment.createdAt : latest), "");
+    return [now, todo.activityAt || "", latestComment].reduce((latest, value) => (value > latest ? value : latest), "");
+  }
+
+  async markTodos(profileId, todos) {
+    return this.enqueue(async () => {
+      const now = new Date().toISOString();
+      const state = await this.read();
+      const profile = { ...(state[profileId] || {}) };
+      for (const todo of todos) profile[todo.id] = this.stampFor(todo, now);
+      const next = { ...state, [profileId]: profile };
+      await this.write(next);
+      return profile;
+    });
+  }
+
   async mark(profileId, todoIds, at = new Date().toISOString()) {
     return this.enqueue(async () => {
       const state = await this.read();
@@ -62,7 +81,7 @@ export class TodoSeenService {
   async bootstrap(profileId, todos) {
     const state = await this.read();
     if (state[profileId]) return state[profileId];
-    return this.mark(profileId, todos.map((todo) => todo.id));
+    return this.markTodos(profileId, todos);
   }
 
   count(todo, seenAt) {

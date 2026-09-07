@@ -181,6 +181,8 @@ export class TmuxController {
         args.push("--no-alt-screen");
         if (unrestricted) args.push("--yolo");
         args.push("-c", "check_for_update_on_startup=false");
+        // Les hooks Noyau (suivi to-do) sont locaux: sans ce drapeau, chaque session redemande leur validation.
+        if (unrestricted) args.push("--dangerously-bypass-hook-trust");
         if (threadId) args.push("resume", String(threadId));
       }
       if (["claude", "claude-design"].includes(assistant)) {

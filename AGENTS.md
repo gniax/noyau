@@ -14,5 +14,5 @@
 - Suivi systématique Todos (outil : `node scripts/noyau-todo.mjs [list | add <texte> | comment <ref> <texte> | report <ref> <modifs> | status <ref> review | find <recherche>]`, référence courte `*XXXX` visible sur chaque carte et cliquable dans la conversation) : pour chaque prompt utilisateur demandant une évolution ou un bug :
   - Si nouvelle tâche : créer/ajouter automatiquement un todo dans le projet/dossier concerné.
   - Dès qu'une tâche est traitée/corrigée par l'agent : utiliser `report <ref> "modifications effectuées"` — il ajoute un commentaire daté avec le commit courant puis passe impérativement la tâche au statut « À tester / valider » (`status: review`, `[/]`). Ne JAMAIS marquer un todo comme terminé (`status: done`, `[x]`) tant que l'utilisateur ne l'a pas lui-même validé dans la colonne « À tester ».
-  - Si la tâche existe déjà : ajouter un commentaire horodaté sur le todo existant pour tracer l'évolution, le contexte et les modifications effectuées afin de ne rien oublier.
+  - Si la tâche existe déjà : ajouter un commentaire horodaté **très concis** (une phrase, 200 caractères maximum) sur le todo existant.
 
