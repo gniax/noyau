@@ -23,6 +23,7 @@ import { HandoverService } from "./handover.js";
 import { SessionReaper } from "./session-reaper.js";
 import { AgentArchiveService } from "./agent-archive-service.js";
 import { BoardService } from "./board-service.js";
+import { TodoSeenService } from "./todo-seen-service.js";
 import { AntigravityQuotaService } from "./antigravity-quota.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { CodexQuotaService } from "./codex-quota.js";
@@ -143,6 +144,7 @@ const todoService = new TodoService({
 });
 const agentArchiveService = new AgentArchiveService({ file: path.join(dataDir, "agent-archives.json") });
 const boardService = new BoardService({ file: path.join(dataDir, "todo-boards.json") });
+const todoSeenService = new TodoSeenService({ file: path.join(dataDir, "todo-seen.json") });
 const usage = new UsageService();
 const projectLogos = new ProjectLogoService();
 const migrations = new Map();
@@ -507,6 +509,9 @@ async function todosView(profile) {
   const boardSettings = await boardService.settings(profile.id);
   merged.columns = boardSettings.columns;
   merged.correction = boardSettings.correction;
+  const seen = await todoSeenService.bootstrap(profile.id, merged.todos);
+  merged.todos = todoSeenService.decorate(merged.todos, seen);
+  merged.unread = merged.todos.reduce((total, todo) => total + todo.unread, 0);
   return merged;
 }
 
@@ -1155,6 +1160,19 @@ app.post("/api/todos", async (request, response, next) => {
     const runtime = await todoRuntime(request.profile, { folderId });
     const { todo } = await runtime.todoService.add({ text, dueDate: request.body?.dueDate || null, projectId, folderId });
     response.status(201).json({ todo, ...(await todosView(request.profile)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/todos/seen", async (request, response, next) => {
+  try {
+    const view = await todosView(request.profile);
+    const ids = Array.isArray(request.body?.ids) && request.body.ids.length
+      ? request.body.ids.filter((id) => view.todos.some((todo) => todo.id === id))
+      : view.todos.map((todo) => todo.id);
+    await todoSeenService.mark(request.profile.id, ids);
+    response.json(await todosView(request.profile));
   } catch (error) {
     next(error);
   }

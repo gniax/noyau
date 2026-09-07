@@ -11,7 +11,7 @@ const dataDir = path.resolve(process.env.NOYAU_DATA_DIR || path.join(root, ".dat
 const BASE = process.env.NOYAU_URL || "https://127.0.0.1:4242";
 
 function reference(id) {
-  return `#${String(id || "").split("-").pop().slice(-4).toUpperCase()}`;
+  return `*${String(id || "").split("-").pop().slice(-4).toUpperCase()}`;
 }
 
 async function readInput() {
@@ -67,7 +67,7 @@ async function main() {
     "Suivi to-do Noyau (obligatoire pour ce message s'il décrit une évolution ou un bug) :",
     "- Tâche déjà listée ci-dessous : `node /home/user/projects/noyau/scripts/noyau-todo.mjs comment <ref> \"suivi\"`.",
     "- Sinon : `node /home/user/projects/noyau/scripts/noyau-todo.mjs add \"…\"`.",
-    "- Une fois traité : `… status <ref> review`. Jamais `done` : seul l'utilisateur valide depuis la colonne « À tester ».",
+    "- Une fois traité : `… report <ref> \"ce qui a été modifié\"` — commente avec date, heure et commit courant puis passe en « À tester ». Jamais `done` : seul l'utilisateur valide.",
     open.length ? `Tâches ouvertes${folder ? ` · ${folder.name}` : ""} :\n${open.join("\n")}` : "Aucune tâche ouverte pour ce projet.",
   ].join("\n");
 

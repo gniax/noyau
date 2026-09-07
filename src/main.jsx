@@ -42,7 +42,7 @@ const DEFAULT_COLUMNS = [
 ];
 // Reference courte affichee sur la carte: sert a designer une tache dans un prompt d'agent.
 function todoRef(id) {
-  return `#${String(id || "").split("-").pop().slice(-4).toUpperCase()}`;
+  return `*${String(id || "").split("-").pop().slice(-4).toUpperCase()}`;
 }
 const DEVICE_KEY = "noyau:device";
 const CONFIRM_KEY = "noyau:confirm";
@@ -454,7 +454,7 @@ function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
   );
 }
 
-function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile }) {
+function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile, todoUnread = 0 }) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <div className="brand"><Mark /><span>Noyau</span><button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button></div>
@@ -462,7 +462,7 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
       <nav className="main-nav">
         <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span>◫</span>Projets</button>
-        <button className={!activeId && view === "todos" ? "active" : ""} onClick={() => { onOpen(null); onView("todos"); onClose(); }}><span>✓</span>Todo</button>
+        <button className={!activeId && view === "todos" ? "active" : ""} onClick={() => { onOpen(null); onView("todos"); onClose(); }}><span>✓</span>Todo{todoUnread > 0 && <b className="nav-badge" title={`${todoUnread} changement${todoUnread > 1 ? "s" : ""} non lu${todoUnread > 1 ? "s" : ""}`}>{todoUnread > 99 ? "99+" : todoUnread}</b>}</button>
         <button className={!activeId && ["finances", "finance-transactions", "finance-agent", "finance-modules"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
         <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
       </nav>
@@ -477,6 +477,7 @@ function Sidebar({ sessions, activeId, view, onOpen, onView, onNew, onLogout, op
         ))}
         {!sessions.length && <p className="empty-small">Aucune session active.</p>}
       </div>
+      <AgentArchives onOpen={(id) => { onOpen(id); onClose(); }} compact />
     </aside>
   );
 }
@@ -581,7 +582,113 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
   );
 }
 
-function AgentArchives({ onOpen }) {
+// Selecteur de tache pour la conversation: les plus recemment actives d'abord.
+function TodoTagPicker({ onPick, onClose }) {
+  const [todos, setTodos] = useState([]);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api("/api/todos")
+      .then((result) => setTodos([...(result.todos || [])].sort((a, b) => String(b.activityAt || "").localeCompare(String(a.activityAt || "")))))
+      .catch((reason) => setError(reason.message));
+  }, []);
+
+  const needle = query.trim().toLowerCase().replace(/^\*/, "");
+  const matches = todos
+    .filter((todo) => !needle || todo.text.toLowerCase().includes(needle) || todoRef(todo.id).toLowerCase().includes(needle))
+    .slice(0, 40);
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="modal todo-picker">
+        <div className="modal-head"><div><p className="eyebrow">TÂCHES</p><h2>Taguer une tâche</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
+        <input
+          autoFocus
+          className="todo-picker-search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Chercher une tâche ou une référence *A1B2…"
+        />
+        {error && <p className="form-error">{error}</p>}
+        <div className="todo-picker-list">
+          {matches.map((todo) => (
+            <button className="todo-picker-row" key={todo.id} onClick={() => onPick(todo)}>
+              <b>{todoRef(todo.id)}</b>
+              <span>
+                <strong>{todo.text}</strong>
+                <small>{todo.status === "done" ? "Terminé" : todo.status === "review" ? "À tester / valider" : "À faire"} · {todo.comments?.length || 0} commentaire{(todo.comments?.length || 0) > 1 ? "s" : ""}{todo.activityAt ? ` · ${formatCommentDate(todo.activityAt)}` : ""}</small>
+              </span>
+            </button>
+          ))}
+          {!matches.length && <p className="todo-column-empty">Aucune tâche trouvée.</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// Vue d'une tache ouverte depuis la conversation, avec retour vers l'agent.
+function TodoDetailOverlay({ todo, onClose, onTag }) {
+  const [entry, setEntry] = useState(todo);
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function addComment(event) {
+    event.preventDefault();
+    if (!comment.trim()) return;
+    setBusy(true);
+    try {
+      const result = await api(`/api/todos/${encodeURIComponent(entry.id)}/comments`, { method: "POST", body: JSON.stringify({ text: comment }) });
+      setEntry(result.todo || entry);
+      setComment("");
+      setError("");
+      window.dispatchEvent(new Event("noyau:todos"));
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="todo-detail-overlay">
+      <header>
+        <button className="todo-detail-back" onClick={onClose}>‹ Retour à l’agent</button>
+        <b className="todo-ref-pill">{todoRef(entry.id)}</b>
+        {onTag && <button className="ghost" onClick={() => { onTag(entry); onClose(); }}>Taguer dans la conversation</button>}
+      </header>
+      <div className="todo-detail-body">
+        <h2>{entry.text}</h2>
+        <p className="todo-detail-meta">
+          {entry.status === "done" ? "Terminé" : entry.status === "review" ? "À tester / valider" : "À faire"}
+          {entry.dueDate ? ` · échéance ${entry.dueDate.split("-").reverse().join("/")}` : ""}
+          {entry.activityAt ? ` · dernière activité ${formatCommentDate(entry.activityAt)}` : ""}
+        </p>
+        <div className="todo-comments-list">
+          {(entry.comments || []).map((item) => (
+            <div className="todo-comment-item" key={item.id}>
+              <div className="todo-comment-meta">
+                {item.author && <strong className="todo-comment-author">{item.author}</strong>}
+                <span className="todo-comment-time">{formatCommentDate(item.createdAt)}</span>
+              </div>
+              <p className="todo-comment-text">{item.text}</p>
+            </div>
+          ))}
+          {!(entry.comments || []).length && <p className="todo-comments-empty">Aucun commentaire pour le moment.</p>}
+        </div>
+        {error && <p className="form-error">{error}</p>}
+        <form className="todo-comment-form" onSubmit={addComment}>
+          <input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Ajouter un commentaire…" maxLength="2000" />
+          <button className="primary" disabled={busy || !comment.trim()}>{busy ? "…" : "Commenter"}</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AgentArchives({ onOpen, compact = false }) {
   const [archives, setArchives] = useState([]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState("");
@@ -634,7 +741,7 @@ function AgentArchives({ onOpen }) {
   }
 
   return (
-    <details className="agent-archives" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <details className={`agent-archives ${compact ? "compact" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>
         <span className="agent-group-chevron">›</span>
         <strong>Agents archivés</strong>
@@ -1225,12 +1332,14 @@ function TodoInlineText({ text, onSave, disabled, expanded = false, placeholder 
   useEffect(() => {
     const node = field.current;
     if (!node) return;
+    node.style.height = "auto";
     if (editing || expanded) {
-      node.style.height = "auto";
       node.style.height = `${node.scrollHeight}px`;
-    } else {
-      node.style.height = "";
+      return;
     }
+    // Au repos la carte montre trois lignes au maximum, le reste attend le depliage.
+    const line = parseFloat(getComputedStyle(node).lineHeight) || 18;
+    node.style.height = `${Math.min(node.scrollHeight, Math.round(line * 3) + 8)}px`;
   }, [val, editing, expanded]);
 
   const commit = () => {
@@ -2534,10 +2643,24 @@ function TodosView() {
   }
 
   const statusOf = (todo) => todo.status || (todo.completed ? "done" : "todo");
+  // Vue tableau: la derniere activite remonte en tete de colonne.
+  const byActivity = (a, b) => String(b.activityAt || "").localeCompare(String(a.activityAt || ""));
+
+  async function markSeen(ids) {
+    const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+    if (!list.length) return;
+    setTodos((prev) => prev.map((item) => (list.includes(item.id) ? { ...item, unread: 0 } : item)));
+    try {
+      apply(await api("/api/todos/seen", { method: "POST", body: JSON.stringify({ ids: list }) }));
+      window.dispatchEvent(new Event("noyau:todos"));
+    } catch { /* le compteur se recalera au prochain chargement */ }
+  }
   const knownStatus = useMemo(() => new Set(columns.map((column) => column.id)), [columns]);
   // Une tache dont la zone a disparu retombe visuellement dans « A faire ».
   const inColumn = useCallback(
-    (list, columnId) => list.filter((todo) => statusOf(todo) === columnId || (columnId === "todo" && !knownStatus.has(statusOf(todo)))),
+    (list, columnId) => list
+      .filter((todo) => statusOf(todo) === columnId || (columnId === "todo" && !knownStatus.has(statusOf(todo))))
+      .sort((a, b) => String(b.activityAt || "").localeCompare(String(a.activityAt || ""))),
     [knownStatus],
   );
 
@@ -2776,19 +2899,30 @@ function TodosView() {
             >
               {todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "📅"}
             </button>
-            <button
-              className={`todo-comments-trigger ${commentsCount > 0 ? "has-comments" : ""} ${commentsOpen ? "active" : ""}`}
-              onClick={() => setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }))}
-              title={`Commentaires (${commentsCount})`}
-            >
-              💬{commentsCount > 0 ? ` ${commentsCount}` : ""}
-            </button>
+            {todo.unread > 0 && (
+              <button
+                type="button"
+                className="todo-unread-pill"
+                onClick={() => markSeen(todo.id)}
+                title={`${todo.unread} nouveauté${todo.unread > 1 ? "s" : ""} depuis ta dernière lecture — cliquer pour marquer comme lu`}
+              >● {todo.unread}</button>
+            )}
             {openFolder === "all" && folderObj && (
               <span className="todo-folder-pill" title={`Dossier : ${folderObj.name}`}>{folderObj.name}</span>
             )}
           </div>
 
           <div className="todo-card-shift-actions">
+            <button
+              className={`todo-comments-trigger ${commentsCount > 0 ? "has-comments" : ""} ${commentsOpen ? "active" : ""}`}
+              onClick={() => {
+                setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }));
+                if (todo.unread) markSeen(todo.id);
+              }}
+              title={`Commentaires (${commentsCount})`}
+            >
+              💬{commentsCount > 0 ? ` ${commentsCount}` : ""}
+            </button>
             <button
               type="button"
               className="todo-shift-btn"
@@ -2994,6 +3128,7 @@ function TodosView() {
   const openCount = todos.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo").length;
   const reviewCount = todos.filter((todo) => todo.status === "review").length;
   const doneCount = todos.filter((todo) => (todo.status === "done" || todo.completed)).length;
+  const globalUnread = todos.reduce((total, todo) => total + (todo.unread || 0), 0);
   const active = openFolder === "all"
     ? { folder: { id: "all", name: "Toutes les tâches" }, items: todos }
     : (sections.find((section) => section.folder.id === openFolder) || null);
@@ -3045,7 +3180,7 @@ function TodosView() {
         {error && <p className="finance-error todo-error">{error}</p>}
         <section className="todo-folder-grid">
           <button className="panel todo-folder-card all-tasks" onClick={() => selectFolder("all")}>
-            <span className="todo-folder-name">📁 Toutes les tâches</span>
+            <span className="todo-folder-name">📁 Toutes les tâches{globalUnread > 0 && <b className="todo-unread-badge" title={`${globalUnread} changement${globalUnread > 1 ? "s" : ""} non lu${globalUnread > 1 ? "s" : ""}`}>{globalUnread}</b>}</span>
             <span className="todo-folder-meta">
               {openCount} à faire{reviewCount > 0 ? ` · ${reviewCount} à vérifier` : ""}{doneCount > 0 ? ` · ${doneCount} terminée${doneCount > 1 ? "s" : ""}` : ""}
             </span>
@@ -3055,9 +3190,10 @@ function TodosView() {
             const folderReviews = items.filter((todo) => todo.status === "review");
             const folderDone = items.filter((todo) => todo.status === "done" || todo.completed);
             const late = folderTodos.filter((todo) => todo.dueDate && todo.dueDate < localIsoDate()).length;
+            const folderUnread = items.reduce((total, todo) => total + (todo.unread || 0), 0);
             return (
               <button className="panel todo-folder-card" onClick={() => selectFolder(folder.id)} key={folder.id}>
-                <span className="todo-folder-name">{folder.name || "Dossier"}</span>
+                <span className="todo-folder-name">{folder.name || "Dossier"}{folderUnread > 0 && <b className="todo-unread-badge" title={`${folderUnread} changement${folderUnread > 1 ? "s" : ""} non lu${folderUnread > 1 ? "s" : ""}`}>{folderUnread}</b>}</span>
                 <span className="todo-folder-meta">
                   {folderTodos.length ? `${folderTodos.length} à faire` : "0 à faire"}
                   {folderReviews.length ? ` · ${folderReviews.length} à vérifier` : ""}
@@ -3080,6 +3216,7 @@ function TodosView() {
   }
 
   const { folder, items } = active;
+  const boardUnread = items.reduce((total, todo) => total + (todo.unread || 0), 0);
   const todoItems = inColumn(items, "todo");
   const reviewItems = items.filter((todo) => statusOf(todo) === "review");
   const doneItems = items.filter((todo) => statusOf(todo) === "done" || todo.completed);
@@ -3151,7 +3288,11 @@ function TodosView() {
       {viewMode === "board" ? (
         <div className="todo-board-wrap">
           <div className="todo-board-toolbar">
-            <small>{columns.length} zone{columns.length > 1 ? "s" : ""} · {items.length} tâche{items.length > 1 ? "s" : ""}</small>
+            <small>
+              {columns.length} zone{columns.length > 1 ? "s" : ""} · {items.length} tâche{items.length > 1 ? "s" : ""}
+              {boardUnread > 0 && <b className="todo-unread-inline"> · {boardUnread} non lu{boardUnread > 1 ? "s" : ""}</b>}
+            </small>
+            {boardUnread > 0 && <button className="todo-mark-seen-btn" onClick={() => markSeen(items.filter((todo) => todo.unread).map((todo) => todo.id))} title="Marquer toutes les nouveautés comme lues">Tout lu</button>}
             <button className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title="Ajouter une zone" aria-label="Ajouter une zone">＋</button>
           </div>
           <div className="todo-board">
@@ -3456,6 +3597,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
   const [connected, setConnected] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
+  const [todoPicker, setTodoPicker] = useState(false);
+  const [todoDetail, setTodoDetail] = useState(null);
+  const todoLinkRef = React.useRef(null);
   const [copiedLink, setCopiedLink] = useState(null);
   const snapshotRef = React.useRef(null);
   const [oskEnabled, setOskEnabled] = useState(wantsOnScreenKeyboard);
@@ -3568,6 +3712,22 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
     terminal.open(terminalNode.current);
     fit.fit();
     terminalRef.current = terminal;
+    // Une reference *XXXX ecrite par l'agent s'ouvre comme un lien vers la tache.
+    terminal.registerLinkProvider({
+      provideLinks(lineNumber, callback) {
+        const line = terminal.buffer.active.getLine(lineNumber - 1)?.translateToString(true) || "";
+        const links = [];
+        for (const match of line.matchAll(/\*[0-9A-Fa-f]{4}\b/g)) {
+          const start = match.index + 1;
+          links.push({
+            range: { start: { x: start, y: lineNumber }, end: { x: start + match[0].length - 1, y: lineNumber } },
+            text: match[0],
+            activate: () => todoLinkRef.current?.(match[0].toUpperCase()),
+          });
+        }
+        callback(links.length ? links : undefined);
+      },
+    });
     const xtermViewport = terminalNode.current.querySelector(".xterm-viewport");
     if (touchTerminal || captureMode) {
       const helper = terminalNode.current.querySelector(".xterm-helper-textarea");
@@ -4045,6 +4205,36 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
 
   // Les agents redessinent leur interface en continu, ce qui efface la selection en cours:
   // on fige le texte dans un panneau ou la selection tient, avec les liens isoles.
+  // Reference cliquable dans la sortie de l'agent: on ouvre la tache sans quitter la conversation.
+  const openTodoByRef = useCallback(async (reference) => {
+    try {
+      const result = await api("/api/todos");
+      const todo = (result.todos || []).find((item) => todoRef(item.id) === String(reference).toUpperCase());
+      if (!todo) {
+        window.alert(`Tâche ${reference} introuvable.`);
+        return;
+      }
+      setTodoDetail(todo);
+      await api("/api/todos/seen", { method: "POST", body: JSON.stringify({ ids: [todo.id] }) }).catch(() => {});
+      window.dispatchEvent(new Event("noyau:todos"));
+    } catch (error) {
+      window.alert(error.message);
+    }
+  }, []);
+
+  useEffect(() => { todoLinkRef.current = openTodoByRef; }, [openTodoByRef]);
+
+  // Taguer une tache: l'agent recoit la reference, le texte, l'etat et les derniers commentaires.
+  function tagTodo(todo) {
+    const comments = (todo.comments || []).slice(-3)
+      .map((comment) => `${formatCommentDate(comment.createdAt)}${comment.author ? ` ${comment.author}` : ""}: ${comment.text.replace(/\s+/g, " ")}`)
+      .join(" · ");
+    const block = `${todoRef(todo.id)} « ${todo.text} » [${todo.status || "todo"}]${todo.dueDate ? ` échéance ${todo.dueDate}` : ""}${comments ? ` — derniers commentaires: ${comments}` : ""} `;
+    setTodoPicker(false);
+    sendKeyboardData(block);
+    focusKeyboard();
+  }
+
   function openSnapshot() {
     const terminal = terminalRef.current;
     if (!terminal) return;
@@ -4106,9 +4296,11 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
     }
   }
 
+  // Fermer un agent l'archive: on garde son fil pour pouvoir le relancer plus tard.
   async function kill() {
-    if (!window.confirm(`Arrêter définitivement session « ${session.name} » ?`)) return;
-    await api(`/api/sessions/${session.id}`, { method: "DELETE" });
+    if (!window.confirm(`Archiver « ${session.name} » ? L'agent se ferme et reste restaurable depuis « Agents archivés ».`)) return;
+    await api(`/api/sessions/${session.id}/archive`, { method: "POST" });
+    window.dispatchEvent(new Event("noyau:archives"));
     onKilled();
   }
 
@@ -4152,7 +4344,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
               {migrating && <em title="Passation en cours…">…</em>}
             </label>
           )}
-          {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Arrêter agent" title="Arrêter">⏻</button>}
+          {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Archiver agent" title="Archiver: ferme l'agent en gardant son fil">⏻</button>}
         </div>
       </div>
       <div className="terminal-frame" ref={terminalNode} />
@@ -4189,6 +4381,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
           </section>
         </div>
       )}
+      {todoPicker && <TodoTagPicker onPick={tagTodo} onClose={() => setTodoPicker(false)} />}
+      {todoDetail && <TodoDetailOverlay todo={todoDetail} onClose={() => setTodoDetail(null)} onTag={tagTodo} />}
       <div className={`terminal-controls ${keyboardActive ? "keyboard-active" : ""}`}>
         <input
           ref={keyboardRef}
@@ -4219,6 +4413,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, quotas
           {session.managed && <button className="restart-key" {...tapKey(restart)} aria-label="Redémarrer l'agent">
             {restarting ? "…" : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg>}
           </button>}
+          <button className="todo-key" {...tapKey(() => setTodoPicker(true))} aria-label="Taguer une tâche" title="Taguer une tâche: envoie sa référence, son texte et ses derniers commentaires">✱</button>
           <button className="text-key" {...tapKey(openSnapshot)} aria-label="Texte de l'écran">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h8l4 4v12H6z" /><path d="M14 4v4h4M9 13h6M9 16.5h4" /></svg>
           </button>
@@ -4461,6 +4656,18 @@ function App() {
   const [permission, setPermission] = useState(!window.isSecureContext ? "insecure" : (typeof Notification === "undefined" ? "denied" : Notification.permission));
   const [profiles, setProfiles] = useState([]);
   const [profileId, setProfileId] = useState(() => activeProfileId());
+  const [todoUnread, setTodoUnread] = useState(0);
+
+  // Compteur de changements non lus: alimente la pastille de l'onglet Todo.
+  useEffect(() => {
+    if (!auth) return undefined;
+    let disposed = false;
+    const load = () => api("/api/todos").then((result) => { if (!disposed) setTodoUnread(result.unread || 0); }).catch(() => {});
+    load();
+    const timer = setInterval(load, 30_000);
+    window.addEventListener("noyau:todos", load);
+    return () => { disposed = true; clearInterval(timer); window.removeEventListener("noyau:todos", load); };
+  }, [auth, profileId]);
 
   const refresh = useCallback(async () => {
     try {
@@ -4843,7 +5050,7 @@ function App() {
   return (
     <div className={`app-shell ${TOUCH_MODE ? "touch-shell" : ""}`}>
       {TOUCH_MODE && <TouchSystemBar sessions={orderedSessions} onHome={() => { setActiveId(null); setView("dashboard"); }} onNew={() => setModal(true)} />}
-      <Sidebar sessions={orderedSessions} activeId={activeId} view={view} onOpen={setActiveId} onView={setView} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} profiles={profiles} profileId={profileId} onSwitchProfile={switchProfile} />
+      <Sidebar sessions={orderedSessions} activeId={activeId} view={view} onOpen={setActiveId} onView={setView} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} profiles={profiles} profileId={profileId} onSwitchProfile={switchProfile} todoUnread={todoUnread} />
       {menu && <button className="menu-backdrop" onClick={() => setMenu(false)} aria-label="Fermer menu" />}
       <main className="content">
         <ViewBoundary viewKey={`${view}:${activeId || ""}`}>

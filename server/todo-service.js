@@ -100,6 +100,7 @@ function parseDocument(content) {
     const completed = status === "done";
     const reminderKey = completed ? null : typeof metadata.reminderKey === "string" ? metadata.reminderKey : null;
     const completedAt = completed && validTimestamp(metadata.completedAt) ? metadata.completedAt : null;
+    const activityAt = validTimestamp(metadata.activityAt) ? metadata.activityAt : null;
     const comments = Array.isArray(metadata.comments)
       ? metadata.comments.filter((c) => c && typeof c.text === "string" && c.text.trim()).map((c) => ({
           id: typeof c.id === "string" && c.id ? c.id : newId("comment"),
@@ -114,6 +115,7 @@ function parseDocument(content) {
       text: cleanText(body),
       completed,
       completedAt,
+      activityAt,
       status,
       comments,
       dueDate,
@@ -136,6 +138,7 @@ function renderTask(task) {
     dueDate: task.dueDate || null,
     reminderKey: task.reminderKey || null,
     completedAt: task.completedAt || null,
+    activityAt: task.activityAt || null,
     status,
   };
   if (Array.isArray(task.comments) && task.comments.length > 0) {
@@ -390,6 +393,7 @@ export class TodoService {
         text: value,
         completed,
         completedAt,
+        activityAt: new Date().toISOString(),
         status: st,
         comments: [],
         dueDate: dueDate || null,
@@ -461,6 +465,8 @@ export class TodoService {
           ...(typeof c.author === "string" && c.author ? { author: cleanText(c.author).slice(0, 50) } : {}),
         }));
       }
+      // Toute modification vaut activite: la tache remonte dans les vues triees par recence.
+      task.activityAt = new Date().toISOString();
       // Tache barree: elle descend au bas de son dossier, hors du champ de travail.
       const targetFolder = destination || (completedNow ? task.folderId : null);
       if (!targetFolder) {
@@ -489,6 +495,7 @@ export class TodoService {
         ...(author ? { author: cleanText(author).slice(0, 50) } : {}),
       };
       task.comments.push(comment);
+      task.activityAt = comment.createdAt;
       await this.writeDocument(document);
       return { ...this.payload(document), todo: this.taskPayload(document, id), comment };
     });

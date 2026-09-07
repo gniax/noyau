@@ -2146,3 +2146,46 @@ textarea.todo-text-input.open { max-height: none; overflow: visible; }
 .reporting-switch strong { display: block; color: var(--c-d3dbd6); font-size: 10px; }
 .reporting-switch small { display: block; margin-top: 3px; color: var(--c-66716a); font-size: 8px; }
 .reporting-switch input:disabled + span { opacity: .5; }
+
+/* Nouveautés non lues: pastilles onglet, dossier et carte */
+.nav-badge, .todo-unread-badge {
+  display: inline-grid; place-items: center; min-width: 17px; height: 17px; margin-left: 7px; padding: 0 5px;
+  border-radius: 9px; background: var(--green); color: #08120a; font: 700 9px/1 ui-monospace, monospace;
+}
+.main-nav .nav-badge { margin-left: auto; }
+.todo-unread-inline { color: var(--green); font-weight: 700; }
+.todo-unread-pill {
+  padding: 3px 6px; border-radius: 5px; border: 1px solid var(--c-58743d);
+  background: var(--c-141d15); color: var(--green); font: 700 9px/1.2 ui-monospace, monospace; cursor: pointer;
+}
+.todo-mark-seen-btn {
+  height: 28px; padding: 0 10px; border: 1px solid var(--c-58743d); border-radius: 6px;
+  background: var(--c-141d15); color: var(--green); font-size: 10px; font-weight: 600; cursor: pointer;
+}
+.todo-board-toolbar { display: flex; align-items: center; gap: 8px; }
+.todo-board-toolbar small { margin-right: auto; }
+.agent-archives.compact { margin: 0; border-top: 1px solid var(--line); }
+.agent-archives.compact > summary { padding: 10px 14px; font-size: 11px; }
+.agent-archives.compact .agent-archive-row { padding: 9px 12px; }
+.agent-archives.compact .agent-archive-actions button { min-height: 26px; padding: 0 8px; font-size: 10px; }
+
+/* Conversation agent: tag de tâche et fiche tâche */
+.terminal-controls .todo-key { color: var(--green); font-size: 14px; font-weight: 700; }
+.todo-picker { width: min(620px, 100%); }
+.todo-picker-search { width: 100%; height: 36px; padding: 0 11px; border: 1px solid var(--c-2b332e); border-radius: 7px; background: var(--c-090d0b); color: var(--c-dbe3dd); font-size: 12px; }
+.todo-picker-list { display: grid; gap: 5px; max-height: min(52vh, 420px); overflow-y: auto; margin-top: 10px; }
+.todo-picker-row { display: grid; grid-template-columns: 52px minmax(0,1fr); align-items: start; gap: 9px; padding: 9px 10px; border: 1px solid var(--c-232b26); border-radius: 7px; background: var(--c-0d1210); text-align: left; cursor: pointer; }
+.todo-picker-row:hover { border-color: var(--green); }
+.todo-picker-row b { color: var(--green); font: 700 10px/1.4 ui-monospace, monospace; }
+.todo-picker-row strong { display: block; color: var(--c-d3dbd6); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.todo-picker-row small { display: block; margin-top: 4px; color: var(--c-66716a); font-size: 8px; }
+
+.todo-detail-overlay { position: absolute; inset: 0; z-index: 30; display: grid; grid-template-rows: 52px minmax(0,1fr); background: var(--c-080b0a); }
+.todo-detail-overlay > header { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--c-202521); }
+.todo-detail-back { border: 1px solid var(--c-2c342f); border-radius: 6px; background: var(--c-141916); color: var(--green); padding: 6px 11px; font-size: 11px; cursor: pointer; }
+.todo-detail-overlay > header .ghost { margin-left: auto; min-height: 30px; padding: 0 11px; font-size: 11px; }
+.todo-detail-body { overflow-y: auto; padding: 16px 18px 24px; display: grid; gap: 12px; align-content: start; }
+.todo-detail-body h2 { margin: 0; font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
+.todo-detail-meta { margin: 0; color: var(--c-68756d); font-size: 10px; }
+.todo-detail-body .todo-comments-list { max-height: none; }
+.terminal-page { position: relative; }
