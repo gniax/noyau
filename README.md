@@ -32,6 +32,8 @@ Everything runs on your machine: no third-party service, no database, plain file
 
 **Budget** — Envelope-based expense tracking, LLM-assisted categorisation, optional bank connection (Enable Banking) over local HTTPS.
 
+![Budget](docs/screenshots/budget.png)
+
 ![Projects](docs/screenshots/projects.png)
 
 ## Architecture
