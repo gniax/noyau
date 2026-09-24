@@ -116,6 +116,8 @@ npm test        # full suite (node:test)
 npm run build   # production bundle
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete contribution workflow, required checks, and security expectations.
+
 Screenshots come from a demo instance: the agents, projects and tasks shown are fictional.
 
 ## License
