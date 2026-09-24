@@ -65,6 +65,16 @@ NOYAU_TOKEN="a-long-random-key" npm start
 
 The UI listens on `http://localhost:4242`. The access key is asked once, then kept in `.data/access-token`.
 
+### Security
+
+Noyau can start shell sessions and control project services, so treat its web UI like SSH access:
+
+- use a long, unique `NOYAU_TOKEN` and never commit `.data/` or TLS private keys;
+- bind `HOST` to `127.0.0.1` unless the instance is protected by a trusted VPN or reverse proxy;
+- do not expose port `4242` directly to the public internet;
+- use the HTTPS listener when accessing Noyau from another device;
+- run Noyau as an unprivileged user and review module actions before enabling them.
+
 ### Environment
 
 | Variable | Purpose |
