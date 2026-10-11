@@ -582,6 +582,85 @@ function SwitchProfileModal({ target, onClose, onConfirm }) {
   );
 }
 
+// Icones de trait coherentes: les emojis varient d'un appareil a l'autre et se decalent.
+const UI_ICON_PATHS = {
+  eye: "M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+  download: "M12 3v12M7 10l5 5 5-5M4 20h16",
+  external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
+  send: "M4 12l16-8-6 16-3-7-7-1z",
+  trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13",
+  close: "M6 6l12 12M18 6L6 18",
+};
+
+function UiIcon({ name, size = 16 }) {
+  return (
+    <svg className="ui-icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={UI_ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
+// Fermer un agent: choix explicite entre archiver (restaurable) et quitter pour de bon.
+function askCloseAgent(session) {
+  return new Promise((resolve) => {
+    window.dispatchEvent(new CustomEvent("noyau:close-agent", { detail: { session, resolve } }));
+  });
+}
+
+async function closeAgent(session) {
+  const choice = await askCloseAgent(session);
+  if (!choice) return false;
+  if (choice === "exit") await api(`/api/sessions/${encodeURIComponent(session.id)}?archive=0`, { method: "DELETE" });
+  else await api(`/api/sessions/${encodeURIComponent(session.id)}/archive`, { method: "POST" });
+  window.dispatchEvent(new Event("noyau:archives"));
+  return true;
+}
+
+function CloseAgentHost() {
+  const [request, setRequest] = useState(null);
+  useEffect(() => {
+    const open = (event) => setRequest(event.detail);
+    window.addEventListener("noyau:close-agent", open);
+    return () => window.removeEventListener("noyau:close-agent", open);
+  }, []);
+  useEffect(() => {
+    if (!request) return undefined;
+    const onKey = (event) => { if (event.key === "Escape") answer(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+  if (!request) return null;
+  function answer(choice) {
+    request.resolve(choice);
+    setRequest(null);
+  }
+  const { session } = request;
+  return createPortal(
+    <div className="modal-backdrop" onClick={() => answer(null)}>
+      <div className="modal close-agent-modal" role="dialog" aria-modal="true" aria-labelledby="close-agent-title" onClick={(event) => event.stopPropagation()}>
+        <header className="modal-head">
+          <h2 id="close-agent-title">Fermer « {session.name} »</h2>
+          <button type="button" className="ghost" onClick={() => answer(null)} aria-label="Annuler">✕</button>
+        </header>
+        <div className="close-agent-choices">
+          <button type="button" className="close-agent-choice" onClick={() => answer("archive")} autoFocus>
+            <strong>🗄 Archiver</strong>
+            <span>L'agent se ferme. Sa conversation reste dans « Agents archivés » pour le relancer plus tard.</span>
+          </button>
+          <button type="button" className="close-agent-choice danger" onClick={() => answer("exit")}>
+            <strong>⏻ Quitter totalement</strong>
+            <span>Ferme l'agent et tout ce qu'il a lancé (serveurs, scripts). Rien n'est gardé. Tes fenêtres (navigateur…) restent ouvertes.</span>
+          </button>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="ghost" onClick={() => answer(null)}>Annuler</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function AgentIcon({ assistant, small = false, logoUrl = null }) {
   const meta = assistantMeta[assistant] || assistantMeta.shell;
   const [failed, setFailed] = useState(false);
@@ -1336,7 +1415,7 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
       {session.managed && session.canEdit !== false && (
         <div className="agent-card-actions">
           <button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button>
-          {!session.core && <button className="agent-card-archive" onClick={() => onArchive(session)} title="Archiver: ferme l'agent en gardant son fil pour le restaurer" aria-label={`Archiver ${session.name}`}>⇩</button>}
+          {!session.core && <button className="agent-card-archive" onClick={() => onArchive(session)} title="Fermer l'agent (archiver ou quitter)" aria-label={`Fermer ${session.name}`}>⏻</button>}
           <button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`}>Éditer</button>
         </div>
       )}
@@ -1567,17 +1646,19 @@ function AgentArchives({ onOpen, compact = false }) {
       {error && <p className="finance-error">{error}</p>}
       <div className="agent-archive-list">
         {archives.map((archive) => (
-          <article className="agent-archive-row" key={archive.id}>
-            <div>
+          <article className="agent-archive-row" key={archive.id} title={archive.cwd || ""}>
+            <div className="agent-archive-row__info">
               <strong>{archive.name}</strong>
-              <small>{assistantMeta[archive.assistant]?.label || archive.assistant} · {archive.cwd || "—"}</small>
-              <small>{archive.reason === "reaped" ? "Fermé tout seul" : "Fermé manuellement"} · {formatCommentDate(archive.archivedAt)}</small>
+              <small>
+                {[assistantMeta[archive.assistant]?.label || archive.assistant, archive.cwd ? `📁 ${archive.cwd.split("/").filter(Boolean).pop()}` : null, formatCommentDate(archive.archivedAt)].filter(Boolean).join(" · ")}
+                {archive.reason === "reaped" ? " · fermé tout seul" : ""}
+              </small>
             </div>
             <div className="agent-archive-actions">
-              <button className="primary" onClick={() => restore(archive)} disabled={busy === archive.id} title="Relancer cet agent avec son fil de discussion">
-                {busy === archive.id ? "…" : "Restaurer"}
+              <button className="agent-archive-restore" aria-label={`Restaurer ${archive.name}`} onClick={() => restore(archive)} disabled={busy === archive.id} title="Relancer cet agent avec son fil de discussion">
+                {busy === archive.id ? "…" : <>↺<span> Restaurer</span></>}
               </button>
-              <button className="ghost" onClick={() => forget(archive)} disabled={busy === archive.id} title="Oublier cette archive">×</button>
+              <button className="agent-archive-forget" onClick={() => forget(archive)} disabled={busy === archive.id} title="Oublier définitivement cette archive" aria-label={`Oublier ${archive.name}`}>🗑</button>
             </div>
           </article>
         ))}
@@ -1676,13 +1757,13 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
     try { localStorage.setItem(profileCacheKey("resources-open"), next ? "1" : "0"); } catch {}
   }
 
-  async function optimize(event) {
+  async function optimize(event, focus = null) {
     event.preventDefault();
     event.stopPropagation();
     setBusy(true);
     setStatus("");
     try {
-      const result = await api("/api/system/resources/optimize", { method: "POST" });
+      const result = await api("/api/system/resources/optimize", { method: "POST", body: JSON.stringify(focus ? { focus } : {}) });
       setStatus(result.reused ? "Instantané envoyé" : "Agent lancé");
       if (result.agentId) setTimeout(() => onOpen?.(result.agentId), 1200);
     } catch (reason) {
@@ -1696,7 +1777,8 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
   const gpus = data?.gpus || [];
   const hints = data?.hints || [];
   const worst = hints.some((h) => h.level === "high") ? "high" : hints.some((h) => h.level === "medium") ? "medium" : hints.length ? "low" : "";
-  const rows = (tab === "ram" ? data?.topMemory : tab === "agents" ? data?.agents : data?.topCpu) || [];
+  const rows = (tab === "ram" ? data?.topMemory : tab === "agents" ? data?.agents : tab === "swap" ? data?.topSwap : data?.topCpu) || [];
+  const maxSwap = Math.max(1, ...rows.map((r) => r.swapMb || 0));
   const maxCpu = Math.max(100, ...rows.map((r) => r.cpuPercent || 0));
   const maxRss = Math.max(1, ...rows.map((r) => r.rssMb || 0));
   const gpuShort = (name) => name.replace(/Graphics/i, "").replace(/Iris Xe/i, "Xe").trim() || "GPU";
@@ -1734,15 +1816,27 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
           )}
           <div className="resources-detail__bar">
             <div className="resource-tabs" role="tablist">
-              {[["cpu", "Top CPU"], ["ram", "Top RAM"], ["agents", "Sessions IA"]].map(([id, label]) => (
+              {[["cpu", "Top CPU"], ["ram", "Top RAM"], ["swap", "Swap"], ["agents", "Sessions IA"]].map(([id, label]) => (
                 <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>
               ))}
             </div>
             <small>{data.processCount} processus · {data.cpu.cores} threads · load {data.cpu.loadAvg[0]}</small>
           </div>
+          {tab === "swap" && (
+            <div className="resource-swap-help">
+              <p>
+                Le swap est de la RAM de secours écrite sur le disque. Linux y range ce qui dort (serveurs de dev oubliés, onglets inactifs) pour garder la vraie RAM aux applis actives.
+                Beaucoup de swap n'est grave que si le PC rame : c'est alors qu'il relit sans cesse le disque.
+              </p>
+              <p>
+                <b>{formatMb(memory.swapUsedMb)}</b> / {formatMb(memory.swapTotalMb)} utilisés · swappiness {memory.swappiness ?? "?"}
+                <button type="button" className="resources-optimize" onClick={(event) => optimize(event, "swap")} disabled={busy}>⚙ Optimiser le swap</button>
+              </p>
+            </div>
+          )}
           <div className="resource-table" role="table">
-            <div className={`resource-row head ${tab === "agents" ? "with-action" : ""}`} role="row"><span>{tab === "agents" ? "Session" : "Processus"}</span><span>CPU</span><span>RAM</span>{tab === "agents" && <span />}</div>
-            {rows.slice(0, tab === "agents" ? 20 : 6).map((item) => (
+            <div className={`resource-row head ${tab === "agents" ? "with-action" : ""}`} role="row"><span>{tab === "agents" ? "Session" : "Processus"}</span><span>{tab === "swap" ? "Swap" : "CPU"}</span><span>RAM</span>{tab === "agents" && <span />}</div>
+            {rows.slice(0, tab === "agents" ? 20 : tab === "swap" ? 10 : 6).map((item) => (
               <div className={`resource-row ${tab === "agents" ? "with-action" : ""} ${item.kind === "external" ? "external" : ""}`} role="row" key={item.id || item.pid} title={item.command || item.name}>
                 <span className="resource-row__name">
                   <b>{item.name}</b>
@@ -1757,10 +1851,17 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
                     </small>
                   )}
                 </span>
-                <span className="resource-row__metric">
-                  <i className={resourceLevel(item.cpuPercent, 50, 90)} style={{ width: `${Math.min(100, (item.cpuPercent / maxCpu) * 100)}%` }} />
-                  <em>{item.cpuPercent}%</em>
-                </span>
+                {tab === "swap" ? (
+                  <span className="resource-row__metric">
+                    <i className="swap" style={{ width: `${(item.swapMb / maxSwap) * 100}%` }} />
+                    <em>{formatMb(item.swapMb)}</em>
+                  </span>
+                ) : (
+                  <span className="resource-row__metric">
+                    <i className={resourceLevel(item.cpuPercent, 50, 90)} style={{ width: `${Math.min(100, (item.cpuPercent / maxCpu) * 100)}%` }} />
+                    <em>{item.cpuPercent}%</em>
+                  </span>
+                )}
                 <span className="resource-row__metric">
                   <i className="ram" style={{ width: `${(item.rssMb / maxRss) * 100}%` }} />
                   <em>{formatMb(item.rssMb)}</em>
@@ -1775,6 +1876,7 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
               </div>
             ))}
             {tab === "agents" && rows.length === 0 && <p className="resource-empty">Aucune session IA détectée.</p>}
+            {tab === "swap" && rows.length === 0 && <p className="resource-empty">Aucun processus notable dans le swap.</p>}
           </div>
         </div>
       )}
@@ -3039,7 +3141,7 @@ function ProjectFilePreviewModal({ file, files, project, onClose, onSelectFile, 
               className="ghost"
               title="Ouvrir dans un nouvel onglet"
             >
-              ↗ Ouvrir
+              <UiIcon name="external" /><span>Ouvrir</span>
             </a>
             <button
               type="button"
@@ -3047,15 +3149,16 @@ function ProjectFilePreviewModal({ file, files, project, onClose, onSelectFile, 
               onClick={() => onDownload(file.name)}
               title="Télécharger sur l'appareil"
             >
-              ↓ Télécharger
+              <UiIcon name="download" /><span>Télécharger</span>
             </button>
             <button
               type="button"
-              className="icon-button"
+              className="ghost project-file-preview-close"
               onClick={onClose}
               title="Fermer l'aperçu (Échap)"
+              aria-label="Fermer l'aperçu"
             >
-              ×
+              <UiIcon name="close" />
             </button>
           </div>
         </header>
@@ -3569,7 +3672,7 @@ function ProjectFilesSection({ project, agents }) {
                   title="Aperçu dans le navigateur (sans télécharger)"
                   aria-label="Aperçu"
                 >
-                  👁
+                  <UiIcon name="eye" />
                 </button>
                 <a
                   href={`/api/projects/${encodeURIComponent(project.id)}/files/${encodeURIComponent(file.name)}`}
@@ -3582,7 +3685,7 @@ function ProjectFilesSection({ project, agents }) {
                   title="Télécharger sur l'appareil"
                   aria-label="Télécharger"
                 >
-                  ↓
+                  <UiIcon name="download" />
                 </a>
                 {agents.length > 0 && (
                   <button
@@ -3597,7 +3700,7 @@ function ProjectFilesSection({ project, agents }) {
                     title="Transmettre le lien et chemin du fichier à un agent"
                     aria-label="Transmettre à un agent"
                   >
-                    🤖
+                    <UiIcon name="send" />
                   </button>
                 )}
                 <button
@@ -3607,7 +3710,7 @@ function ProjectFilesSection({ project, agents }) {
                   title="Supprimer définitivement ce fichier"
                   aria-label="Supprimer"
                 >
-                  ×
+                  <UiIcon name="trash" />
                 </button>
               </div>
             </div>
@@ -9673,10 +9776,11 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
 
   // Fermer un agent l'archive: on garde son fil pour pouvoir le relancer plus tard.
   async function kill() {
-    if (!window.confirm(`Archiver « ${session.name} » ? L'agent se ferme et reste restaurable depuis « Agents archivés ».`)) return;
-    await api(`/api/sessions/${session.id}/archive`, { method: "POST" });
-    window.dispatchEvent(new Event("noyau:archives"));
-    onKilled();
+    try {
+      if (await closeAgent(session)) onKilled();
+    } catch (error) {
+      window.alert(error.message);
+    }
   }
 
   async function migrate(target) {
@@ -11237,11 +11341,9 @@ function App() {
   }
 
   async function archiveAgent(session) {
-    if (!window.confirm(`Archiver « ${session.name} » ? L'agent se ferme et reste restaurable depuis « Agents archivés ».`)) return;
     try {
-      await api(`/api/sessions/${session.id}/archive`, { method: "POST" });
+      if (!(await closeAgent(session))) return;
       setSessions((items) => items.filter((item) => item.id !== session.id));
-      window.dispatchEvent(new Event("noyau:archives"));
       await refresh();
     } catch (error) {
       window.alert(error.message);
@@ -11362,6 +11464,7 @@ function App() {
       </main>
       {modal && <NewSessionModal projects={projects} sessions={orderedSessions} assistants={assistants} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); registerAgentInteraction(session.id); openAgentSession(session.id); refresh(); }} />}
       {editingSession && <EditSessionModal session={editingSession} projects={projects} onClose={() => setEditingId(null)} onSaved={(next, meta) => { setEditingId(null); if (meta?.switched && next?.id) { if (activeId === editingSession.id) openAgentSession(next.id); } refresh(); }} />}
+      <CloseAgentHost />
       {switchTarget && <SwitchProfileModal target={switchTarget} onClose={() => setSwitchTarget(null)} onConfirm={(password) => confirmSwitchProfile(switchTarget, password)} />}
       <VoiceOverlay voice={voice} feed={voiceFeed} sessions={orderedSessions} onVoice={toggleVoice} onOpenAgent={(id) => { openAgentSession(id); setMenu(false); }} />
       {projectModalId && <ProjectModal project={editingProject} onClose={() => setProjectModalId(null)} onSaved={() => { setProjectModalId(null); refresh(); }} />}

@@ -140,6 +140,16 @@ async function readProcesses() {
   return result;
 }
 
+// VmSwap: ce que le noyau a sorti de la RAM pour ce processus; c'est lui qui gonfle le swap.
+async function readSwapKb(pid) {
+  try {
+    const match = (await fs.readFile(`/proc/${pid}/status`, "utf8")).match(/^VmSwap:\s+(\d+)/m);
+    return match ? Number(match[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function readCmdline(pid) {
   try {
     return (await fs.readFile(`/proc/${pid}/cmdline`, "utf8")).replace(/\0+/g, " ").trim();
@@ -351,6 +361,10 @@ export class SystemResourcesService {
     })));
     const topCpu = await pick([...processes].sort((a, b) => b.cpuPercent - a.cpuPercent).slice(0, 8));
     const topMemory = await pick([...processes].sort((a, b) => b.rssMb - a.rssMb).slice(0, 8));
+    const swapKb = await Promise.all(processes.map((p) => readSwapKb(p.pid)));
+    processes.forEach((p, index) => { p.swapMb = Math.round(swapKb[index] / 1024); });
+    const topSwap = await pick(processes.filter((p) => p.swapMb >= 20).sort((a, b) => b.swapMb - a.swapMb).slice(0, 10));
+    const swappiness = await readNumber("/proc/sys/vm/swappiness");
     // Sessions IA lancees hors Noyau: on remonte au plus haut processus CLI et on somme son sous-arbre.
     const byPid = new Map(processes.map((p) => [p.pid, p]));
     const externalRoots = new Set();
@@ -403,10 +417,11 @@ export class SystemResourcesService {
     const loadAvg = os.loadavg().map((v) => Math.round(v * 100) / 100);
     return {
       cpu: { model: os.cpus()?.[0]?.model || "CPU", cores, percent: cpuPercent, loadAvg },
-      memory,
+      memory: { ...memory, swappiness },
       gpus,
       topCpu,
       topMemory,
+      topSwap,
       agents,
       docker,
       processCount: processes.length,
@@ -452,6 +467,31 @@ export function resourceHints({ cpuPercent, cores, loadAvg, memory, gpus, agents
   return hints;
 }
 
+export function swapPrompt(snapshot) {
+  const mb = (v) => (v >= 1024 ? `${(v / 1024).toFixed(1)} Go` : `${v} Mo`);
+  const { memory } = snapshot;
+  return [
+    "Mission : expliquer et optimiser l'usage du SWAP de ce PC (laptop Noyau), sans rien casser.",
+    "",
+    "RÈGLES STRICTES :",
+    "- N'arrête, ne tue, ne redémarre AUCUN processus, agent, conteneur ou service sans ma confirmation explicite dans ce chat.",
+    "- Pas de sudo sans me donner la commande exacte à lancer moi-même (préfixe `! ` dans le terminal) et pourquoi.",
+    "- Ne touche jamais au serveur Noyau (port 4242/4243) ni à ton propre processus.",
+    "",
+    `ÉTAT : RAM ${mb(memory.usedMb)} / ${mb(memory.totalMb)} (${memory.percent}%) · dispo ${mb(memory.availableMb)} · swap ${mb(memory.swapUsedMb)} / ${mb(memory.swapTotalMb)} (${memory.swapPercent}%) · swappiness ${memory.swappiness ?? "?"}`,
+    "",
+    "Processus les plus swappés (VmSwap) :",
+    ...(snapshot.topSwap || []).map((p) => `- ${mb(p.swapMb)} swap · ${mb(p.rssMb)} RAM · pid ${p.pid} ${p.agentName ? `[agent ${p.agentName}] ` : ""}${p.command}`),
+    "",
+    "À FAIRE :",
+    "1. Explique-moi simplement ce que ce swap veut dire ici (swap ≠ problème tant que la RAM dispo reste correcte; c'est surtout les processus inactifs qui y dorment).",
+    "2. Vérifie avec /proc/swaps, vmstat 1 5 (colonnes si/so) si le PC swappe activement (lent) ou si c'est du swap dormant (inoffensif).",
+    "3. Tableau : processus · swap · actif ou dormant · action proposée (redémarrer un serveur de dev oublié, fermer un onglet, rien) · gain · risque.",
+    "4. Réglages système possibles (swappiness, zram, taille du swapfile) avec la commande sudo exacte pour moi, avantages et risques.",
+    "5. Demande-moi ce que j'applique.",
+  ].join("\n");
+}
+
 export function optimizationPrompt(snapshot) {
   const mb = (v) => (v >= 1024 ? `${(v / 1024).toFixed(1)} Go` : `${v} Mo`);
   const lines = [
@@ -471,6 +511,7 @@ export function optimizationPrompt(snapshot) {
   ];
   if (snapshot.hints.length) lines.push("", "Alertes : " + snapshot.hints.map((h) => h.text).join(" ; "));
   lines.push("", "Top CPU :", ...snapshot.topCpu.slice(0, 6).map((p) => `- ${p.cpuPercent}% · ${mb(p.rssMb)} · pid ${p.pid} ${p.agentName ? `[agent ${p.agentName}] ` : ""}${p.command}`));
+  if (snapshot.topSwap?.length) lines.push("", "Top swap :", ...snapshot.topSwap.slice(0, 6).map((p) => `- ${mb(p.swapMb)} swap · ${mb(p.rssMb)} RAM · pid ${p.pid} ${p.command}`));
   lines.push("", "Top RAM :", ...snapshot.topMemory.slice(0, 6).map((p) => `- ${mb(p.rssMb)} · ${p.cpuPercent}% · pid ${p.pid} ${p.agentName ? `[agent ${p.agentName}] ` : ""}${p.command}`));
   if (snapshot.agents.length) lines.push("", "Agents Noyau (somme de leurs processus) :", ...snapshot.agents.slice(0, 12).map((a) => `- ${a.name}${a.projectName ? ` [${a.projectName}]` : ""}: ${mb(a.rssMb)} · ${a.cpuPercent}% CPU · ${a.processes} proc.${a.detachedApps?.length ? ` · a lancé à part : ${a.detachedApps.map((d) => `${d.name} ${mb(d.rssMb)}${d.gui ? " (appli graphique, ne pas fermer)" : ""}`).join(", ")}` : ""}`));
   if (snapshot.docker.length) lines.push("", "Docker :", ...snapshot.docker.map((c) => `- ${c.name}: ${mb(c.memoryMb)} · ${c.cpuPercent}% CPU`));

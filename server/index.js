@@ -53,7 +53,7 @@ import { ClaudeDesignTool } from "./claude-design-tool.js";
 import { AgentCommunicationService } from "./agent-tools.js";
 import { PowerService } from "./power-service.js";
 import { HardwareService } from "./hardware-service.js";
-import { SystemResourcesService, optimizationPrompt, processTable, descendants, ancestors, sessionProcesses, AGENT_BINARY } from "./system-resources.js";
+import { SystemResourcesService, optimizationPrompt, swapPrompt, processTable, descendants, ancestors, sessionProcesses, AGENT_BINARY } from "./system-resources.js";
 import { createLoginThrottle, createSessionToken, loadAccessToken, sameWebSocketOrigin, SESSION_MAX_AGE_MS, SESSION_MAX_AGE_SECONDS, verifySessionToken } from "./security.js";
 
 const execFileAsync = promisify(execFile);
@@ -1453,7 +1453,7 @@ app.get("/api/system/resources", async (request, response, next) => {
 app.post("/api/system/resources/optimize", async (request, response, next) => {
   try {
     const snapshot = await systemResources.read({ sessions: resourceSessions(request.profile.id) });
-    const prompt = optimizationPrompt(snapshot);
+    const prompt = request.body?.focus === "swap" ? swapPrompt(snapshot) : optimizationPrompt(snapshot);
     const agents = await agentCommunication.list({ profileId: request.profile.id });
     const existing = agents.find((agent) => agent.name === OPTIMIZER_AGENT_NAME);
     if (existing) {
@@ -3929,6 +3929,13 @@ app.delete("/api/sessions/:id", async (request, response, next) => {
   try {
     if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
     if (store.get(request.params.id)?.core) throw new Error("Agent de base du Noyau: non supprimable.");
+    // « Quitter totalement »: pas d'archive, et tout ce que l'agent a lance (hors applis graphiques) s'arrete aussi.
+    if (request.query.archive === "0") {
+      const { kill } = await sessionProcesses(await processTable(), request.params.id, await listPanePids(request.params.id));
+      await tmux.kill(request.params.id);
+      await terminateProcesses(kill);
+      return response.status(204).end();
+    }
     // La fermeture manuelle passe aussi par l'archive: on peut toujours revenir sur le fil de discussion.
     await agentArchiveService.archive(request.params.id, store.get(request.params.id) || {}, { reason: "closed" }).catch(() => {});
     await tmux.kill(request.params.id);

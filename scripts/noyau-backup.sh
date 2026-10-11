@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Backup Noyau -> NAS (partage SMB backup, dossier noyau, compte dedie).
+# Backup Noyau -> NAS (partage SMB backup): noyau/backup/{todo,data,files}; noyau/files = archives deplacees du PC.
 #   noyau-backup.sh todo   snapshot horodate des todos si modifiees (timer 15 min)
 #   noyau-backup.sh data   archive quotidienne de l'etat .data + miroir des fichiers
 # Mot de passe lu depuis NOYAU_BACKUP_PASSWORD_FILE, jamais affiche ni passe en argument.
@@ -43,7 +43,7 @@ backup_todo() {
   while IFS=$'\t' read -r profile file; do
     # Une todo vide ou illisible ne doit jamais devenir le dernier snapshot de reference.
     [[ -s "$file" ]] || { log "$profile: todo absente ou vide, ignoree"; continue; }
-    dest="$TARGET/todo/$profile"
+    dest="$TARGET/backup/todo/$profile"
     mkdir -p "$dest/$day"
     last="$(cat "$dest/.last-sha" 2>/dev/null || true)"
     local sha
@@ -53,33 +53,33 @@ backup_todo() {
     printf '%s\n' "$sha" > "$dest/.last-sha"
     log "$profile: snapshot $day/TO DO-$stamp.md ($(stat -c %s "$file") octets)"
   done < <(todo_sources)
-  find "$TARGET/todo" -mindepth 2 -maxdepth 2 -type d -name '20*' -mtime +"$TODO_KEEP_DAYS" -exec rm -rf {} + 2>/dev/null || true
+  find "$TARGET/backup/todo" -mindepth 2 -maxdepth 2 -type d -name '20*' -mtime +"$TODO_KEEP_DAYS" -exec rm -rf {} + 2>/dev/null || true
 }
 
 backup_data() {
   local stamp archive
   stamp="$(date '+%Y%m%d')"
-  mkdir -p "$TARGET/data" "$TARGET/files"
+  mkdir -p "$TARGET/backup/data" "$TARGET/backup/files"
   archive="$(mktemp --suffix=.tar.gz)"
   trap 'rm -f "$archive"' RETURN
   # Modeles et moteurs vocaux se reinstallent; uploads et fichiers projet partent dans le miroir.
   tar -C "$DATA" -czf "$archive" \
     --exclude='./llm' --exclude='./voice' --exclude='./uploads' --exclude='./project-files' \
     --exclude='./tmp*' --exclude='*/cache' --exclude='*.log' .
-  cp "$archive" "$TARGET/data/noyau-data-$stamp.tar.gz.part"
-  mv -f "$TARGET/data/noyau-data-$stamp.tar.gz.part" "$TARGET/data/noyau-data-$stamp.tar.gz"
+  cp "$archive" "$TARGET/backup/data/noyau-data-$stamp.tar.gz.part"
+  mv -f "$TARGET/backup/data/noyau-data-$stamp.tar.gz.part" "$TARGET/backup/data/noyau-data-$stamp.tar.gz"
   log "data: noyau-data-$stamp.tar.gz ($(stat -c %s "$archive") octets)"
-  find "$TARGET/data" -maxdepth 1 -name 'noyau-data-*.tar.gz' -mtime +"$DATA_KEEP_DAYS" -delete 2>/dev/null || true
+  find "$TARGET/backup/data" -maxdepth 1 -name 'noyau-data-*.tar.gz' -mtime +"$DATA_KEEP_DAYS" -delete 2>/dev/null || true
 
   # Miroir: une version remplacee ou supprimee part dans changed/<jour> au lieu d'etre perdue.
   for dir in uploads project-files; do
     [[ -d "$DATA/$dir" ]] || continue
     nice -n 10 ionice -c3 rsync -rt --delete --inplace --no-perms --no-owner --no-group \
-      --backup --backup-dir="$TARGET/files/changed/$stamp/$dir" \
-      "$DATA/$dir/" "$TARGET/files/current/$dir/"
+      --backup --backup-dir="$TARGET/backup/files/changed/$stamp/$dir" \
+      "$DATA/$dir/" "$TARGET/backup/files/current/$dir/"
     log "files: $dir synchronise"
   done
-  find "$TARGET/files/changed" -mindepth 1 -maxdepth 1 -type d -mtime +"$FILES_KEEP_DAYS" -exec rm -rf {} + 2>/dev/null || true
+  find "$TARGET/backup/files/changed" -mindepth 1 -maxdepth 1 -type d -mtime +"$FILES_KEEP_DAYS" -exec rm -rf {} + 2>/dev/null || true
 }
 
 case "${1:-}" in
