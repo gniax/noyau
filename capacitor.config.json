@@ -1,0 +1,16 @@
+{
+  "appId": "com.noyau.app",
+  "appName": "Noyau",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "cleartext": true,
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#0d1117"
+    }
+  }
+}

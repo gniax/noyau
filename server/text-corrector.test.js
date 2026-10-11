@@ -1,28 +1,6 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
 import test from "node:test";
-import { TextCorrector, buildCorrectionPrompt, cleanCorrectedText } from "./text-corrector.js";
-
-function createMockSpawn({ output = "Texte corrigé", exitCode = 0, errorOutput = "" } = {}) {
-  let executed = null;
-  const spawnFn = (binary, args, options) => {
-    const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.stderr = new EventEmitter();
-    child.stdin = {
-      end(data) {
-        executed = { binary, args, options, stdin: data };
-        process.nextTick(() => {
-          if (output) child.stdout.emit("data", Buffer.from(output));
-          if (errorOutput) child.stderr.emit("data", Buffer.from(errorOutput));
-          child.emit("close", exitCode);
-        });
-      },
-    };
-    return child;
-  };
-  return { spawnFn, getExecuted: () => executed };
-}
+import { TextCorrector, cleanCorrectedText } from "./text-corrector.js";
 
 test("cleanCorrectedText nettoie les guillemets et préfixes résiduels", () => {
   assert.equal(cleanCorrectedText('"Acheter du pain"'), "Acheter du pain");
@@ -33,43 +11,12 @@ test("cleanCorrectedText nettoie les guillemets et préfixes résiduels", () => 
   assert.equal(cleanCorrectedText(null, "fallback"), "fallback");
 });
 
-test("buildCorrectionPrompt adapte le contexte", () => {
-  const promptTodo = buildCorrectionPrompt("faire le menage", "todo");
-  assert.match(promptTodo, /tâche to-do/);
-  assert.match(promptTodo, /faire le menage/);
-
-  const promptComment = buildCorrectionPrompt("mon commantaire", "comment");
-  assert.match(promptComment, /commentaire/);
-  assert.match(promptComment, /mon commantaire/);
-});
-
-test("TextCorrector corrige via Claude si préféré", async () => {
-  const { spawnFn, getExecuted } = createMockSpawn({ output: "Acheter du pain et du lait." });
-  const corrector = new TextCorrector({
-    claudeBinary: "/usr/bin/claude",
-    pickProvider: () => "claude",
-    spawnFn,
-  });
-
-  const corrected = await corrector.correct("achete du pain et du lais", { context: "todo" });
-  assert.equal(corrected, "Acheter du pain et du lait.");
-  const exec = getExecuted();
-  assert.equal(exec.binary, "/usr/bin/claude");
-  assert.match(exec.stdin, /achete du pain et du lais/);
-});
-
-test("TextCorrector fait un fallback propre sur le texte brut en cas d'erreur", async () => {
-  const { spawnFn } = createMockSpawn({ exitCode: 1, errorOutput: "Rate limit" });
-  const corrector = new TextCorrector({
-    claudeBinary: "/usr/bin/claude",
-    binary: null,
-    pickProvider: () => "claude",
-    spawnFn,
-  });
-
+test("correction never falls back to a remote agent", async () => {
   const raw = "texte brut avec des fautes";
-  const result = await corrector.correct(raw);
-  assert.equal(result, raw);
+  assert.equal(await new TextCorrector().correct(raw), raw);
+  const failed = new TextCorrector({ localLlm: { chat: async () => { throw new Error("local unavailable"); } } });
+  assert.equal(await failed.correct(raw), raw);
+  assert.equal(failed.lastProvider, null);
 });
 
 test("TextCorrector ignore le texte vide", async () => {
@@ -77,4 +24,19 @@ test("TextCorrector ignore le texte vide", async () => {
   assert.equal(await corrector.correct(""), "");
   assert.equal(await corrector.correct("   "), "   ");
   assert.equal(await corrector.correct(null), null);
+});
+
+test("le modèle local corrige, et une réponse hors sujet est écartée", async () => {
+  const replies = [];
+  const corrector = new TextCorrector({
+    localLlm: { chat: async (messages) => { replies.push(messages.at(-1).content); return replies.length === 1 ? "Rajouter un bouton pour supprimer une liste" : "Voici mon analyse détaillée du problème que vous rencontrez, avec plusieurs pistes de résolution à envisager."; } },
+  });
+
+  assert.equal(await corrector.correct("rajouter un bouton pour suprimer une liste"), "Rajouter un bouton pour supprimer une liste");
+  assert.equal(corrector.lastProvider, "local");
+  // Le texte brut part au modèle: les consignes vivent dans le message système.
+  assert.equal(replies[0], "rajouter un bouton pour suprimer une liste");
+
+  // Réponse qui n'est plus une correction: on conserve l'original.
+  assert.equal(await corrector.correct("rajouter un bouton"), "rajouter un bouton");
 });

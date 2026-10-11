@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Noyau Desk
-Comment=Lancer Noyau tactile après connexion Ubuntu
+Name=Noyau
+Comment=Lancer Noyau léger tactile après connexion Ubuntu
 Exec=/home/user/projects/noyau/scripts/noyau-touch
 Icon=/home/user/projects/noyau/public/icon.svg
 Terminal=false

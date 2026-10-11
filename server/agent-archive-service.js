@@ -48,7 +48,7 @@ export class AgentArchiveService {
     return this.enqueue(async () => {
       const archives = await this.read();
       return archives
-        .filter((entry) => !profileId || !entry.profileId || entry.profileId === profileId || entry.shared)
+        .filter((entry) => !profileId || entry.profileId === profileId)
         .sort((a, b) => (b.archivedAt || "").localeCompare(a.archivedAt || ""));
     });
   }
@@ -108,7 +108,7 @@ export class AgentArchiveService {
       const index = archives.findIndex((item) => item.id === id);
       if (index === -1) throw new Error("Agent archivé introuvable.");
       const archived = archives[index];
-      if (profileId && archived.profileId && archived.profileId !== profileId && !archived.shared) {
+      if (profileId && archived.profileId !== profileId) {
         throw new Error("Accès non autorisé à cet agent archivé.");
       }
 

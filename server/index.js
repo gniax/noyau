@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
@@ -17,18 +18,25 @@ import { SessionStore } from "./session-store.js";
 import { TmuxController, validSessionId } from "./tmux.js";
 import { PushService } from "./push-service.js";
 import { UsageService, lastClaudeMessage, parseClaudeRateLimits, refreshExpiredQuota } from "./usage.js";
-import { ProjectLogoService } from "./project-logo.js";
+import { ProjectLogoService, IMAGE_EXTENSIONS } from "./project-logo.js";
+import { ProjectFilesService } from "./project-files-service.js";
 import { agentNotificationTitle, PromptWatcher } from "./prompt-watcher.js";
 import { HandoverService } from "./handover.js";
 import { SessionReaper } from "./session-reaper.js";
 import { AgentArchiveService } from "./agent-archive-service.js";
 import { BoardService } from "./board-service.js";
 import { TodoSeenService } from "./todo-seen-service.js";
+import { VoiceService } from "./voice-service.js";
+import { LocalLlm } from "./local-llm.js";
+import { TodoTriage, suggestEmojiForFolder } from "./todo-triage.js";
+import { suggestAgentDescription } from "./agent-description.js";
 import { AntigravityQuotaService } from "./antigravity-quota.js";
 import { ClaudeQuotaService } from "./claude-quota.js";
 import { CodexQuotaService } from "./codex-quota.js";
+import { contextAdvice, optimizeCommand } from "./context-advice.js";
+import { ContextAudit } from "./context-audit.js";
 import { ModuleService } from "./module-service.js";
-import { createBuildGrant, iosInstallManifest, verifyBuildGrant } from "./build-grant.js";
+import { createBuildGrant, createProjectFileGrant, iosInstallManifest, verifyBuildGrant, verifyProjectFileGrant } from "./build-grant.js";
 import { KnowledgeService } from "./knowledge-service.js";
 import { normalizeProjectOrder, sortProjects } from "./project-order.js";
 import { FinanceService } from "./finance-service.js";
@@ -36,13 +44,17 @@ import { FinanceAdvisor } from "./finance-advisor.js";
 import { EnableBankingService } from "./enable-banking.js";
 import { agentStatus } from "./agent-status.js";
 import { ROOT_FOLDER, TodoService } from "./todo-service.js";
+import { CalendarService, generateICal } from "./calendar-service.js";
 import { TextCorrector } from "./text-corrector.js";
 import { ProfileService } from "./profile-service.js";
 import { QuotaNotifier } from "./quota-notifier.js";
 import { CodexCapacityRetry } from "./codex-capacity-retry.js";
 import { ClaudeDesignTool } from "./claude-design-tool.js";
 import { AgentCommunicationService } from "./agent-tools.js";
-import { createLoginThrottle, loadAccessToken, sameWebSocketOrigin } from "./security.js";
+import { PowerService } from "./power-service.js";
+import { HardwareService } from "./hardware-service.js";
+import { SystemResourcesService, optimizationPrompt, processTable, descendants, ancestors, sessionProcesses, AGENT_BINARY } from "./system-resources.js";
+import { createLoginThrottle, createSessionToken, loadAccessToken, sameWebSocketOrigin, SESSION_MAX_AGE_MS, SESSION_MAX_AGE_SECONDS, verifySessionToken } from "./security.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -75,6 +87,10 @@ const PROJECT_PATTERN = /^project-[a-z0-9]+-[a-f0-9]{6}$/;
 await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
 const uploadsDir = path.join(dataDir, "uploads");
 await fs.mkdir(uploadsDir, { recursive: true, mode: 0o700 });
+// Un allegement de contexte appartient a un agent, pas au dossier: chaque agent a son fichier de reglages.
+const agentSettingsRoot = path.join(dataDir, "agent-settings");
+await fs.mkdir(agentSettingsRoot, { recursive: true, mode: 0o700 });
+const agentSettingsFile = (id) => path.join(agentSettingsRoot, `${id}.json`);
 
 async function commandPath(name) {
   try {
@@ -145,7 +161,71 @@ const todoService = new TodoService({
 const agentArchiveService = new AgentArchiveService({ file: path.join(dataDir, "agent-archives.json") });
 const boardService = new BoardService({ file: path.join(dataDir, "todo-boards.json") });
 const todoSeenService = new TodoSeenService({ file: path.join(dataDir, "todo-seen.json") });
-const usage = new UsageService();
+const calendarService = new CalendarService({ storagePath: path.join(dataDir, "calendar-subscriptions.json") });
+const voiceClients = new Set();
+
+function broadcastVoice(payload) {
+  const frame = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const client of voiceClients) {
+    try { client.write(frame); } catch { voiceClients.delete(client); }
+  }
+}
+
+const voiceService = new VoiceService({
+  root,
+  dataDir,
+  listAgents: async () => {
+    // Seules les sessions reellement vivantes sont pilotables a la voix.
+    const live = await tmux.list().catch(() => []);
+    return live
+      .filter((session) => session.managed && session.name)
+      .map((session) => ({ id: session.id, name: session.name }));
+  },
+  listProjects: () => Object.entries(projects.all()).map(([id, project]) => ({ id, name: project.name })),
+  // La dictee ecrit dans le terminal ouvert sans valider: l'utilisateur relit avant d'envoyer.
+  onDictation: async (dictated) => {
+    broadcastVoice({ type: "action", action: dictated });
+  },
+  // Ce qui est entendu s'affiche pendant qu'on parle: on voit venir l'action avant qu'elle parte.
+  onPartial: (partial) => {
+    broadcastVoice({ type: "partial", partial });
+  },
+  onAction: async (action) => {
+    broadcastVoice({ type: "action", action });
+    if (action.action === "open-agent") await voiceService.say(`J'ouvre ${action.name}.`);
+    else if (action.action === "open-project") await voiceService.say(`J'ouvre le projet ${action.name}.`);
+    else if (action.action === "unknown") await voiceService.say("Je n'ai pas compris.");
+    // Noyau orchestre: la demande part dans l'agent vise sans que l'utilisateur ouvre sa vue.
+    else if (action.action === "send-agent") {
+      try {
+        await tmux.submit(action.id, action.text);
+        trackComposerPrompt(action.id, store.get(action.id)?.profileId || null, action.text);
+        await voiceService.say(`C'est passé à ${action.name}.`);
+      } catch {
+        await voiceService.say(`Je n'ai pas pu écrire à ${action.name}.`);
+      }
+    } else if (action.action === "optimize") {
+      try {
+        await tmux.submit(action.id, optimizeCommand(store.get(action.id)?.assistant, action.mode));
+        await voiceService.say(action.mode === "clear" ? `${action.name} repart propre.` : `Je compacte ${action.name}.`);
+      } catch {
+        await voiceService.say(`Je n'ai pas pu alléger ${action.name}.`);
+      }
+    } else if (action.action === "restart") {
+      const current = store.get(action.id);
+      if (current && await restartWithSettings(action.id, current)) await voiceService.say(`Je relance ${action.name}.`);
+      else await voiceService.say(`Je n'ai pas pu relancer ${action.name}.`);
+    } else if (action.action === "interrupt" && action.id) {
+      try {
+        await interruptSession(action.id);
+        await voiceService.say(`J'arrête ${action.name}.`);
+      } catch {
+        await voiceService.say(`Je n'ai pas pu arrêter ${action.name}.`);
+      }
+    }
+  },
+});
+const usage = new UsageService({ providerState });
 const projectLogos = new ProjectLogoService();
 const migrations = new Map();
 const notificationTestCursor = new Map();
@@ -251,6 +331,7 @@ const tmux = new TmuxController({
   claudeBinary,
   antigravityBinary,
   antigravityArgs: (process.env.NOYAU_ANTIGRAVITY_ARGS || "").split(" ").filter(Boolean),
+  agentSettingsRoot,
 });
 // `which` renvoie un chemin absolu quand l'outil est installe, sinon le nom brut.
 const installedAssistants = {
@@ -283,17 +364,13 @@ function providerRemaining(quota) {
   return values.length ? Math.min(...values) : null;
 }
 
-function preferredAiProvider() {
-  const codex = providerRemaining(providerState.get("codex"));
-  const claude = providerRemaining(providerState.get("claude"));
-  if (Number.isFinite(codex) && codex <= 2) return "claude";
-  if (Number.isFinite(claude) && claude <= 2) return "codex";
-  if (Number.isFinite(codex) && Number.isFinite(claude)) return claude > codex ? "claude" : "codex";
-  return "codex";
-}
-
-const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, claudeBinary, cwd: root, pickProvider: () => preferredAiProvider() });
-const textCorrector = new TextCorrector({ binary: codexBinary, claudeBinary, cwd: root, pickProvider: () => preferredAiProvider() });
+const localLlm = new LocalLlm({ dataDir });
+const contextAudit = new ContextAudit({ localLlm });
+// Le catalogue de la derniere analyse: on n'applique que ce qui a ete montre a l'ecran.
+const auditCatalog = new Map();
+const financeAdvisor = new FinanceAdvisor({ binary: codexBinary, claudeBinary, antigravityBinary: installedAssistants.antigravity ? antigravityBinary : null, cwd: root });
+const todoTriage = new TodoTriage({ localLlm });
+const textCorrector = new TextCorrector({ localLlm });
 const profileRuntimes = new Map();
 
 function configureFinanceRuntime(profileId, runtime) {
@@ -353,9 +430,47 @@ const quotaNotifier = new QuotaNotifier({
 });
 const codexCapacityRetry = new CodexCapacityRetry({ tmux, providerState });
 const claudeDesignTool = new ClaudeDesignTool({ claudeBinary, store, projects, workspaceRoot: root });
-const agentCommunication = new AgentCommunicationService({ tmux, store, projects, handover, agentStatus, workspaceRoot: root });
+const projectFilesService = new ProjectFilesService({ dataDir });
+const agentCommunication = new AgentCommunicationService({ tmux, store, projects, handover, agentStatus, workspaceRoot: root, projectFiles: projectFilesService });
+const powerService = new PowerService({
+  file: path.join(dataDir, "power-state.json"),
+  agentWorkingChecker: async () => {
+    try {
+      const active = [];
+      const sessions = await tmux.list();
+      const promptStatuses = await Promise.all(sessions.map((s) => promptWatcher.isWaiting(s.id)));
+      for (let i = 0; i < sessions.length; i++) {
+        const session = sessions[i];
+        const metadata = store.get(session.id) || {};
+        const status = agentStatus(session, metadata, promptStatuses[i]);
+        if (status.state === "working") {
+          active.push({ id: session.id, name: session.name || session.assistant });
+        }
+      }
+      return active;
+    } catch {
+      return [];
+    }
+  },
+});
+setInterval(() => {
+  powerService.tick().catch(() => {});
+}, 60_000);
+const hardwareService = new HardwareService();
+const systemResources = new SystemResourcesService({
+  listPanes: async () => {
+    const { stdout } = await tmux.run(["list-panes", "-a", "-F", "#{session_name} #{pane_pid}"]);
+    return stdout.trim().split("\n").filter(Boolean).map((line) => {
+      const [sessionId, pid] = line.split(" ");
+      return { sessionId, pid: Number(pid) };
+    });
+  },
+});
+const OPTIMIZER_AGENT_NAME = "Optimisation PC";
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_SIZE_MB || 500);
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const fileUpload = multer({
-  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
 });
 
 const AUTO_SYNC_KEY = "auto-sync";
@@ -433,7 +548,10 @@ function financePayload(profileId, month = currentMonthParis()) {
 }
 
 function logoUrl(session, profileId = session.profileId || primaryProfileId) {
-  return session.projectLogo ? `/api/sessions/${encodeURIComponent(session.id)}/logo?profile=${encodeURIComponent(profileId)}` : null;
+  if (!session.projectLogo) return null;
+  const project = session.projectId ? projects.get(session.projectId) : null;
+  const v = project?.updatedAt ? `&v=${encodeURIComponent(project.updatedAt)}` : "";
+  return `/api/sessions/${encodeURIComponent(session.id)}/logo?profile=${encodeURIComponent(profileId)}${v}`;
 }
 
 async function setAgentState(sessionId, agentState) {
@@ -442,14 +560,38 @@ async function setAgentState(sessionId, agentState) {
   await store.set(sessionId, { ...current, agentState, agentStateUpdatedAt: new Date().toISOString() });
 }
 
+function normalizeBudgetItem(item) {
+  if (!item || typeof item !== "object") return null;
+  const name = String(item.name || "").trim().slice(0, 100);
+  if (!name) return null;
+  const amount = Math.max(0, Math.round((Number(item.amount) || 0) * 100) / 100);
+  const cadence = ["monthly", "yearly", "weekly", "once"].includes(item.cadence) ? item.cadence : "monthly";
+  const kind = ["subscription", "recurring"].includes(item.kind) ? item.kind : "recurring";
+  const category = String(item.category || (kind === "subscription" ? "Abonnement SaaS" : "Hébergement / Cloud")).trim().slice(0, 50);
+  const billingDay = item.billingDay ? Math.min(31, Math.max(1, parseInt(item.billingDay, 10))) : null;
+  const notes = String(item.notes || "").trim().slice(0, 200);
+  const active = item.active !== false;
+  const id = item.id && /^item-[a-z0-9-]+$/.test(item.id) ? item.id : `item-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
+  const createdAt = item.createdAt || new Date().toISOString();
+  return { id, name, amount, cadence, kind, category, billingDay, notes, active, createdAt };
+}
+
+function normalizeProjectBudget(raw) {
+  if (!raw || typeof raw !== "object") return { items: [] };
+  const items = Array.isArray(raw.items) ? raw.items.map(normalizeBudgetItem).filter(Boolean) : [];
+  return { items };
+}
+
 function projectPayload(id, project, profileId = project.profileId || primaryProfileId) {
   const owner = profileService.resolve(project.profileId);
+  const v = project.updatedAt ? `&v=${encodeURIComponent(project.updatedAt)}` : "";
   return {
     id,
     ...project,
+    budget: project.budget || { items: [] },
     canEdit: (project.profileId || primaryProfileId) === profileId,
     owner: { id: owner.id, name: owner.name },
-    logoUrl: `/api/projects/${encodeURIComponent(id)}/logo?profile=${encodeURIComponent(project.profileId || primaryProfileId)}`,
+    logoUrl: `/api/projects/${encodeURIComponent(id)}/logo?profile=${encodeURIComponent(project.profileId || primaryProfileId)}${v}`,
   };
 }
 
@@ -465,7 +607,19 @@ async function projectInput(body, current = {}) {
   const shared = body?.shared === undefined ? Boolean(current.shared) : Boolean(body.shared);
   // Suivi to-do actif par defaut: un projet existant garde son reglage tant qu'on n'y touche pas.
   const todoTracking = body?.todoTracking === undefined ? current.todoTracking !== false : Boolean(body.todoTracking);
-  return { ...current, name, rootPath, shared, todoTracking, updatedAt: new Date().toISOString() };
+  let logoPath = current.logoPath || null;
+  if (body?.logoPath !== undefined) {
+    if (body.logoPath === null || body.logoPath === "") {
+      logoPath = null;
+    } else {
+      const resolvedLogo = path.resolve(String(body.logoPath));
+      const stat = await fs.stat(resolvedLogo);
+      if (!stat.isFile()) throw new Error("Fichier logo introuvable.");
+      logoPath = resolvedLogo;
+    }
+  }
+  const budget = body?.budget !== undefined ? normalizeProjectBudget(body.budget) : (current.budget || { items: [] });
+  return { ...current, name, rootPath, shared, todoTracking, logoPath, budget, updatedAt: new Date().toISOString() };
 }
 
 function projectOwned(profileId, projectId) {
@@ -492,39 +646,248 @@ function foreignSharedProjects(profileId) {
   return byOwner;
 }
 
+function resolveFolderProjectId(folder, folderList) {
+  let cur = folder;
+  while (cur) {
+    if (cur.projectId) return cur.projectId;
+    cur = cur.parentId ? folderList.find((f) => f.id === cur.parentId) : null;
+  }
+  return null;
+}
+
+async function syncAndCleanForeignSharedProjects(profile, view, runtime) {
+  const foreign = foreignSharedProjects(profile.id);
+  if (!foreign.size) return { folders: [...view.folders], todos: [...view.todos] };
+
+  const foreignProjectIds = new Set();
+  for (const [, owned] of foreign) {
+    for (const pid of owned.keys()) foreignProjectIds.add(pid);
+  }
+
+  // Dossiers orphelins locaux appartenant à un projet partagé distant
+  const orphanLocalFolders = view.folders.filter((f) => {
+    const pId = resolveFolderProjectId(f, view.folders);
+    return pId && foreignProjectIds.has(pId);
+  });
+
+  const orphanFolderIds = new Set(orphanLocalFolders.map((f) => f.id));
+  const localTasksToMigrate = view.todos.filter((t) =>
+    orphanFolderIds.has(t.folderId) || (t.projectId && foreignProjectIds.has(t.projectId))
+  );
+
+  if (orphanLocalFolders.length > 0 || localTasksToMigrate.length > 0) {
+    for (const [ownerId, owned] of foreign) {
+      const ownerRuntime = await ensureProfileRuntime(ownerId);
+      const ownerProjects = [...owned].map(([id, project]) => ({ id, name: project.name }));
+      const ownerView = await ownerRuntime.todoService.syncProjectFolders(ownerProjects);
+
+      for (const task of localTasksToMigrate) {
+        const localFolder = orphanLocalFolders.find((f) => f.id === task.folderId);
+        const pId = task.projectId || resolveFolderProjectId(localFolder, view.folders);
+        if (!pId || !owned.has(pId)) continue;
+
+        const exists = ownerView.todos.some((t) => t.id === task.id || t.text.trim().toLowerCase() === task.text.trim().toLowerCase());
+        if (!exists) {
+          let destFolderId = null;
+          const ownerRootFolder = ownerView.folders.find((f) => f.projectId === pId && !f.parentId);
+          const ownerSubFolders = ownerView.folders.filter((f) => f.parentId === ownerRootFolder?.id);
+
+          if (localFolder && localFolder.name) {
+            const cleanLocalName = localFolder.name.replace(/^[\p{Extended_Pictographic}\s]+/u, "").trim().toLowerCase();
+            const matchedSub = ownerSubFolders.find((f) =>
+              f.name.replace(/^[\p{Extended_Pictographic}\s]+/u, "").trim().toLowerCase() === cleanLocalName
+            );
+            if (matchedSub) destFolderId = matchedSub.id;
+          }
+          if (!destFolderId) {
+            const isDesign = /design|graphisme|visuel|maquette|fond|octane|arrière-plan|bulle|perle|badge|logo|couleur|asset/i.test(task.text);
+            if (isDesign) {
+              let designSub = ownerSubFolders.find((f) => /design|graphisme|visuel/i.test(f.name));
+              if (!designSub && ownerRootFolder) {
+                const res = await ownerRuntime.todoService.addFolder({
+                  name: "🎨 Design",
+                  parentId: ownerRootFolder.id,
+                  projectId: pId,
+                });
+                designSub = res.folders.find((f) => f.parentId === ownerRootFolder.id && /design/i.test(f.name));
+                if (designSub) ownerSubFolders.push(designSub);
+              }
+              if (designSub) destFolderId = designSub.id;
+            }
+          }
+          if (!destFolderId) {
+            const devSub = ownerSubFolders.find((f) => /développement|dev/i.test(f.name));
+            destFolderId = devSub ? devSub.id : ownerRootFolder?.id;
+          }
+
+          const { todo: added } = await ownerRuntime.todoService.add({
+            text: task.text,
+            dueDate: task.dueDate || null,
+            priority: task.priority || "medium",
+            status: task.status || "todo",
+            folderId: destFolderId,
+            projectId: pId,
+            kind: task.kind || "user",
+            author: task.author || profile.name,
+          });
+          if (task.comments && task.comments.length > 0) {
+            await ownerRuntime.todoService.update(added.id, { comments: task.comments });
+          }
+        }
+        await runtime.todoService.remove(task.id).catch(() => {});
+      }
+
+      for (const folder of orphanLocalFolders) {
+        await runtime.todoService.removeFolder(folder.id, { force: true }).catch(() => {});
+      }
+    }
+  }
+
+  const cleanFolders = view.folders.filter((f) => {
+    const pId = resolveFolderProjectId(f, view.folders);
+    return !pId || !foreignProjectIds.has(pId);
+  });
+  const cleanFolderIds = new Set(cleanFolders.map((f) => f.id));
+  const cleanTodos = view.todos.filter((t) =>
+    cleanFolderIds.has(t.folderId) && (!t.projectId || !foreignProjectIds.has(t.projectId))
+  );
+
+  return { folders: cleanFolders, todos: cleanTodos };
+}
+
 async function todosView(profile) {
   const runtime = await ensureProfileRuntime(profile.id);
   const mine = ownedProjects(profile.id).map(([id, project]) => ({ id, name: project.name }));
   const view = await runtime.todoService.syncProjectFolders(mine);
-  const merged = { todos: [...view.todos], folders: [...view.folders] };
+  const clean = await syncAndCleanForeignSharedProjects(profile, view, runtime);
+  const cleanTodos = clean.todos.map((t) => {
+    const proj = t.projectId ? projects.get(t.projectId) : null;
+    const isShared = t.shared === true || (Boolean(proj?.shared) && t.shared !== false);
+    return { ...t, shared: isShared, ownerProfileId: profile.id, ownerName: profile.name };
+  });
+  const merged = { todos: cleanTodos, folders: [...clean.folders] };
+
   for (const [ownerId, owned] of foreignSharedProjects(profile.id)) {
     const ownerRuntime = await ensureProfileRuntime(ownerId);
     const owner = profileService.resolve(ownerId);
     const remote = await ownerRuntime.todoService.syncProjectFolders([...owned].map(([id, project]) => ({ id, name: project.name })));
-    const shared = remote.folders.filter((folder) => folder.projectId && owned.has(folder.projectId));
+    const sharedProjectIds = new Set([...owned.keys()]);
+    const sharedFolderIds = new Set();
+    // 1. Dossiers racines du projet
+    remote.folders.forEach((f) => {
+      if (f.projectId && sharedProjectIds.has(f.projectId)) sharedFolderIds.add(f.id);
+    });
+    // 2. Sous-dossiers transitifs à toute profondeur
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const f of remote.folders) {
+        if (f.parentId && sharedFolderIds.has(f.parentId) && !sharedFolderIds.has(f.id)) {
+          sharedFolderIds.add(f.id);
+          expanded = true;
+        }
+      }
+    }
+    const shared = remote.folders.filter((folder) => sharedFolderIds.has(folder.id));
     const folderIds = new Set(shared.map((folder) => folder.id));
-    merged.folders.push(...shared.map((folder) => ({ ...folder, ownerProfileId: ownerId, ownerName: owner.name })));
-    merged.todos.push(...remote.todos.filter((todo) => folderIds.has(todo.folderId)));
+    merged.folders.push(...shared.map((folder) => ({
+      ...folder,
+      projectId: resolveFolderProjectId(folder, remote.folders),
+      ownerProfileId: ownerId,
+      ownerName: owner.name,
+    })));
+    merged.todos.push(...remote.todos.filter((todo) => {
+      if (todo.shared === false) return false;
+      return folderIds.has(todo.folderId) || (todo.projectId && sharedProjectIds.has(todo.projectId));
+    }).map((t) => ({ ...t, shared: true, ownerProfileId: ownerId, ownerName: owner.name })));
   }
+
+  // 3. Tâches partagées ou attribuées inter-profils hors projets partagés
+  const existingTodoIds = new Set(merged.todos.map((t) => t.id));
+  const otherProfiles = profileService.list().filter((p) => p.id !== profile.id);
+  for (const other of otherProfiles) {
+    const otherRt = await ensureProfileRuntime(other.id);
+    const otherRemote = await otherRt.todoService.list();
+    for (const t of otherRemote.todos) {
+      if (existingTodoIds.has(t.id)) continue;
+      existingTodoIds.add(t.id);
+      merged.todos.push({
+        ...t,
+        shared: t.shared || t.assignee === "all" || t.assignee === "both",
+        ownerProfileId: other.id,
+        ownerName: other.name,
+      });
+    }
+  }
+
   const boardSettings = await boardService.settings(profile.id);
   merged.columns = boardSettings.columns;
   merged.correction = boardSettings.correction;
+  const reviewCol = boardSettings.columns?.find((c) => c.id === "review" || c.kind === "review");
+  if (reviewCol && reviewCol.enabled === false) {
+    for (const todo of merged.todos) {
+      if (todo.status === "review") {
+        todo.status = "done";
+        todo.completed = true;
+      }
+    }
+  }
   const seen = await todoSeenService.bootstrap(profile.id, merged.todos);
   merged.todos = todoSeenService.decorate(merged.todos, seen);
   merged.unread = merged.todos.reduce((total, todo) => total + todo.unread, 0);
   return merged;
 }
 
-async function todoRuntime(profile, { todoId = null, folderId = null }) {
-  const own = await ensureProfileRuntime(profile.id);
-  if (todoId && await own.todoService.find(todoId)) return own;
-  if (!todoId && (!folderId || folderId === "root" || await own.todoService.folder(folderId))) return own;
-  for (const [ownerId, owned] of foreignSharedProjects(profile.id)) {
-    const runtime = await ensureProfileRuntime(ownerId);
-    const found = todoId ? await runtime.todoService.find(todoId) : await runtime.todoService.folder(folderId);
-    if (found?.projectId && owned.has(found.projectId)) return runtime;
+async function todoRuntime(profile, { todoId = null, folderId = null, projectId = null }) {
+  const foreign = foreignSharedProjects(profile.id);
+
+  // 1. Si projectId explicitement fourni et projet partagé d'un autre profil:
+  if (projectId) {
+    for (const [ownerId, owned] of foreign) {
+      if (owned.has(projectId)) {
+        return await ensureProfileRuntime(ownerId);
+      }
+    }
   }
-  return own;
+
+  // 2. Si folderId fourni, vérifier s'il appartient à un projet partagé distant:
+  if (folderId && folderId !== "root") {
+    for (const [ownerId, owned] of foreign) {
+      const ownerRt = await ensureProfileRuntime(ownerId);
+      const found = await ownerRt.todoService.folder(folderId);
+      if (found) {
+        let check = found;
+        while (check) {
+          if (check.projectId && owned.has(check.projectId)) return ownerRt;
+          if (check.parentId) check = await ownerRt.todoService.folder(check.parentId);
+          else break;
+        }
+      }
+    }
+  }
+
+  // 3. Si todoId fourni: vérifier d'abord dans le profil courant, puis chez les autres profils
+  if (todoId) {
+    const ownRt = await ensureProfileRuntime(profile.id);
+    const ownFound = await ownRt.todoService.find(todoId);
+    if (ownFound) return ownRt;
+
+    for (const [ownerId] of foreign) {
+      const ownerRt = await ensureProfileRuntime(ownerId);
+      const found = await ownerRt.todoService.find(todoId);
+      if (found) return ownerRt;
+    }
+
+    const others = profileService.list().filter((p) => p.id !== profile.id);
+    for (const other of others) {
+      const otherRt = await ensureProfileRuntime(other.id);
+      const found = await otherRt.todoService.find(todoId);
+      if (found) return otherRt;
+    }
+  }
+
+  // 4. Par défaut, runtime propre du profil:
+  return await ensureProfileRuntime(profile.id);
 }
 
 // Un projet partage reste modifiable par son seul proprietaire, mais utilisable par tous.
@@ -535,7 +898,11 @@ function projectVisible(profileId, projectId) {
 
 function sessionVisible(profileId, sessionId) {
   const session = store.get(sessionId);
-  return Boolean(session && (session.profileId === profileId || session.shared));
+  if (!session || !profileId) return false;
+  if (session.profileId === profileId) return true;
+  if (session.shared === true) return true;
+  if (session.projectId && projectVisible(profileId, session.projectId)) return true;
+  return false;
 }
 
 function sessionOwned(profileId, sessionId) {
@@ -593,9 +960,36 @@ function tokenMatches(candidate = "") {
 }
 
 function authenticated(request) {
-  const bearer = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+  const bearer = request.headers.authorization?.replace(/^Bearer\s+/i, "") || (typeof request.query?.token === "string" ? request.query.token : "");
+  if (bearer) {
+    if (tokenMatches(bearer)) {
+      request.sessionProfileId = primaryProfileId;
+      request.masterAuthenticated = true;
+      return true;
+    }
+    const verified = verifySessionToken(bearer, accessToken, SESSION_MAX_AGE_MS);
+    if (verified) {
+      request.sessionProfileId = verified.profileId;
+      return true;
+    }
+  }
+  if (request.query?.grant) {
+    const verified = verifyProjectFileGrant(buildGrantSecret, request.query.grant);
+    if (verified) {
+      request.sessionProfileId = verified.profileId;
+      request.fileGrant = verified;
+      return true;
+    }
+  }
   const cookie = parseCookies(request.headers.cookie).noyau_session;
-  return tokenMatches(bearer || cookie || "");
+  if (cookie) {
+    const verified = verifySessionToken(cookie, accessToken, SESSION_MAX_AGE_MS);
+    if (verified) {
+      request.sessionProfileId = verified.profileId;
+      return true;
+    }
+  }
+  return false;
 }
 
 function httpsOrigin(request) {
@@ -637,7 +1031,7 @@ app.use((request, response, next) => {
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)");
   response.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'; frame-ancestors 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; frame-ancestors 'none'",
   );
   if (request.secure) response.setHeader("Strict-Transport-Security", "max-age=31536000");
   next();
@@ -648,13 +1042,68 @@ app.use((request, response, next) => {
   if (!/^(?:[a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\])(?::\d{1,5})?$/.test(host)) return response.status(400).end();
   response.redirect(308, `https://${host}${request.originalUrl}`);
 });
+const BACKGROUND_AUTOMATED_PATHS = new Set([
+  "/api/presence",
+  "/api/system/hardware",
+  "/api/system/resources",
+  "/api/system/power",
+  "/api/system/power/sleep",
+  "/api/system/power/wake",
+  "/api/system/power/schedule",
+  "/api/system/activity",
+  "/api/quotas",
+  "/api/sessions",
+  "/api/todos",
+  "/api/weather",
+  "/api/voice/status",
+  "/api/agent-settings",
+  "/api/version",
+  "/version.json",
+  "/sw.js",
+]);
+
+function isHumanActivity(request) {
+  if (BACKGROUND_AUTOMATED_PATHS.has(request.path)) return false;
+  if (request.path.startsWith("/api/system/power") || request.path.startsWith("/api/system/activity")) return false;
+  if (request.path.startsWith("/assets/") || request.path.startsWith("/fonts/") || request.path.startsWith("/icons/") || request.path.startsWith("/backgrounds/")) {
+    return false;
+  }
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+    return true;
+  }
+  return false;
+}
+
 app.use((request, response, next) => {
+  if (isHumanActivity(request)) {
+    powerService.touchActivity();
+    if (powerService.canWakeOnActivity()) {
+      powerService.wakeUp().catch((error) => console.warn(`Réveil auto sur activité échoué: ${error.message}`));
+    }
+  }
   if (request.path === "/sw.js" || request.headers.accept?.includes("text/html")) {
     response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   }
   next();
 });
-app.use(express.json({ limit: "32kb" }));
+// Le Markdown brut des todos depasse largement 32 Ko: seule cette route accepte un gros corps.
+const jsonBody = express.json({ limit: "32kb" });
+const rawTodoBody = express.json({ limit: "4mb" });
+app.use((request, response, next) => (request.path === "/api/todos/raw" ? rawTodoBody : jsonBody)(request, response, next));
+
+app.get("/api/auth/profiles", (_request, response) => {
+  response.setHeader("Cache-Control", "no-store");
+  response.json({
+    profiles: profileService.list().map(({ id, name, theme, primary, hasPassword }) => ({
+      id,
+      name,
+      theme,
+      primary,
+      hasPassword,
+    })),
+    primaryProfileId,
+  });
+});
 
 app.post("/api/auth", (request, response) => {
   const remote = String(request.socket.remoteAddress || "inconnu");
@@ -663,16 +1112,54 @@ app.post("/api/auth", (request, response) => {
     response.setHeader("Retry-After", String(retryAfter));
     return response.status(429).json({ error: "Trop de tentatives. Réessaie plus tard.", retryAfter });
   }
-  if (!tokenMatches(request.body?.token)) {
+
+  const credential = request.body?.password || request.body?.token;
+  const profileId = request.body?.profileId || null;
+  const authenticatedProfile = profileService.authenticate(credential, profileId, accessToken);
+
+  if (!authenticatedProfile) {
     loginThrottle.fail(remote);
-    return response.status(401).json({ error: "Clé incorrecte." });
+    return response.status(401).json({ error: "Mot de passe ou clé incorrecte." });
   }
+
   loginThrottle.clear(remote);
+  const sessionToken = createSessionToken({ profileId: authenticatedProfile.id, issuedAt: Date.now() }, accessToken);
+  const remember = Boolean(request.body?.remember);
+  const cookieMaxAge = remember ? `Max-Age=${SESSION_MAX_AGE_SECONDS}; ` : "";
   response.setHeader(
     "Set-Cookie",
-    `noyau_session=${encodeURIComponent(accessToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000; Secure`,
+    `noyau_session=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/; ${cookieMaxAge}Secure`,
   );
-  response.json({ ok: true });
+  response.json({ ok: true, profile: authenticatedProfile, expiresAt: Date.now() + SESSION_MAX_AGE_MS });
+});
+
+app.post("/api/auth/switch", (request, response) => {
+  const remote = String(request.socket.remoteAddress || "inconnu");
+  const retryAfter = loginThrottle.retryAfter(remote);
+  if (retryAfter) {
+    response.setHeader("Retry-After", String(retryAfter));
+    return response.status(429).json({ error: "Trop de tentatives. Réessaie plus tard.", retryAfter });
+  }
+
+  const credential = request.body?.password || request.body?.token;
+  const profileId = request.body?.profileId || null;
+  if (!profileId) {
+    return response.status(400).json({ error: "Identifiant de profil requis." });
+  }
+
+  const authenticatedProfile = profileService.authenticate(credential, profileId, accessToken);
+  if (!authenticatedProfile) {
+    loginThrottle.fail(remote);
+    return response.status(401).json({ error: "Mot de passe incorrect pour ce profil." });
+  }
+
+  loginThrottle.clear(remote);
+  const sessionToken = createSessionToken({ profileId: authenticatedProfile.id, issuedAt: Date.now() }, accessToken);
+  response.setHeader(
+    "Set-Cookie",
+    `noyau_session=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}; Secure`,
+  );
+  response.json({ ok: true, profile: authenticatedProfile, expiresAt: Date.now() + SESSION_MAX_AGE_MS });
 });
 
 app.post("/api/logout", (_request, response) => {
@@ -681,7 +1168,9 @@ app.post("/api/logout", (_request, response) => {
 });
 
 app.get("/api/auth/session", (request, response) => {
-  response.status(authenticated(request) ? 200 : 401).json({ authenticated: authenticated(request) });
+  const ok = authenticated(request);
+  const profile = ok ? profileService.getPublic(request.sessionProfileId || primaryProfileId) : null;
+  response.status(ok ? 200 : 401).json({ authenticated: ok, profile });
 });
 
 app.get("/noyau-ca.cer", async (_request, response, next) => {
@@ -706,7 +1195,7 @@ app.get("/version.json", async (_request, response, next) => {
 });
 
 // Manifeste par profil: chaque compte installe son app (nom, couleurs, profil d'ouverture) sur son telephone.
-const MANIFEST_COLORS = { noyau: "#080b0a", "aurora": "#0f1119" };
+const MANIFEST_COLORS = { noyau: "#080b0a", "moving-castle": "#0f1119" };
 
 app.get("/manifest.webmanifest", (request, response) => {
   const profile = profileService.resolve(request.query.profile);
@@ -763,6 +1252,40 @@ app.get("/install/build/:grant/:filename", async (request, response, next) => {
   }
 });
 
+app.get("/download/project-file/:grant/:filename", async (request, response, next) => {
+  try {
+    const verified = verifyProjectFileGrant(buildGrantSecret, request.params.grant);
+    if (!verified || verified.filename !== request.params.filename) return response.status(404).end();
+    const filePath = await projectFilesService.getFilePath(verified.projectId, verified.filename);
+    const stat = await fs.stat(filePath);
+    const isInline = request.query.inline === "1" || request.query.inline === "true" || request.query.preview === "1";
+    const disposition = isInline ? "inline" : "attachment";
+    response.setHeader("Content-Disposition", `${disposition}; filename="${encodeURIComponent(verified.filename)}"`);
+    response.setHeader("Content-Length", stat.size);
+    if (isInline) {
+      response.setHeader("X-Frame-Options", "SAMEORIGIN");
+      response.setHeader("Content-Security-Policy", "default-src 'self' blob: data:; script-src 'none'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'");
+    }
+    const ext = path.extname(verified.filename).toLowerCase();
+    if ([".md", ".markdown"].includes(ext)) {
+      response.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    } else if ([".csv", ".tsv"].includes(ext)) {
+      response.setHeader("Content-Type", "text/csv; charset=utf-8");
+    } else if ([".txt", ".log", ".env", ".sh", ".bash", ".zsh", ".conf", ".ini", ".toml", ".yml", ".yaml"].includes(ext)) {
+      response.setHeader("Content-Type", "text/plain; charset=utf-8");
+    } else if ([".json"].includes(ext)) {
+      response.setHeader("Content-Type", "application/json; charset=utf-8");
+    } else {
+      response.type(ext || "application/octet-stream");
+    }
+    const stream = createReadStream(filePath);
+    stream.on("error", next);
+    stream.pipe(response);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Icone de notification: le navigateur la telecharge hors session applicative, donc sans cle.
 // On n'expose qu'une image (logo de projet ou icone d'agent), jamais de donnee de session.
 app.get("/notification-icon/:id", async (request, response, next) => {
@@ -802,7 +1325,9 @@ app.get("/api/finance/banking/callback", async (request, response) => {
 app.use("/api", async (request, response, next) => {
   if (!authenticated(request)) return response.status(401).json({ error: "Non autorisé." });
   try {
-    request.profile = profileService.resolve(request.headers["x-noyau-profile"] || request.query.profile);
+    const requestedId = request.headers["x-noyau-profile"] || request.query.profile;
+    const profileId = request.masterAuthenticated ? (requestedId || request.sessionProfileId) : request.sessionProfileId;
+    request.profile = profileService.resolve(profileId);
     request.profileRuntime = await ensureProfileRuntime(request.profile.id);
     next();
   } catch (error) {
@@ -836,9 +1361,24 @@ app.post("/api/profiles", async (request, response, next) => {
 
 app.patch("/api/profiles/:id", async (request, response, next) => {
   try {
-    if (request.profile.id !== request.params.id) throw new Error("Bascule sur profil avant modification.");
+    if (request.profile.id !== request.params.id && request.profile.id !== primaryProfileId) {
+      throw new Error("Bascule sur profil avant modification.");
+    }
     const profile = await profileService.update(request.params.id, request.body);
     resetProfileTodo(profile.id);
+    response.json({ profile });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/profiles/:id/password", async (request, response, next) => {
+  try {
+    if (request.profile.id !== request.params.id && request.profile.id !== primaryProfileId) {
+      throw new Error("Bascule sur profil avant modification du mot de passe.");
+    }
+    const { password } = request.body || {};
+    const profile = await profileService.setPassword(request.params.id, password);
     response.json({ profile });
   } catch (error) {
     next(error);
@@ -852,6 +1392,237 @@ app.post("/api/system/display/sleep", async (request, response, next) => {
     response.json({ ok: true });
   } catch (error) {
     next(new Error(`Mise en veille écran impossible: ${error.message}`));
+  }
+});
+
+app.post("/api/system/activity", (_request, response) => {
+  powerService.touchActivity();
+  if (powerService.canWakeOnActivity()) {
+    powerService.wakeUp().catch((error) => console.warn(`Réveil auto sur activité échoué: ${error.message}`));
+  }
+  response.json({ ok: true, active: true });
+});
+
+app.get("/api/system/hardware", async (_request, response, next) => {
+  try {
+    response.json(await hardwareService.read());
+  } catch (error) {
+    next(error);
+  }
+});
+
+function resourceSessions(profileId) {
+  return Object.entries(store.all ? store.all() : {}).map(([id, value]) => {
+    if (!sessionVisible(profileId, id)) return { id, name: "Agent privé", killable: false };
+    return {
+      id,
+      name: value?.name || id,
+      projectName: value?.projectId ? projects.get(value.projectId)?.name || null : null,
+      assistant: value?.assistant || null,
+      killable: sessionOwned(profileId, id) && !value?.core,
+    };
+  });
+}
+
+async function listPanePids(sessionId) {
+  const { stdout } = await tmux.run(["list-panes", "-s", "-t", `=${sessionId}:`, "-F", "#{pane_pid}"]).catch(() => ({ stdout: "" }));
+  return stdout.split("\n").map(Number).filter((pid) => pid > 1);
+}
+
+// TERM puis KILL sur ce qui survit; le serveur Noyau et sa lignee ne sont jamais vises.
+async function terminateProcesses(pids) {
+  const protectedPids = ancestors(await processTable(), process.pid);
+  const targets = [...pids].filter((pid) => pid > 1 && !protectedPids.has(pid));
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (const pid of targets) { try { process.kill(pid, "SIGTERM"); } catch {} }
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  const survivors = targets.filter(alive);
+  for (const pid of survivors) { try { process.kill(pid, "SIGKILL"); } catch {} }
+  return { signalled: targets.length, forced: survivors.length };
+}
+
+app.get("/api/system/resources", async (request, response, next) => {
+  try {
+    response.json(await systemResources.read({ sessions: resourceSessions(request.profile.id) }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Confie l'analyse a un agent dedie: il diagnostique librement mais doit demander avant tout arret.
+app.post("/api/system/resources/optimize", async (request, response, next) => {
+  try {
+    const snapshot = await systemResources.read({ sessions: resourceSessions(request.profile.id) });
+    const prompt = optimizationPrompt(snapshot);
+    const agents = await agentCommunication.list({ profileId: request.profile.id });
+    const existing = agents.find((agent) => agent.name === OPTIMIZER_AGENT_NAME);
+    if (existing) {
+      await agentCommunication.send(existing.id, { message: `Nouvel instantané à analyser.\n\n${prompt}`, callerName: "Tableau de bord", profileId: request.profile.id });
+      return response.json({ agentId: existing.id, reused: true });
+    }
+    const noyauProject = Object.entries(projects.all ? projects.all() : {}).find(([, project]) => path.resolve(project.rootPath || "") === root && project.profileId === request.profile.id);
+    const result = await agentCommunication.create({
+      name: OPTIMIZER_AGENT_NAME,
+      assistant: "claude",
+      projectId: noyauProject?.[0] || null,
+      cwd: os.homedir(),
+      prompt,
+      description: "Analyse CPU/GPU/RAM et propose des optimisations, sans rien arrêter sans confirmation.",
+      callerName: "Tableau de bord",
+      profileId: request.profile.id,
+    });
+    response.status(201).json({ agentId: result.agent.id, reused: false });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Libere la RAM: archive la session Noyau (restaurable) puis tue tout son arbre de processus,
+// y compris ce qui s'est detache de tmux. Une session hors Noyau est simplement tuee.
+app.post("/api/system/resources/kill", async (request, response, next) => {
+  try {
+    const sessionId = request.body?.sessionId ? String(request.body.sessionId) : null;
+    const pid = Number(request.body?.pid) || null;
+    if (sessionId) {
+      if (!sessionOwned(request.profile.id, sessionId)) throw new Error("Agent appartient à autre profil.");
+      const current = store.get(sessionId);
+      if (!current) throw new Error("Session Noyau introuvable.");
+      if (current.core) throw new Error("Agent de base du Noyau: non archivable.");
+      const { kill, spared } = await sessionProcesses(await processTable(), sessionId, await listPanePids(sessionId));
+      const archived = await archiveSession(sessionId, current);
+      const result = await terminateProcesses(kill);
+      return response.json({ archived: Boolean(archived), name: current.name, spared, ...result });
+    }
+    if (pid) {
+      const table = await processTable();
+      const proc = table.get(pid);
+      if (!proc || !AGENT_BINARY.test(proc.name)) throw new Error("Processus introuvable ou pas une session IA.");
+      const panePids = new Set((await systemResources.listPanes()).map((pane) => pane.pid));
+      if ([...ancestors(table, pid)].some((p) => panePids.has(p))) throw new Error("Session gérée par Noyau: archive-la via son agent.");
+      const result = await terminateProcesses(descendants(table, [pid]));
+      return response.json({ archived: false, name: proc.name, ...result });
+    }
+    throw new Error("sessionId ou pid requis.");
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/system/power", async (_request, response, next) => {
+  try {
+    response.json(await powerService.getStatus());
+  } catch (error) {
+    next(error);
+  }
+});
+
+function primaryProfileOnly(request, response, next) {
+  if (request.profile.id !== primaryProfileId) return response.status(403).json({ error: "Commande réservée au profil principal." });
+  next();
+}
+
+
+app.post("/api/system/power/sleep", primaryProfileOnly, async (request, response) => {
+  try {
+    const force = request.body?.force === true;
+    const result = await powerService.enterSleep({ force });
+    response.json(result);
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.post("/api/system/power/wake", primaryProfileOnly, async (_request, response) => {
+  try {
+    const result = await powerService.wakeUp();
+    response.json(result);
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.patch("/api/system/power/schedule", primaryProfileOnly, async (request, response) => {
+  try {
+    const schedule = await powerService.updateSchedule(request.body || {});
+    response.json({ schedule });
+  } catch (error) {
+    response.status(400).json({ error: error.message });
+  }
+});
+
+app.get("/api/system/ssh-key", primaryProfileOnly, async (_request, response) => {
+  try {
+    const authKeysPath = path.join(os.homedir(), ".ssh", "authorized_keys");
+    let count = 0;
+    try {
+      const content = await fs.readFile(authKeysPath, "utf8");
+      count = content.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#")).length;
+    } catch {}
+    response.json({ count });
+  } catch (error) {
+    response.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/system/ssh-key", primaryProfileOnly, async (request, response) => {
+  try {
+    const rawKey = String(request.body?.publicKey || "").trim();
+    if (!rawKey) return response.status(400).json({ error: "Clé publique SSH requise." });
+
+    const validPrefixes = [
+      "ssh-ed25519",
+      "ssh-rsa",
+      "ecdsa-sha2-nistp256",
+      "ecdsa-sha2-nistp384",
+      "ecdsa-sha2-nistp521",
+      "sk-ssh-ed25519@openssh.com",
+      "sk-ecdsa-sha2-nistp256@openssh.com",
+    ];
+    const lines = rawKey.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
+    const validKeys = [];
+    for (const line of lines) {
+      const parts = line.split(/\s+/);
+      if (parts.length >= 2 && validPrefixes.includes(parts[0])) {
+        validKeys.push(line);
+      }
+    }
+    if (!validKeys.length) {
+      return response.status(400).json({
+        error: "Format de clé SSH invalide. La clé doit commencer par ssh-ed25519, ssh-rsa, ecdsa-sha2-nistp...",
+      });
+    }
+
+    const sshDir = path.join(os.homedir(), ".ssh");
+    const authKeysPath = path.join(sshDir, "authorized_keys");
+    await fs.mkdir(sshDir, { recursive: true, mode: 0o700 });
+
+    let existingContent = "";
+    try {
+      existingContent = await fs.readFile(authKeysPath, "utf8");
+    } catch {}
+
+    const existingLines = existingContent.split("\n").map((l) => l.trim()).filter(Boolean);
+    const added = [];
+    for (const k of validKeys) {
+      const kParts = k.split(/\s+/);
+      const isAlreadyPresent = existingLines.some((existing) => {
+        const eParts = existing.split(/\s+/);
+        return eParts[0] === kParts[0] && eParts[1] === kParts[1];
+      });
+      if (!isAlreadyPresent) {
+        added.push(k);
+      }
+    }
+
+    if (added.length) {
+      const newContent = (existingContent.trimEnd() ? existingContent.trimEnd() + "\n" : "") + added.join("\n") + "\n";
+      await fs.writeFile(authKeysPath, newContent, { mode: 0o600 });
+      await fs.chmod(authKeysPath, 0o600).catch(() => {});
+    }
+
+    response.json({ ok: true, added: added.length, total: existingLines.length + added.length });
+  } catch (error) {
+    response.status(500).json({ error: error.message });
   }
 });
 
@@ -1140,12 +1911,114 @@ app.post("/api/projects", async (request, response, next) => {
   }
 });
 
+app.get("/api/voice", async (_request, response, next) => {
+  try {
+    response.json({ ...voiceService.state(), installed: await voiceService.installed() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/voice/start", async (_request, response, next) => {
+  try {
+    response.json({ ...(await voiceService.start()), installed: await voiceService.installed() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/voice/stop", async (_request, response, next) => {
+  try {
+    response.json(voiceService.stop());
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Utile sans parler: rejoue une phrase comme si le micro l'avait entendue.
+app.post("/api/voice/dictation", async (request, response, next) => {
+  try {
+    const sessionId = String(request.body?.sessionId || "");
+    const enabled = request.body?.enabled !== false;
+    if (enabled && !sessionOwned(request.profile.id, sessionId)) throw new Error("Agent appartient à autre profil.");
+    const state = enabled ? await voiceService.startDictation(sessionId) : voiceService.stopDictation();
+    broadcastVoice({ type: "state", state });
+    response.json({ ...state, installed: await voiceService.installed() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/voice/simulate", async (request, response, next) => {
+  try {
+    const command = await voiceService.handle(String(request.body?.text || ""));
+    response.json({ command, state: voiceService.state() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/voice/alias", async (request, response, next) => {
+  try {
+    await voiceService.loadAliases();
+    const aliases = await voiceService.addAlias(request.body?.name, request.body?.heard);
+    response.json({ aliases });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/voice/say", async (request, response, next) => {
+  try {
+    response.json({ spoken: await voiceService.say(request.body?.text) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Flux d'evenements vocaux: l'interface suit la voix sans interroger le serveur en boucle.
+app.get("/api/voice/events", (request, response) => {
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  response.write(`data: ${JSON.stringify({ type: "hello", state: voiceService.state() })}\n\n`);
+  voiceClients.add(response);
+  const beat = setInterval(() => { try { response.write(": ping\n\n"); } catch { /* client parti */ } }, 25_000);
+  request.on("close", () => { clearInterval(beat); voiceClients.delete(response); });
+});
+
 app.get("/api/todos", async (request, response, next) => {
   try {
     const view = await todosView(request.profile);
     response.json({ ...view, storage: request.profile.todoMountUri ? "Obsidian · NAS" : "Obsidian · profil local" });
   } catch (error) {
     next(new Error(`Vault Obsidian indisponible: ${error.message}`));
+  }
+});
+
+app.get("/api/todos/raw", async (request, response, next) => {
+  try {
+    const runtime = await ensureProfileRuntime(request.profile.id);
+    const raw = await runtime.todoService.readRaw();
+    response.json({ raw, storage: request.profile.todoMountUri ? "Obsidian · NAS" : "Obsidian · profil local" });
+  } catch (error) {
+    next(new Error(`Vault Obsidian indisponible: ${error.message}`));
+  }
+});
+
+app.put("/api/todos/raw", async (request, response, next) => {
+  try {
+    if (typeof request.body?.raw !== "string") throw new Error("Contenu markdown requis.");
+    const raw = request.body.raw;
+    const runtime = await ensureProfileRuntime(request.profile.id);
+    await runtime.todoService.saveRaw(raw);
+    const view = await todosView(request.profile);
+    response.json({ raw, ...view, storage: request.profile.todoMountUri ? "Obsidian · NAS" : "Obsidian · profil local" });
+  } catch (error) {
+    next(error);
   }
 });
 
@@ -1156,12 +2029,168 @@ app.post("/api/todos", async (request, response, next) => {
     const folderId = request.body?.folderId || null;
     const rawText = String(request.body?.text || "");
     const { correction } = await boardService.settings(request.profile.id);
-    // Un texte ecrit par un agent est deja redige: pas de second passage LLM.
-    const byAgent = request.body?.authorKind === "agent";
-    const text = correction && !byAgent && rawText.trim() ? await textCorrector.correct(rawText, { context: "todo" }).catch(() => rawText) : rawText;
-    const runtime = await todoRuntime(request.profile, { folderId });
-    const { todo } = await runtime.todoService.add({ text, dueDate: request.body?.dueDate || null, projectId, folderId });
+    const byAgent = request.body?.authorKind === "agent" || request.body?.kind === "agent";
+    const author = byAgent ? String(request.body?.author || "Agent").slice(0, 50) : request.profile?.name || null;
+    const runtime = await todoRuntime(request.profile, { folderId, projectId });
+    let status = request.body?.status || "todo";
+    if (status === "review") {
+      const { columns } = await boardService.settings(request.profile.id);
+      const reviewCol = columns?.find((c) => c.id === "review" || c.kind === "review");
+      if (reviewCol && reviewCol.enabled === false) {
+        status = "done";
+      }
+    }
+    const projectObj = projectId ? projects.get(projectId) : null;
+    const defaultShared = Boolean(projectObj?.shared);
+    const assignee = request.body?.assignee || null;
+    const isBoth = assignee === "all" || assignee === "both";
+    const shared = request.body?.shared !== undefined ? Boolean(request.body.shared) : (isBoth || defaultShared);
+    const { todo } = await runtime.todoService.add({
+      text: rawText,
+      dueDate: request.body?.dueDate || null,
+      priority: request.body?.priority !== undefined ? request.body.priority : "medium",
+      status,
+      projectId,
+      folderId,
+      kind: byAgent ? "agent" : "user",
+      author,
+      shared,
+      assignee,
+    });
+    if (!byAgent) {
+      await todoSeenService.mark(request.profile.id, todo.id);
+    }
     response.status(201).json({ todo, ...(await todosView(request.profile)) });
+
+    // Correction LLM en tâche de fond pour un ajout immédiat sans attente
+    if (correction && !byAgent && rawText.trim()) {
+      (async () => {
+        try {
+          const corrected = await textCorrector.correct(rawText, { context: "todo" });
+          if (corrected && corrected.trim() && corrected.trim() !== rawText.trim()) {
+            await runtime.todoService.update(todo.id, { text: corrected.trim() });
+          }
+        } catch {}
+      })();
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Tri d'une demande utilisateur par le modele local: cree la tache, ou commente
+// celle qui existe deja. Le travail se fait en fond, l'agent n'a rien a porter.
+// Une meme demande peut arriver par le hook de l'agent et par le composeur de Noyau.
+const triagedPrompts = new Map();
+const TRIAGE_MEMORY = 5 * 60_000;
+
+function alreadyTriaged(sessionId, text) {
+  const key = `${sessionId || ""}:${text.replace(/\s+/g, " ").trim().slice(0, 400)}`;
+  const now = Date.now();
+  for (const [entry, at] of triagedPrompts) if (now - at > TRIAGE_MEMORY) triagedPrompts.delete(entry);
+  if (triagedPrompts.has(key)) return true;
+  triagedPrompts.set(key, now);
+  return false;
+}
+
+// Ce qui part du composeur de Noyau vaut demande, quel que soit l'agent:
+// Codex et Antigravity n'ont pas de hook de prompt, leurs demandes se perdaient.
+function trackComposerPrompt(sessionId, profileId, text) {
+  const session = store.get(sessionId);
+  if (!session || session.assistant === "shell" || session.todoTracking === false) return;
+  const projectId = session.projectId || null;
+  if (projectId && projects.get(projectId)?.todoTracking === false) return;
+  const clean = String(text || "").trim();
+  if (!clean || clean.startsWith("/") || clean.length > 12000) return;
+  if (alreadyTriaged(projectId || sessionId, clean)) return;
+  queuePromptTriage(profileService.resolve(profileId), clean, projectId);
+}
+
+// Tri d'une demande: le modele local decide, Noyau ecrit la tache. Vaut pour tout agent.
+function queuePromptTriage(profile, text, projectId) {
+    return todoTriage.enqueue(async () => {
+      try {
+        const view = await todosView(profile);
+        const rootFolder = projectId ? view.folders.find((item) => item.projectId === projectId && !item.parentId) : null;
+        if (projectId && !rootFolder) throw new Error("Dossier projet introuvable.");
+
+        // Sous-dossiers pertinents du projet ou tous les dossiers utilisateur
+        const candidateFolders = projectId
+          ? view.folders.filter((f) => f.parentId === rootFolder.id || (f.projectId === projectId && f.id !== rootFolder.id))
+          : view.folders.filter((f) => f.id !== "root");
+
+        const scoped = view.todos.filter((todo) => {
+          if (projectId) {
+            return todo.projectId === projectId || todo.folderId === rootFolder.id || candidateFolders.some((cf) => cf.id === todo.folderId);
+          }
+          return !todo.projectId;
+        });
+
+        const verdict = await todoTriage.triage(text, scoped, candidateFolders);
+        if (!verdict.follow) return;
+
+        // Résolution du dossier cible: sous-dossier identifié par le modèle, ou dossier racine
+        let targetFolderId = rootFolder?.id || null;
+        if (verdict.folderTarget && candidateFolders.length > 0) {
+          const needle = verdict.folderTarget.toLowerCase();
+          const matched = candidateFolders.find((f) =>
+            f.id === verdict.folderTarget ||
+            f.name.toLowerCase() === needle ||
+            f.name.toLowerCase().includes(needle) ||
+            needle.includes(f.name.toLowerCase())
+          );
+          if (matched) {
+            targetFolderId = matched.id;
+          }
+        }
+
+        const runtime = verdict.duplicate
+          ? await todoRuntime(profile, { todoId: verdict.duplicate.id })
+          : await todoRuntime(profile, { folderId: targetFolderId, projectId });
+
+        if (verdict.duplicate) {
+          const userPrompt = text.slice(0, 220);
+          await runtime.todoService.addComment(verdict.duplicate.id, {
+            text: userPrompt,
+            author: profile?.name || "Utilisateur",
+            kind: "user",
+          });
+          return;
+        }
+        const added = await runtime.todoService.add({
+          text: verdict.title,
+          folderId: targetFolderId,
+          projectId,
+          status: "todo",
+          kind: "user",
+          author: profile?.name || "Utilisateur",
+          priority: verdict.priority || "medium",
+        });
+        if (added?.todo?.id && text.trim().toLowerCase() !== verdict.title.trim().toLowerCase()) {
+          await runtime.todoService.addComment(added.todo.id, {
+            text: text.slice(0, 300),
+            author: profile?.name || "Utilisateur",
+            kind: "user",
+          });
+        }
+      } catch (error) {
+        console.warn(`Tri to-do impossible: ${error.message}`);
+      }
+    }).catch((error) => console.warn(`Tri to-do impossible: ${error.message}`));
+}
+
+app.post("/api/todos/triage", async (request, response, next) => {
+  try {
+    const rawText = String(request.body?.text || "").trim();
+    const projectId = request.body?.projectId || null;
+    if (!rawText) throw new Error("Texte requis.");
+    const text = rawText.slice(0, 12000);
+    if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
+    if (projectId && projects.get(projectId)?.todoTracking === false) return response.json({ accepted: false });
+    if (alreadyTriaged(projectId || request.body?.sessionId || "", text)) return response.json({ accepted: false });
+    response.status(202).json({ accepted: true });
+
+    queuePromptTriage(request.profile, text, projectId);
   } catch (error) {
     next(error);
   }
@@ -1191,9 +2220,27 @@ app.patch("/api/todos/:id", async (request, response, next) => {
   try {
     const changes = {};
     if (request.body?.text !== undefined) changes.text = request.body.text;
-    if (request.body?.status !== undefined) changes.status = request.body.status;
+    if (request.body?.status !== undefined) {
+      let nextStatus = request.body.status;
+      if (nextStatus === "review") {
+        const { columns } = await boardService.settings(request.profile.id);
+        const reviewCol = columns?.find((c) => c.id === "review" || c.kind === "review");
+        if (reviewCol && reviewCol.enabled === false) {
+          nextStatus = "done";
+        }
+      }
+      changes.status = nextStatus;
+    }
+    if (request.body?.priority !== undefined) changes.priority = request.body.priority;
     if (request.body?.completed !== undefined) changes.completed = request.body.completed === true;
     if (request.body?.dueDate !== undefined) changes.dueDate = request.body.dueDate || null;
+    if (request.body?.shared !== undefined) changes.shared = Boolean(request.body.shared);
+    if (request.body?.assignee !== undefined) {
+      changes.assignee = request.body.assignee;
+      if (changes.assignee === "all" || changes.assignee === "both") {
+        changes.shared = true;
+      }
+    }
     if (request.body?.comments !== undefined) changes.comments = request.body.comments;
     if (request.body?.projectId !== undefined) {
       changes.projectId = request.body.projectId || null;
@@ -1212,8 +2259,11 @@ app.patch("/api/todos/:id", async (request, response, next) => {
     const { todo } = await target.todoService.add({
       text: changes.text ?? current.text,
       dueDate: changes.dueDate === undefined ? current.dueDate : changes.dueDate,
+      priority: changes.priority === undefined ? current.priority : changes.priority,
       folderId: changes.folderId,
       status: changes.status ?? current.status,
+      shared: changes.shared !== undefined ? Boolean(changes.shared) : (current.shared || false),
+      assignee: changes.assignee !== undefined ? changes.assignee : (current.assignee || null),
     });
     if (current.comments?.length) {
       await target.todoService.update(todo.id, { comments: current.comments });
@@ -1228,12 +2278,15 @@ app.patch("/api/todos/:id", async (request, response, next) => {
 app.post("/api/todos/:id/comments", async (request, response, next) => {
   try {
     const runtime = await todoRuntime(request.profile, { todoId: request.params.id });
-    const byAgent = request.body?.authorKind === "agent";
+    const byAgent = request.body?.authorKind === "agent" || request.body?.kind === "agent";
     const author = byAgent ? String(request.body?.author || "Agent").slice(0, 50) : request.profile?.name || null;
     const rawText = String(request.body?.text || "");
     const { correction } = await boardService.settings(request.profile.id);
     const text = correction && !byAgent && rawText.trim() ? await textCorrector.correct(rawText, { context: "comment" }).catch(() => rawText) : rawText;
     const result = await runtime.todoService.addComment(request.params.id, { text, author, kind: byAgent ? "agent" : "user" });
+    if (!byAgent) {
+      await todoSeenService.mark(request.profile.id, request.params.id);
+    }
     response.status(201).json({ ...result, ...(await todosView(request.profile)) });
   } catch (error) {
     next(error);
@@ -1261,9 +2314,32 @@ app.post("/api/todos/:id/move", async (request, response, next) => {
   }
 });
 
+app.get("/api/todos/suggest-emoji", async (request, response, next) => {
+  try {
+    const name = String(request.query?.name || "").trim();
+    if (!name) return response.json({ emoji: "📁" });
+    const emoji = await suggestEmojiForFolder(name, localLlm);
+    response.json({ emoji });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/todos/folders", async (request, response, next) => {
   try {
-    await request.profileRuntime.todoService.addFolder({ name: request.body?.name });
+    const parentId = request.body?.parentId || null;
+    const projectId = request.body?.projectId || null;
+    let name = String(request.body?.name || "").trim();
+    if (parentId && name && !/^\p{Extended_Pictographic}/u.test(name)) {
+      const em = request.body?.emoji || await suggestEmojiForFolder(name, localLlm);
+      if (em) name = `${em} ${name}`;
+    }
+    const runtime = await todoRuntime(request.profile, { folderId: parentId, projectId });
+    await runtime.todoService.addFolder({
+      name,
+      parentId,
+      projectId,
+    });
     response.status(201).json(await todosView(request.profile));
   } catch (error) {
     next(error);
@@ -1320,7 +2396,15 @@ app.patch("/api/todos/columns/order", async (request, response, next) => {
 
 app.patch("/api/todos/columns/:id", async (request, response, next) => {
   try {
-    await boardService.rename(request.profile.id, request.params.id, request.body?.name);
+    await boardService.update(request.profile.id, request.params.id, request.body);
+    if (request.body?.enabled === false) {
+      const view = await todosView(request.profile);
+      const targetStatus = request.params.id === "review" ? "done" : "todo";
+      for (const todo of view.todos.filter((item) => item.status === request.params.id)) {
+        const runtime = await todoRuntime(request.profile, { todoId: todo.id });
+        await runtime.todoService.update(todo.id, { status: targetStatus }).catch(() => {});
+      }
+    }
     response.json(await todosView(request.profile));
   } catch (error) {
     next(error);
@@ -1342,11 +2426,106 @@ app.delete("/api/todos/columns/:id", async (request, response, next) => {
   }
 });
 
+app.get("/api/calendar/events", async (request, response, next) => {
+  try {
+    const view = await todosView(request.profile);
+    const result = await calendarService.getAllEvents({
+      profileId: request.profile.id,
+      todos: view.todos,
+    });
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/calendar/subscriptions", async (request, response, next) => {
+  try {
+    const subscriptions = await calendarService.listSubscriptions(request.profile.id);
+    response.json({ subscriptions });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/calendar/subscriptions", async (request, response, next) => {
+  try {
+    const created = await calendarService.addSubscription({
+      name: request.body?.name,
+      url: request.body?.url,
+      color: request.body?.color,
+      profileId: request.profile.id,
+    });
+    response.status(201).json(created);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/calendar/subscriptions/:id", async (request, response, next) => {
+  try {
+    const updated = await calendarService.updateSubscription(request.params.id, request.body || {});
+    response.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/calendar/subscriptions/:id", async (request, response, next) => {
+  try {
+    await calendarService.removeSubscription(request.params.id);
+    response.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/calendar/export.ics", async (request, response, next) => {
+  try {
+    const view = await todosView(request.profile);
+    const ical = generateICal(view.todos, {
+      calendarName: `Noyau Todos (${request.profile.name || "Personnel"})`,
+    });
+    response.setHeader("Content-Type", "text/calendar; charset=utf-8");
+    response.setHeader("Content-Disposition", 'attachment; filename="noyau-todos.ics"');
+    response.send(ical);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/mobile/noyau.apk", async (_request, response, next) => {
+  try {
+    const candidates = [
+      path.join(root, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk"),
+      path.join(root, "android", "app", "build", "outputs", "apk", "release", "app-release.apk"),
+      path.join(dataDir, "noyau.apk"),
+      path.join(root, "dist", "noyau.apk"),
+      path.join(root, "public", "noyau.apk"),
+    ];
+    for (const candidate of candidates) {
+      try {
+        await fs.access(candidate);
+        response.setHeader("Content-Type", "application/vnd.android.package-archive");
+        response.setHeader("Content-Disposition", 'attachment; filename="noyau.apk"');
+        return response.sendFile(candidate);
+      } catch {}
+    }
+    response.status(404).json({
+      error: "APK non encore générée sur ce serveur.",
+      hint: "Exécutez 'node scripts/build-mobile.mjs' pour assembler l'APK, ou installez directement l'application via le bouton 'Ajouter à l'écran d'accueil' (PWA) qui active le mode hors-ligne et WireGuard.",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
 function moduleKnowledgePayload(payload) {
   if (!payload.knowledge) return payload;
   const status = knowledgeService.status(moduleService.get(payload.id));
   const setup = payload.knowledge.provider === "notion"
-    ? { status: status.scoped ? "ready" : "required", label: status.label, description: status.scoped ? "Contenu Notion disponible dans Noyau et pour agents." : "Dans Notion: page Atlas > ••• > Ajouter des connexions > choisir intégration." }
+    ? { status: status.scoped ? "ready" : "required", label: status.label, description: status.scoped ? "Contenu Notion disponible dans Noyau et pour agents." : "Dans Notion: page Octanix > ••• > Ajouter des connexions > choisir intégration." }
     : payload.setup;
   return { ...payload, setup, enabled: status.configured, state: status.scoped ? "ready" : "setup-required", knowledge: { ...payload.knowledge, status } };
 }
@@ -1387,10 +2566,20 @@ app.patch("/api/modules/:id/schedules/:scheduleId", async (request, response, ne
   }
 });
 
-app.post("/api/modules/:id/actions/:actionId", (request, response, next) => {
+app.post("/api/modules/:id/actions/:actionId", async (request, response, next) => {
   try {
     if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
-    response.status(202).json({ run: moduleService.runAction(request.params.id, request.params.actionId) });
+    const options = { input: request.body?.input, resume: request.body?.resume === true };
+    response.status(202).json({ run: await moduleService.runAction(request.params.id, request.params.actionId, options) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/modules/:id/actions/:actionId/stop", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    response.json({ run: await moduleService.stopAction(request.params.id, request.params.actionId) });
   } catch (error) {
     next(error);
   }
@@ -1525,13 +2714,90 @@ app.delete("/api/projects/:id", async (request, response, next) => {
   }
 });
 
+app.get("/api/projects/:id/budget", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id) || !projectVisible(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+    const project = projects.get(request.params.id);
+    response.json({ budget: project.budget || { items: [] } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/budget/items", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id) || !projectOwned(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+    const project = projects.get(request.params.id);
+    const item = normalizeBudgetItem(request.body);
+    if (!item) throw new Error("Informations de dépense invalides.");
+    const items = [...(project.budget?.items || []), item];
+    const updatedProject = { ...project, budget: { items }, updatedAt: new Date().toISOString() };
+    await projects.set(request.params.id, updatedProject);
+    response.status(201).json({ budget: updatedProject.budget, item });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/projects/:id/budget/items/:itemId", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id) || !projectOwned(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+    const project = projects.get(request.params.id);
+    const currentItems = project.budget?.items || [];
+    const index = currentItems.findIndex((i) => i.id === request.params.itemId);
+    if (index === -1) throw new Error("Ligne de budget introuvable.");
+    const merged = normalizeBudgetItem({ ...currentItems[index], ...request.body, id: request.params.itemId });
+    const items = [...currentItems];
+    items[index] = merged;
+    const updatedProject = { ...project, budget: { items }, updatedAt: new Date().toISOString() };
+    await projects.set(request.params.id, updatedProject);
+    response.json({ budget: updatedProject.budget, item: merged });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/projects/:id/budget/items/:itemId", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id) || !projectOwned(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+    const project = projects.get(request.params.id);
+    const currentItems = project.budget?.items || [];
+    const items = currentItems.filter((i) => i.id !== request.params.itemId);
+    const updatedProject = { ...project, budget: { items }, updatedAt: new Date().toISOString() };
+    await projects.set(request.params.id, updatedProject);
+    response.json({ budget: updatedProject.budget });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+function projectRoots(projectId) {
+  const project = projects.get(projectId);
+  if (!project) return [];
+  const roots = [
+    project.rootPath,
+    ...Object.values(store.all()).filter((session) => session.projectId === projectId).map((session) => session.cwd),
+  ].filter(Boolean);
+  return [...new Set(roots.map((r) => path.resolve(r)))];
+}
+
 // Les projets n'ont pas toujours de dossier propre: on prend le premier logo trouve
 // dans le dossier du projet ou dans ceux de ses agents, pour que toute l'equipe partage l'icone.
+// Si un logo explicite a ete configure, il est prioritaire.
 async function projectLogoFile(projectId) {
   const project = projects.get(projectId);
   if (!project) return null;
-  const roots = [project.rootPath, ...Object.values(store.all()).filter((session) => session.projectId === projectId).map((session) => session.cwd)];
-  for (const root of roots.filter(Boolean)) {
+  if (project.logoPath) {
+    try {
+      const stat = await fs.stat(project.logoPath);
+      if (stat.isFile()) return project.logoPath;
+    } catch {
+      // logo introuvable sur disque: retombe sur la detection
+    }
+  }
+  const roots = projectRoots(projectId);
+  for (const root of roots) {
     const file = await projectLogos.find(root).catch(() => null);
     if (file) return file;
   }
@@ -1541,11 +2807,183 @@ async function projectLogoFile(projectId) {
 app.get("/api/projects/:id/logo", async (request, response, next) => {
   try {
     const project = projects.get(request.params.id);
-    if (!project || project.profileId !== request.profile.id) return response.status(404).end();
+    if (!project || (project.profileId !== request.profile.id && !project.shared)) return response.status(404).end();
     const file = await projectLogoFile(request.params.id);
     if (!file) return response.status(404).end();
     response.setHeader("Cache-Control", "private, max-age=60");
     response.sendFile(file);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:id/images", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id)) throw new Error("Projet introuvable.");
+    const project = projects.get(request.params.id);
+    if (!project || (project.profileId !== request.profile.id && !project.shared)) throw new Error("Projet introuvable.");
+    const roots = projectRoots(request.params.id);
+    const offset = Number(request.query.offset) || 0;
+    const limit = Number(request.query.limit) || 30;
+    const search = String(request.query.search || "");
+    const result = await projectLogos.list(roots, { offset, limit, search });
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:id/image-file", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id)) return response.status(404).end();
+    const project = projects.get(request.params.id);
+    if (!project || (project.profileId !== request.profile.id && !project.shared)) return response.status(404).end();
+    const requestedPath = String(request.query.path || "");
+    if (!requestedPath) return response.status(400).end();
+    const filePath = path.resolve(requestedPath);
+    const roots = projectRoots(request.params.id);
+    const isAllowed = roots.some((root) => {
+      const rel = path.relative(root, filePath);
+      return !rel.startsWith("..") && !path.isAbsolute(rel);
+    });
+    if (!isAllowed) return response.status(403).end();
+    const ext = path.extname(filePath).toLowerCase();
+    if (!IMAGE_EXTENSIONS.has(ext)) return response.status(403).end();
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) return response.status(404).end();
+    response.setHeader("Cache-Control", "private, max-age=300");
+    response.sendFile(filePath);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:id/files", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id)) throw new Error("Projet introuvable.");
+    if (!projectVisible(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+    const files = await projectFilesService.list(request.params.id);
+    response.json({ files });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/files", fileUpload.single("file"), async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id)) throw new Error("Projet introuvable.");
+    if (!projectVisible(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+    if (!request.file) throw new Error("Fichier manquant.");
+    const file = await projectFilesService.saveFile(request.params.id, {
+      originalname: request.file.originalname,
+      buffer: request.file.buffer,
+    });
+    response.status(201).json({ file });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:id/files/:filename", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id)) return response.status(404).end();
+    if (request.fileGrant) {
+      if (request.fileGrant.projectId !== request.params.id || request.fileGrant.filename !== request.params.filename) {
+        return response.status(403).json({ error: "Grant invalide pour ce fichier." });
+      }
+    } else if (!projectVisible(request.profile.id, request.params.id) && !(request.masterAuthenticated && projectVisible(primaryProfileId, request.params.id))) {
+      return response.status(404).end();
+    }
+    const filePath = await projectFilesService.getFilePath(request.params.id, request.params.filename);
+    const stat = await fs.stat(filePath);
+    const isInline = request.query.inline === "1" || request.query.inline === "true" || request.query.preview === "1";
+    const disposition = isInline ? "inline" : "attachment";
+    response.setHeader("Content-Disposition", `${disposition}; filename="${encodeURIComponent(request.params.filename)}"`);
+    response.setHeader("Content-Length", stat.size);
+    if (isInline) {
+      response.setHeader("X-Frame-Options", "SAMEORIGIN");
+      response.setHeader("Content-Security-Policy", "default-src 'self' blob: data:; script-src 'none'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'");
+    }
+    const ext = path.extname(request.params.filename).toLowerCase();
+    if ([".md", ".markdown"].includes(ext)) {
+      response.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    } else if ([".csv", ".tsv"].includes(ext)) {
+      response.setHeader("Content-Type", "text/csv; charset=utf-8");
+    } else if ([".txt", ".log", ".env", ".sh", ".bash", ".zsh", ".conf", ".ini", ".toml", ".yml", ".yaml"].includes(ext)) {
+      response.setHeader("Content-Type", "text/plain; charset=utf-8");
+    } else if ([".json"].includes(ext)) {
+      response.setHeader("Content-Type", "application/json; charset=utf-8");
+    } else {
+      response.type(ext || "application/octet-stream");
+    }
+    const stream = createReadStream(filePath);
+    stream.on("error", next);
+    stream.pipe(response);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:id/files/:filename/grant", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id)) return response.status(404).end();
+    if (!projectVisible(request.profile.id, request.params.id)) return response.status(404).end();
+    const grant = createProjectFileGrant(buildGrantSecret, {
+      projectId: request.params.id,
+      filename: request.params.filename,
+      profileId: request.profile.id,
+    });
+    response.json({
+      grant,
+      downloadUrl: `/download/project-file/${encodeURIComponent(grant)}/${encodeURIComponent(request.params.filename)}`,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/projects/:id/files/:filename", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id)) throw new Error("Projet introuvable.");
+    if (!projectVisible(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+    await projectFilesService.deleteFile(request.params.id, request.params.filename);
+    response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/files/tell-agent", async (request, response, next) => {
+  try {
+    if (!PROJECT_PATTERN.test(request.params.id)) throw new Error("Projet introuvable.");
+    if (!projectVisible(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+    const targetAgent = String(request.body?.agentId || request.body?.agentName || "").trim();
+    const action = String(request.body?.action || "share"); // 'share' ou 'request_upload'
+    const filename = String(request.body?.filename || "").trim();
+    const userPrompt = String(request.body?.prompt || "").trim();
+    const project = projects.get(request.params.id);
+    const projectName = project?.name || "ce projet";
+    const dir = await projectFilesService.ensureProjectDir(request.params.id);
+
+    let message = "";
+    if (action === "request_upload") {
+      message = `[Demande de fichier partagé]: L'utilisateur te demande de générer ou déposer un fichier dans l'espace partagé du projet « ${projectName} ».\n` +
+        `Chemin du dossier partagé du projet : ${dir}\n` +
+        (userPrompt ? `Consigne : ${userPrompt}\n` : "") +
+        `Dépose directement ton/tes fichiers dans ce dossier pour qu'ils soient immédiatement téléchargeables par l'utilisateur et partagés avec le reste du noyau.`;
+    } else {
+      message = `[Fichier partagé]: Un fichier est disponible dans l'espace partagé du projet « ${projectName} ».\n` +
+        `Chemin du dossier : ${dir}\n` +
+        (filename ? `Fichier : ${filename} (chemin complet : ${path.join(dir, filename)})\n` : "") +
+        (userPrompt ? `Consigne utilisateur : ${userPrompt}\n` : "Tu peux consulter ce fichier ou l'utiliser comme référence pour tes tâches.");
+    }
+
+    const result = await agentCommunication.send(targetAgent, {
+      message,
+      callerName: "Espace Fichiers Noyau",
+      profileId: request.profile.id,
+    });
+    response.json({ ok: true, result });
   } catch (error) {
     next(error);
   }
@@ -1582,6 +3020,35 @@ async function saveUpload(request, response, next) {
 
 app.post("/api/uploads/file", fileUpload.single("file"), saveUpload);
 app.post("/api/uploads/image", fileUpload.single("image"), saveUpload);
+
+app.post("/api/uploads/raw-files", async (request, response, next) => {
+  try {
+    const { sessionId, files } = request.body || {};
+    if (!validSessionId(sessionId) || !sessionVisible(request.profile.id, sessionId) || !(await tmux.exists(sessionId))) {
+      throw new Error("Session invalide.");
+    }
+    if (!Array.isArray(files) || !files.length) {
+      throw new Error("Aucun fichier fourni.");
+    }
+    const created = [];
+    for (let i = 0; i < files.length; i++) {
+      const item = files[i];
+      const rawName = String(item.name || "").trim();
+      const content = String(item.content ?? "");
+      const safeName = rawName.replace(/[/\\?%*:|"<>]/g, "_") || `fichier-${i + 1}.txt`;
+      const originalExtension = path.extname(safeName).toLowerCase();
+      const extension = /^\.[a-z0-9_-]{1,15}$/.test(originalExtension) ? originalExtension : ".txt";
+      const stem = (path.basename(safeName, originalExtension) || `document-${i + 1}`).slice(0, 80);
+      const filename = `${sessionId}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}-${stem}${extension}`;
+      const target = path.join(uploadsDir, filename);
+      await fs.writeFile(target, content, { encoding: "utf-8", mode: 0o600 });
+      created.push({ path: target, name: safeName, size: Buffer.byteLength(content, "utf-8") });
+    }
+    response.status(201).json({ files: created });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.get("/api/notifications", (_request, response) => {
   response.json({ publicKey: push.publicKey() });
@@ -1730,17 +3197,36 @@ app.get("/api/sessions", async (request, response, next) => {
     const sessions = (await tmux.list()).filter((session) => sessionVisible(request.profile.id, session.id));
     const enriched = await Promise.all(sessions.map(async (session) => {
       let metadata = store.get(session.id) || {};
+      let updatedMetadata = false;
       if (session.assistant === "codex" && !metadata.threadId) {
         const threadId = await usage.discoverCodexThread(session.panePid);
         if (threadId) {
           metadata = { ...metadata, threadId };
-          await store.set(session.id, metadata);
+          updatedMetadata = true;
         }
+      }
+      if (["claude", "claude-design"].includes(session.assistant) && !metadata.transcriptPath) {
+        const transcriptPath = await usage.discoverClaudeTranscript(session.cwd, metadata.agentSessionId);
+        if (transcriptPath) {
+          metadata = { ...metadata, transcriptPath };
+          updatedMetadata = true;
+        }
+      }
+      if (session.assistant === "antigravity" && !metadata.conversationId) {
+        const conversationId = await usage.discoverAntigravityConversation(session.panePid, session.cwd);
+        if (conversationId) {
+          metadata = { ...metadata, conversationId };
+          updatedMetadata = true;
+        }
+      }
+      if (updatedMetadata) {
+        await store.set(session.id, metadata);
       }
       const project = session.projectId ? projects.get(session.projectId) : null;
       const owner = profileService.resolve(session.profileId);
       const pane = await tmux.capture(session.id);
-      return { ...session, canEdit: session.profileId === request.profile.id, owner: { id: owner.id, name: owner.name }, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session, request.profile.id), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane), usage: await usage.get({ ...session, ...metadata }, pane) };
+      const enrichedSession = { ...session, canEdit: session.profileId === request.profile.id, owner: { id: owner.id, name: owner.name }, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session, request.profile.id), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane), usage: await usage.get({ ...session, ...metadata }, pane) };
+      return { ...enrichedSession, contextAdvice: contextAdvice(enrichedSession) };
     }));
     // Les quotas sont ceux du compte: on préserve le relevé direct (live) s'il existe.
     let codexState = providerState.get("codex");
@@ -1781,13 +3267,44 @@ app.get("/api/sessions", async (request, response, next) => {
   }
 });
 
+app.get("/api/sessions/suggest-description", async (request, response, next) => {
+  try {
+    const name = String(request.query?.name || "").trim();
+    const assistant = String(request.query?.assistant || "").trim();
+    const cwd = String(request.query?.cwd || "").trim();
+    const projectId = String(request.query?.projectId || "").trim();
+    const project = projectId ? projects.get(projectId) : null;
+    const description = await suggestAgentDescription({
+      name,
+      assistant,
+      cwd,
+      projectName: project?.name || null,
+      localLlm,
+    });
+    response.json({ description });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/sessions", async (request, response, next) => {
   try {
     if (request.body?.projectId && !projectVisible(request.profile.id, request.body.projectId)) throw new Error("Projet introuvable.");
     if (installedAssistants[request.body?.assistant] === false) throw new Error(`${assistantLabel(request.body?.assistant)} n'est pas installé sur ce PC.`);
     const project = request.body?.projectId ? projects.get(request.body.projectId) : null;
     const shared = request.body?.shared === undefined ? Boolean(project?.shared) : Boolean(request.body.shared);
-    response.status(201).json({ session: await tmux.create({ ...(request.body || {}), profileId: request.profile.id, shared }) });
+    const description = request.body?.description?.trim() || await suggestAgentDescription({
+      name: request.body?.name,
+      assistant: request.body?.assistant,
+      model: request.body?.model,
+      cwd: request.body?.cwd,
+      projectName: project?.name || null,
+      localLlm,
+    });
+    const projectLogo = request.body?.projectLogo !== undefined
+      ? Boolean(request.body.projectLogo)
+      : Boolean(request.body?.projectId);
+    response.status(201).json({ session: await tmux.create({ ...(request.body || {}), projectLogo, description, profileId: request.profile.id, shared }) });
   } catch (error) {
     next(error);
   }
@@ -1840,6 +3357,51 @@ app.post("/api/agent-tools/agents/:target/send", async (request, response, next)
   }
 });
 
+app.post("/api/agent-tools/agents/create", async (request, response, next) => {
+  try {
+    const callerSessionId = request.body?.callerSessionId ? String(request.body.callerSessionId) : null;
+    const callerName = request.body?.callerName ? String(request.body.callerName) : null;
+    const result = await agentCommunication.create({
+      name: request.body?.name,
+      assistant: request.body?.assistant,
+      model: request.body?.model,
+      projectId: request.body?.projectId,
+      projectName: request.body?.projectName,
+      cwd: request.body?.cwd,
+      prompt: request.body?.prompt,
+      yolo: request.body?.yolo,
+      description: request.body?.description,
+      callerSessionId,
+      callerName,
+      profileId: request.profile.id,
+    });
+    response.status(201).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/agent-tools/agents/:target/assign-project", async (request, response, next) => {
+  try {
+    const projectTarget = request.body?.project || request.body?.projectId || request.body?.projectName;
+    const result = await agentCommunication.assignProject(request.params.target, projectTarget, { profileId: request.profile.id });
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/agent-tools/agents/:target/stop", async (request, response, next) => {
+  try {
+    const result = await agentCommunication.stop(request.params.target, { profileId: request.profile.id });
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+
 app.get("/api/sessions/:id/logo", async (request, response, next) => {
   try {
     const session = store.get(request.params.id);
@@ -1869,17 +3431,20 @@ app.patch("/api/sessions/:id", async (request, response, next) => {
     const favorite = request.body?.favorite === undefined ? Boolean(current.favorite) : Boolean(request.body.favorite);
     const shared = request.body?.shared === undefined ? Boolean(current.shared) : Boolean(request.body.shared);
     const todoTracking = request.body?.todoTracking === undefined ? current.todoTracking !== false : Boolean(request.body.todoTracking);
+    const description = request.body?.description === undefined
+      ? (current.description || null)
+      : (String(request.body.description).trim().slice(0, 1000) || null);
     if (projectId && !projectVisible(request.profile.id, projectId)) throw new Error("Projet introuvable.");
     const assistant = request.body?.assistant;
     if (assistant && assistant !== session.assistant) {
       if (!["codex", "claude", "antigravity"].includes(assistant) || !["codex", "claude", "antigravity"].includes(session.assistant)) throw new Error("Bascule réservée aux agents conversationnels.");
       if (installedAssistants[assistant] === false) throw new Error(`${assistantLabel(assistant)} n'est pas installé sur ce PC.`);
-      const metadata = { ...current, name, yolo, projectLogo, projectId, favorite, shared, todoTracking };
+      const metadata = { ...current, name, description, yolo, projectLogo, projectId, favorite, shared, todoTracking };
       const { prompt, history } = await handoverPrompt({ session, metadata, target: assistant });
       const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target: assistant, prompt, replace: true });
       return response.json({ session: { ...created, logoUrl: logoUrl(created) }, switched: true, history, restarted: true, pending: false });
     }
-    let next = { ...current, name, yolo, projectLogo, projectId, favorite, shared, todoTracking };
+    let next = { ...current, name, description, yolo, projectLogo, projectId, favorite, shared, todoTracking };
     const permissionChanged = ["codex", "claude", "claude-design", "antigravity"].includes(session.assistant) && yolo !== Boolean(current.runningYolo);
     let restarted = false;
     if (permissionChanged) {
@@ -2034,6 +3599,24 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
   }
 });
 
+// Coupure d'une tache en cours depuis n'importe quel ecran: la touche d'echappement suffit aux agents.
+async function interruptSession(id) {
+  const current = store.get(id);
+  if (!current) throw new Error("Session Noyau introuvable.");
+  await tmux.run(["send-keys", "-t", id, current.assistant === "shell" ? "C-c" : "Escape"]);
+  return true;
+}
+
+app.post("/api/sessions/:id/interrupt", async (request, response, next) => {
+  try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
+    await interruptSession(request.params.id);
+    response.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Redemarrage manuel: l'agent repart dans le meme pane et reprend la conversation en cours.
 app.post("/api/sessions/:id/restart", async (request, response, next) => {
   try {
@@ -2051,6 +3634,169 @@ app.post("/api/sessions/:id/restart", async (request, response, next) => {
       agentStateUpdatedAt: new Date().toISOString(),
     });
     response.json({ ok: true, resumed: Boolean(threadId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+async function purgeProviderHistories() {
+  const home = os.homedir();
+  let count = 0;
+
+  // 1. Claude
+  try {
+    const pDir = path.join(home, ".claude", "projects");
+    const entries = await fs.readdir(pDir, { recursive: true }).catch(() => []);
+    for (const e of entries) {
+      if (e.endsWith(".jsonl")) {
+        await fs.unlink(path.join(pDir, e)).catch(() => {});
+        count += 1;
+      }
+    }
+    await fs.writeFile(path.join(home, ".claude", "history.jsonl"), "").catch(() => {});
+    const sDir = path.join(home, ".claude", "sessions");
+    for (const e of await fs.readdir(sDir).catch(() => [])) {
+      await fs.rm(path.join(sDir, e), { recursive: true, force: true }).catch(() => {});
+      count += 1;
+    }
+  } catch {}
+
+  // 2. Codex
+  try {
+    const cDir = path.join(home, ".codex", "sessions");
+    const entries = await fs.readdir(cDir, { recursive: true }).catch(() => []);
+    for (const e of entries) {
+      if (e.endsWith(".jsonl")) {
+        await fs.unlink(path.join(cDir, e)).catch(() => {});
+        count += 1;
+      }
+    }
+    await fs.writeFile(path.join(home, ".codex", "history.jsonl"), "").catch(() => {});
+    await fs.writeFile(path.join(home, ".codex", "session_index.jsonl"), "").catch(() => {});
+    const codexRoot = path.join(home, ".codex");
+    for (const f of await fs.readdir(codexRoot).catch(() => [])) {
+      if (f.startsWith("thread_history_") || f.startsWith("logs_") || f.startsWith("memories_")) {
+        await fs.rm(path.join(codexRoot, f), { force: true }).catch(() => {});
+        count += 1;
+      }
+    }
+  } catch {}
+
+  // 3. Antigravity
+  try {
+    const agyRoot = path.join(home, ".gemini", "antigravity-cli");
+    const convDir = path.join(agyRoot, "conversations");
+    for (const f of await fs.readdir(convDir).catch(() => [])) {
+      await fs.rm(path.join(convDir, f), { force: true }).catch(() => {});
+      count += 1;
+    }
+    const brainDir = path.join(agyRoot, "brain");
+    for (const b of await fs.readdir(brainDir).catch(() => [])) {
+      await fs.rm(path.join(brainDir, b), { recursive: true, force: true }).catch(() => {});
+      count += 1;
+    }
+    await fs.writeFile(path.join(agyRoot, "history.jsonl"), "").catch(() => {});
+    for (const f of ["conversation_summaries.db", "conversation_summaries.db-shm", "conversation_summaries.db-wal"]) {
+      await fs.rm(path.join(agyRoot, f), { force: true }).catch(() => {});
+    }
+  } catch {}
+
+  return count;
+}
+
+app.post("/api/sessions/clear-history", async (request, response, next) => {
+  try {
+    const password = String(request.body?.password || "");
+    if (!password) {
+      return response.status(400).json({ error: "Mot de passe requis pour confirmer la suppression." });
+    }
+    const authenticated = profileService.authenticate(password, request.profile.id, accessToken);
+    if (!authenticated) {
+      return response.status(401).json({ error: "Mot de passe incorrect pour ce profil." });
+    }
+
+    const sessions = (await tmux.list()).filter((session) => sessionVisible(request.profile.id, session.id));
+    let clearedCount = 0;
+
+    for (const session of sessions) {
+      const metadata = store.get(session.id) || {};
+
+      const transcriptPath = metadata.transcriptPath || await usage.discoverClaudeTranscript(session.cwd, metadata.agentSessionId);
+      if (transcriptPath) {
+        try { await fs.truncate(transcriptPath, 0); } catch {}
+      }
+
+      const threadId = metadata.threadId || (session.panePid ? await usage.discoverCodexThread(session.panePid) : null);
+      if (threadId) {
+        const file = await usage.codexFile(threadId);
+        if (file) {
+          try { await fs.truncate(file, 0); } catch {}
+        }
+      }
+
+      const conversationId = metadata.conversationId || (session.panePid ? await usage.discoverAntigravityConversation(session.panePid, session.cwd) : null);
+      if (conversationId) {
+        const transcriptFile = path.join(usage.antigravityRoot, "brain", conversationId, ".system_generated", "logs", "transcript.jsonl");
+        const fullTranscriptFile = path.join(usage.antigravityRoot, "brain", conversationId, ".system_generated", "logs", "transcript_full.jsonl");
+        try { await fs.truncate(transcriptFile, 0); } catch {}
+        try { await fs.truncate(fullTranscriptFile, 0); } catch {}
+      }
+
+      const updatedMetadata = { ...metadata };
+      delete updatedMetadata.threadId;
+      delete updatedMetadata.agentSessionId;
+      delete updatedMetadata.transcriptPath;
+      delete updatedMetadata.conversationId;
+      updatedMetadata.agentState = "available";
+      updatedMetadata.agentStateUpdatedAt = new Date().toISOString();
+      await store.set(session.id, updatedMetadata);
+
+      await tmux.restartAgent({
+        id: session.id,
+        assistant: session.assistant,
+        cwd: session.cwd,
+        threadId: null,
+        yolo: Boolean(metadata.yolo),
+        resume: false,
+      }).catch(() => {});
+
+      await tmux.clearHistory(session.id);
+
+      clearedCount += 1;
+    }
+
+    const allArchives = await agentArchiveService.read();
+    const remainingArchives = [];
+    let purgedArchivesCount = 0;
+    for (const item of allArchives) {
+      const isTarget = item.profileId === request.profile.id || item.shared === true || (item.projectId && projectVisible(request.profile.id, item.projectId));
+      if (isTarget) {
+        purgedArchivesCount += 1;
+        if (item.transcriptPath) {
+          try { await fs.truncate(item.transcriptPath, 0); } catch {}
+        }
+        if (item.threadId) {
+          const file = await usage.codexFile(item.threadId);
+          if (file) {
+            try { await fs.truncate(file, 0); } catch {}
+          }
+        }
+      } else {
+        remainingArchives.push(item);
+      }
+    }
+    if (purgedArchivesCount > 0) {
+      await agentArchiveService.write(remainingArchives);
+    }
+    const purgedProviderFiles = await purgeProviderHistories();
+
+    response.json({
+      ok: true,
+      clearedSessions: clearedCount,
+      purgedArchives: purgedArchivesCount,
+      purgedProviderFiles,
+      message: `Historiques effacés pour ${clearedCount} session(s), ${purgedArchivesCount} archive(s) et ${purgedProviderFiles} fichier(s) de conversation.`,
+    });
   } catch (error) {
     next(error);
   }
@@ -2076,7 +3822,7 @@ app.post("/api/agents/archives/:id/restore", async (request, response, next) => 
 app.delete("/api/agents/archives/:id", async (request, response, next) => {
   try {
     const archived = await agentArchiveService.get(request.params.id);
-    if (archived && archived.profileId && archived.profileId !== request.profile.id && !archived.shared) throw new Error("Agent archivé appartient à autre profil.");
+    if (archived && archived.profileId !== request.profile.id) throw new Error("Agent archivé appartient à autre profil.");
     await agentArchiveService.remove(request.params.id);
     response.json({ archives: await agentArchiveService.list({ profileId: request.profile.id }) });
   } catch (error) {
@@ -2084,20 +3830,95 @@ app.delete("/api/agents/archives/:id", async (request, response, next) => {
   }
 });
 
+// Optimisation du contexte: on tape la commande dans le pane, l'agent garde la main sur le resultat.
+app.post("/api/sessions/:id/optimize", async (request, response, next) => {
+  try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
+    const current = store.get(request.params.id);
+    if (!current) throw new Error("Session Noyau introuvable.");
+    const mode = request.body?.mode === "clear" ? "clear" : "compact";
+    const command = optimizeCommand(current.assistant, mode);
+    await tmux.submit(request.params.id, command);
+    response.json({ ok: true, mode, command });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Un agent relit ses reglages au demarrage: la conversation, elle, reprend ou elle en etait.
+async function restartWithSettings(id, current) {
+  try {
+    await tmux.restartAgent({ id, assistant: current.assistant, cwd: current.cwd, threadId: current.agentSessionId, model: current.model, yolo: Boolean(current.yolo) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Analyse du poids d'un agent: plugins, skills et serveurs MCP jamais utilises dans ce projet.
+app.post("/api/sessions/:id/context-audit", async (request, response, next) => {
+  try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
+    const current = store.get(request.params.id);
+    if (!current) throw new Error("Session Noyau introuvable.");
+    if (!["claude", "claude-design", "codex", "antigravity"].includes(current.assistant)) throw new Error("Analyse disponible pour les agents Claude, Codex et Antigravity.");
+    const result = await contextAudit.audit(current.cwd, agentSettingsFile(request.params.id), current.assistant);
+    auditCatalog.set(request.params.id, result.proposals);
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/sessions/:id/context-audit/apply", async (request, response, next) => {
+  try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
+    const current = store.get(request.params.id);
+    if (!current) throw new Error("Session Noyau introuvable.");
+    const catalog = auditCatalog.get(request.params.id);
+    if (!catalog) throw new Error("Relance l'analyse avant d'appliquer.");
+    const ids = Array.isArray(request.body?.ids) ? request.body.ids.map(String) : [];
+    const applied = await contextAudit.apply(current.cwd, ids, catalog, agentSettingsFile(request.params.id));
+    // Les reglages ne sont lus qu'au demarrage: sans relance, l'allegement resterait theorique.
+    const restarted = await restartWithSettings(request.params.id, current);
+    response.json({ ...applied, restarted });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/sessions/:id/context-audit/revert", async (request, response, next) => {
+  try {
+    if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
+    const current = store.get(request.params.id);
+    if (!current) throw new Error("Session Noyau introuvable.");
+    const reverted = await contextAudit.revert(current.cwd, agentSettingsFile(request.params.id));
+    const restarted = await restartWithSettings(request.params.id, current);
+    response.json({ ...reverted, restarted });
+  } catch (error) {
+    next(error);
+  }
+});
+
+async function archiveSession(id, current) {
+  if (current.core) throw new Error("Agent de base du Noyau: non archivable.");
+  // On garde le fil de discussion avant de fermer, sinon la restauration repartirait de zero.
+  let threadId = current.threadId || null;
+  if (!threadId && current.assistant === "codex") {
+    const live = (await tmux.list()).find((item) => item.id === id);
+    threadId = live ? await usage.discoverCodexThread(live.panePid).catch(() => null) : null;
+  }
+  const archived = await agentArchiveService.archive(id, { ...current, threadId }, { reason: "closed" });
+  await tmux.kill(id);
+  return archived;
+}
+
 app.post("/api/sessions/:id/archive", async (request, response, next) => {
   try {
     if (!sessionOwned(request.profile.id, request.params.id)) throw new Error("Agent appartient à autre profil.");
     const current = store.get(request.params.id);
     if (!current) throw new Error("Session Noyau introuvable.");
-    if (current.core) throw new Error("Agent de base du Noyau: non archivable.");
-    // On garde le fil de discussion avant de fermer, sinon la restauration repartirait de zero.
-    let threadId = current.threadId || null;
-    if (!threadId && current.assistant === "codex") {
-      const live = (await tmux.list()).find((item) => item.id === request.params.id);
-      threadId = live ? await usage.discoverCodexThread(live.panePid).catch(() => null) : null;
-    }
-    const archived = await agentArchiveService.archive(request.params.id, { ...current, threadId }, { reason: "closed" });
-    await tmux.kill(request.params.id);
+    const archived = await archiveSession(request.params.id, current);
     response.json({ archived, archives: await agentArchiveService.list({ profileId: request.profile.id }) });
   } catch (error) {
     next(error);
@@ -2119,6 +3940,9 @@ app.delete("/api/sessions/:id", async (request, response, next) => {
 
 app.use((error, _request, response, _next) => {
   console.error(error);
+  if (error.code === "LIMIT_FILE_SIZE") {
+    return response.status(413).json({ error: `Fichier trop volumineux (taille maximale autorisée : ${MAX_UPLOAD_MB} Mo).` });
+  }
   const status = Number.isInteger(error.statusCode) && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 400;
   if (error.retryAfter) response.setHeader("Retry-After", String(error.retryAfter));
   response.status(status).json({ error: error.message || "Erreur serveur.", ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}) });
@@ -2146,13 +3970,42 @@ const secureServer = process.env.NOYAU_TLS_CERT && process.env.NOYAU_TLS_KEY
   : null;
 const sockets = new WebSocketServer({ noServer: true });
 
+const voiceSockets = new WebSocketServer({ noServer: true });
+
+// Micro du navigateur: le poste qui pilote envoie son son, la machine de Noyau transcrit.
+voiceSockets.on("connection", (websocket) => {
+  void voiceService.startStream().then((state) => {
+    broadcastVoice({ type: "state", state });
+    if (!state.listening) websocket.close();
+  });
+  websocket.on("message", (raw, isBinary) => { if (isBinary) voiceService.pushAudio(raw); });
+  websocket.on("close", () => {
+    if (voiceService.state().source !== "browser") return;
+    broadcastVoice({ type: "state", state: voiceService.stop() });
+  });
+});
+
 async function upgradeTerminal(request, socket, head) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
-  const match = url.pathname.match(/^\/ws\/terminal\/([a-zA-Z0-9_-]+)$/);
-  const profile = profileService.resolve(url.searchParams.get("profile"));
   const secure = Boolean(request.socket.encrypted);
+  const verified = authenticated(request);
+  const requestedProfileId = url.searchParams.get("profile");
+  const profile = verified ? profileService.resolve(request.sessionProfileId) : null;
+  const profileMatches = !requestedProfileId || requestedProfileId === profile?.id;
+  if (url.pathname === "/ws/voice") {
+    const allowed = secure && sameWebSocketOrigin({ origin: request.headers.origin, host: request.headers.host, secure }) && verified && profileMatches;
+    if (!allowed) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    request.profileId = profile.id;
+    voiceSockets.handleUpgrade(request, socket, head, (websocket) => voiceSockets.emit("connection", websocket, request));
+    return;
+  }
+  const match = url.pathname.match(/^\/ws\/terminal\/([a-zA-Z0-9_-]+)$/);
   const validOrigin = sameWebSocketOrigin({ origin: request.headers.origin, host: request.headers.host, secure });
-  if (!match || !secure || !validOrigin || !authenticated(request) || !sessionVisible(profile.id, match[1]) || !(await tmux.exists(match[1]))) {
+  if (!match || !secure || !validOrigin || !verified || !profileMatches || !sessionVisible(profile.id, match[1]) || !(await tmux.exists(match[1]))) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
@@ -2225,6 +4078,7 @@ sockets.on("connection", (websocket, request) => {
           .then(() => tmux.run(["send-keys", "-t", request.sessionId, "C-m"]))
           .then(() => websocket.readyState === websocket.OPEN && websocket.send(JSON.stringify({ type: "key-ack", key: "Enter" })))
           .catch(() => {});
+        trackComposerPrompt(request.sessionId, request.profileId, data);
       }
       if (message.type === "key" && specialKeys[message.key]) {
         keyQueue = keyQueue
@@ -2236,17 +4090,31 @@ sockets.on("connection", (websocket, request) => {
       }
       if (message.type === "scroll" && ["up", "down"].includes(message.direction)) {
         const count = Math.max(1, Math.min(80, Math.trunc(Number(message.count)) || 1));
+        if (!mobileCopyMode && message.direction === "down") return;
         keyQueue = keyQueue
           .then(async () => {
             if (!mobileCopyMode) {
-              await tmux.run(["copy-mode", "-t", request.sessionId]);
-              mobileCopyMode = true;
+              if (message.direction === "up") {
+                await tmux.run([
+                  "copy-mode", "-t", request.sessionId,
+                  ";",
+                  "send-keys", "-X", "-N", String(count), "-t", request.sessionId, "scroll-up",
+                ]);
+                mobileCopyMode = true;
+              }
+              return;
             }
-            await tmux.run(["send-keys", "-X", "-N", String(count), "-t", request.sessionId, `scroll-${message.direction}`]);
-            if (message.direction === "down") {
-              const position = Number((await tmux.run(["display-message", "-p", "-t", request.sessionId, "#{scroll_position}"])).stdout.trim());
+            if (message.direction === "up") {
+              await tmux.run(["send-keys", "-X", "-N", String(count), "-t", request.sessionId, "scroll-up"]);
+            } else {
+              const res = await tmux.run([
+                "send-keys", "-X", "-N", String(count), "-t", request.sessionId, "scroll-down",
+                ";",
+                "display-message", "-p", "-t", request.sessionId, "#{scroll_position}",
+              ]);
+              const position = Number(res?.stdout?.trim() ?? 1);
               if (position === 0) {
-                await tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]);
+                await tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]).catch(() => {});
                 mobileCopyMode = false;
               }
             }

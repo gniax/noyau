@@ -47,7 +47,7 @@ async function getClient() {
     return payload;
   }
 
-  return { api, callerSessionId, callerName, cwd };
+  return { api, token, sessions, profileId, callerSessionId, callerName, cwd };
 }
 
 function print(data) {
@@ -55,11 +55,94 @@ function print(data) {
 }
 
 try {
-  const { api, callerSessionId, callerName } = await getClient();
+  const { api, token, sessions, profileId, callerSessionId, callerName } = await getClient();
 
   if (["list", "ls", "status", "agents"].includes(command)) {
     const res = await api("/api/agent-tools/agents");
     print(res.agents || []);
+  } else if (["create", "new", "spawn", "add"].includes(command)) {
+    let name = null;
+    let assistant = null;
+    let model = null;
+    let project = null;
+    let cwd = null;
+    let prompt = null;
+    let yolo = null;
+    let projectLogo = null;
+    let description = null;
+
+    const rest = args.slice(1);
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i];
+      if (arg === "--name" || arg === "-n") {
+        name = rest[++i];
+      } else if (arg === "--assistant" || arg === "-a") {
+        assistant = rest[++i];
+      } else if (arg === "--model") {
+        model = rest[++i];
+      } else if (arg === "--project" || arg === "-p") {
+        project = rest[++i];
+      } else if (arg === "--cwd" || arg === "-d") {
+        cwd = rest[++i];
+      } else if (arg === "--prompt" || arg === "-m") {
+        prompt = rest[++i];
+      } else if (arg === "--desc" || arg === "--description") {
+        description = rest[++i];
+      } else if (arg === "--yolo" || arg === "--dangerous") {
+        yolo = true;
+      } else if (arg === "--no-yolo" || arg === "--safe") {
+        yolo = false;
+      } else if (arg === "--logo" || arg === "--project-logo") {
+        projectLogo = true;
+      } else if (arg === "--no-logo") {
+        projectLogo = false;
+      } else if (!arg.startsWith("-")) {
+        if (!name) {
+          name = arg;
+        } else if (!prompt) {
+          prompt = arg;
+        } else {
+          prompt += " " + arg;
+        }
+      }
+    }
+
+    const payload = {
+      name,
+      assistant,
+      model,
+      projectId: project,
+      projectName: project,
+      cwd,
+      prompt,
+      yolo,
+      projectLogo,
+      description,
+      callerSessionId,
+      callerName,
+    };
+
+    const res = await api("/api/agent-tools/agents/create", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    print(res);
+  } else if (["assign", "attach", "set-project"].includes(command)) {
+    const target = args[1];
+    const project = args[2];
+    if (!target || !project) throw new Error("Usage: node scripts/noyau-agent.mjs assign 'Nom ou ID agent' 'Nom ou ID projet'");
+    const res = await api(`/api/agent-tools/agents/${encodeURIComponent(target)}/assign-project`, {
+      method: "POST",
+      body: JSON.stringify({ project }),
+    });
+    print(res);
+  } else if (["stop", "delete", "kill", "rm"].includes(command)) {
+    const target = args[1];
+    if (!target) throw new Error("Usage: node scripts/noyau-agent.mjs stop 'Nom ou ID agent'");
+    const res = await api(`/api/agent-tools/agents/${encodeURIComponent(target)}/stop`, {
+      method: "POST",
+    });
+    print(res);
   } else if (["read", "context", "view", "get"].includes(command)) {
     const target = args[1];
     if (!target) throw new Error("Usage: node scripts/noyau-agent.mjs read 'Nom ou ID de l agent'");
@@ -86,12 +169,43 @@ try {
       (a.cwd && a.cwd.toLowerCase().includes(query))
     ) : agents;
     print(matches);
+  } else if (["files", "list-files"].includes(command)) {
+    const targetProject = args[1] || (callerSessionId ? sessions[callerSessionId]?.projectId : null);
+    if (!targetProject) throw new Error("Usage: node scripts/noyau-agent.mjs files <projectId>");
+    const res = await api(`/api/projects/${encodeURIComponent(targetProject)}/files`);
+    print(res.files || []);
+  } else if (["putfile", "upload"].includes(command)) {
+    const filePath = args[1];
+    const targetProject = args[2] || (callerSessionId ? sessions[callerSessionId]?.projectId : null);
+    if (!filePath || !targetProject) throw new Error("Usage: node scripts/noyau-agent.mjs putfile <chemin-fichier> <projectId>");
+    const resolvedPath = path.resolve(filePath);
+    const content = await fs.readFile(resolvedPath);
+    const filename = path.basename(resolvedPath);
+    const formData = new FormData();
+    formData.append("file", new Blob([content]), filename);
+    const response = await fetch(`https://127.0.0.1:4242/api/projects/${encodeURIComponent(targetProject)}/files`, {
+      method: "POST",
+      headers: {
+        authorization: token ? `Bearer ${token}` : "",
+        ...(profileId ? { "x-noyau-profile": profileId } : {}),
+      },
+      body: formData,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Erreur ${response.status}`);
+    print(payload);
   } else {
-    print(`Usage: node scripts/noyau-agent.mjs [list | read <nom> | send <nom> <message> | find <recherche>]
+    print(`Usage: node scripts/noyau-agent.mjs [create | assign | stop | list | read | send | find | files | putfile]
+- create [--name <nom>] [--prompt <texte>] [--project <id|nom>] [--assistant codex|claude|antigravity] [--model <id>] [--cwd <dir>] [--yolo|--no-yolo]
+  Crée un nouvel agent sur Noyau, rattaché à un projet avec consigne initiale (reprend par défaut la permission yolo/dangerous).
+- assign <agent> <projet>   : Rattache un agent existant à un projet (nom ou identifiant).
+- stop <agent>              : Arrête et supprime un agent de Noyau.
 - list                      : Liste tous les agents actifs de Noyau (nom, projet, assistant, état, dossier).
-- read "Nom ou ID"          : Affiche les derniers échanges et le contexte récent de l agent.
+- read "Nom ou ID"          : Affiche les derniers échanges, le contexte récent et les fichiers du projet.
 - send "Nom ou ID" "Message": Transmet un message / tâche / contexte directement à l agent.
-- find "mots clés"          : Recherche un agent par nom, projet ou mot-clé.`);
+- find "mots clés"          : Recherche un agent par nom, projet ou mot-clé.
+- files [projectId]         : Liste les fichiers partagés du projet.
+- putfile <fichier> <projId>: Dépose un fichier local dans l'espace partagé du projet.`);
   }
 } catch (error) {
   process.stderr.write(`${error.message}\n`);

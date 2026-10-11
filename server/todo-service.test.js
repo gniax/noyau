@@ -18,12 +18,12 @@ test("todo service preserves Obsidian prose and syncs task metadata", async () =
   assert.equal(todos.length, 2);
   assert.match(await fs.readFile(file, "utf8"), /# Notes[\s\S]*<!-- noyau:/);
 
-  await service.update(todos[0].id, { dueDate: "2026-08-27", projectId: "project-meridian" });
+  await service.update(todos[0].id, { dueDate: "2026-08-27", projectId: "project-atlas" });
   await service.move(todos[1].id, "up");
   const document = parseDocument(await fs.readFile(file, "utf8"));
   assert.equal(document.tasks[0].text, "Déjà faite");
   assert.equal(document.tasks[1].dueDate, "2026-08-27");
-  assert.equal(document.tasks[1].projectId, "project-meridian");
+  assert.equal(document.tasks[1].projectId, "project-atlas");
 });
 
 test("todo reminders fire day before, due day, then once daily", async () => {
@@ -135,10 +135,10 @@ test("commentaires sur les tâches: ajout, suppression et persistance à l'infin
   const { todos } = await service.list();
   const todoId = todos[0].id;
 
-  const added1 = await service.addComment(todoId, { text: "Premier retour de test", author: "Camille" });
+  const added1 = await service.addComment(todoId, { text: "Premier retour de test", author: "Moi" });
   assert.equal(added1.todo.comments.length, 1);
   assert.equal(added1.todo.comments[0].text, "Premier retour de test");
-  assert.equal(added1.todo.comments[0].author, "Camille");
+  assert.equal(added1.todo.comments[0].author, "Moi");
 
   const added2 = await service.addComment(todoId, { text: "Deuxième note de suivi", author: "Antigravity" });
   assert.equal(added2.todo.comments.length, 2);
@@ -159,7 +159,7 @@ test("commentaires sur les tâches: ajout, suppression et persistance à l'infin
   assert.equal(removed.todo.comments[0].text, "Deuxième note de suivi");
 });
 
-test("les zones personnalisées survivent au fichier Markdown", async () => {
+test("les zones personnalisées survivent au fichier Markdown sans forcer le statut review", async () => {
   const { file, service } = await fixture("- [ ] Tâche déplacée dans une zone maison\n");
   const { todos } = await service.list();
   const todoId = todos[0].id;
@@ -168,9 +168,9 @@ test("les zones personnalisées survivent au fichier Markdown", async () => {
   assert.equal(moved.todo.status, "col-abcdef12");
   assert.equal(moved.todo.completed, false);
 
-  // La case Markdown reste lisible a la main: statut intermediaire = [/]
+  // La case Markdown reste sans statut review (/): case neutre [ ]
   const content = await fs.readFile(file, "utf8");
-  assert.match(content, /^- \[\/\] Tâche déplacée/m);
+  assert.match(content, /^- \[ \] Tâche déplacée/m);
 
   const fresh = new TodoService({ file });
   const reloaded = await fresh.list();
@@ -179,4 +179,86 @@ test("les zones personnalisées survivent au fichier Markdown", async () => {
   // Un statut invalide retombe sur « a faire » plutot que de casser la tache.
   const rejected = await service.update(todoId, { status: "ZONE INVALIDE" });
   assert.equal(rejected.todo.status, "col-abcdef12");
+});
+
+test("priorité des tâches: détection, mise à jour et persistance", async () => {
+  const { file, service } = await fixture("- [ ] Tâche urgente 🔴\n- [ ] Tâche normale\n");
+  const { todos } = await service.list();
+  assert.equal(todos[0].priority, "high");
+  assert.equal(todos[1].priority, "medium");
+
+  const updated = await service.update(todos[1].id, { priority: "low" });
+  assert.equal(updated.todo.priority, "low");
+
+  const fresh = new TodoService({ file });
+  const reloaded = await fresh.list();
+  assert.equal(reloaded.todos[1].priority, "low");
+
+  const added = await service.add({ text: "Nouvelle tâche sans priorité explicite" });
+  assert.equal(added.todo.priority, "medium");
+});
+
+test("vue raw markdown: lecture et écriture directe", async () => {
+  const initial = "# Mon Vault\n\n- [ ] Tâche 1\n- [ ] Tâche 2\n";
+  const { service } = await fixture(initial);
+  const raw = await service.readRaw();
+  assert.equal(raw, initial);
+
+  const updatedRaw = "# Mon Vault\n\n- [ ] Tâche 1\n- [x] Tâche 2 finie\n- [ ] Tâche 3 nouvelle\n";
+  const doc = await service.saveRaw(updatedRaw);
+  assert.equal(doc.todos.length, 3);
+  assert.equal(doc.todos[1].completed, true);
+  assert.equal(await service.readRaw(), updatedRaw);
+});
+
+test("sous-dossiers par projet: creation avec parentId, taches, renommage et suppression", async () => {
+  const { service } = await fixture("");
+  const synced = await service.syncProjectFolders([{ id: "project-octanix", name: "Octanix" }]);
+  const octanix = synced.folders.find((f) => f.projectId === "project-octanix");
+  assert.ok(octanix);
+
+  const res1 = await service.addFolder({ name: "Développement", parentId: octanix.id, projectId: "project-octanix" });
+  const dev = res1.folders.find((f) => f.name === "Développement" && f.parentId === octanix.id);
+  assert.ok(dev);
+  assert.equal(dev.projectId, "project-octanix");
+
+  const res2 = await service.addFolder({ name: "Design", parentId: octanix.id, projectId: "project-octanix" });
+  const design = res2.folders.find((f) => f.name === "Design" && f.parentId === octanix.id);
+  assert.ok(design);
+
+  // Tâche dans le sous-dossier Développement
+  const created = await service.add({ text: "Créer API", folderId: dev.id });
+  assert.equal(created.todo.folderId, dev.id);
+
+  // Renommage du sous-dossier
+  const renamed = await service.renameFolder(dev.id, "Code & Dev");
+  const devRenamed = renamed.folders.find((f) => f.id === dev.id);
+  assert.equal(devRenamed.name, "Code & Dev");
+
+  // Suppression du sous-dossier déplace la tâche dans le dossier parent
+  const removed = await service.removeFolder(dev.id);
+  assert.equal(removed.folders.some((f) => f.id === dev.id), false);
+  const movedTodo = removed.todos.find((t) => t.id === created.todo.id);
+  assert.equal(movedTodo.folderId, octanix.id);
+});
+
+
+
+test("un fichier todo disparu est restauré depuis la copie laissée par l'écriture précédente", async () => {
+  const tasks = Array.from({ length: 30 }, (_, index) => `- [ ] Tâche ${index}`).join("\n");
+  const { file, service } = await fixture(`# Todo\n\n${tasks}\n`);
+  await service.add({ text: "Nouvelle" });
+  await fs.writeFile(`${file}.noyau-tmp`, await fs.readFile(file, "utf8"));
+  await fs.rm(file);
+  const { todos } = await service.list();
+  assert.equal(todos.length, 31);
+  assert.match(await fs.readFile(file, "utf8"), /Nouvelle/);
+});
+
+test("une écriture qui ferait perdre presque toutes les tâches est refusée", async () => {
+  const tasks = Array.from({ length: 30 }, (_, index) => `- [ ] Tâche ${index}`).join("\n");
+  const { file, service } = await fixture(`# Todo\n\n${tasks}\n`);
+  await assert.rejects(service.saveRaw("# Todo\n\n- [ ] Seule\n"), /refusée/);
+  assert.equal((await fs.readFile(file, "utf8")).match(/- \[ \]/g).length, 30);
+  await assert.rejects(service.saveRaw(""), /refusée/);
 });

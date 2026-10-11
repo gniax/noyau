@@ -12,14 +12,65 @@ class MemoryStore {
   async set(id, value) { this.data[id] = value; }
 }
 
+test("module chat export is exposed without paths or commands and remains project-scoped", async (t) => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-module-chat-"));
+  t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
+  const projectRoot = path.join(workspaceRoot, "atlas");
+  const manifestDirectory = path.join(projectRoot, ".noyau/modules");
+  await fs.mkdir(manifestDirectory, { recursive: true });
+  await fs.writeFile(path.join(manifestDirectory, "telegram-growth.json"), JSON.stringify({
+    id: "telegram-growth", project: "Atlas", controlUnits: ["telegram.service"], chat: { file: "feed.json" },
+  }));
+  await fs.writeFile(path.join(projectRoot, "feed.json"), JSON.stringify({ messages: [{ id: 1, text: "Hello", status: "sent" }] }));
+  const service = new ModuleService({ workspaceRoot, store: new MemoryStore(), run: async () => ({ stdout: "" }) });
+  const projects = { atlas: { name: "Atlas" } };
+  const [module] = await service.discover(projects);
+  const payload = await service.payload(module);
+  assert.equal(payload.chat.messages[0].text, "Hello");
+  assert.equal(payload.chat.file, undefined);
+  await service.install(module.id, projects);
+  assert.equal((await service.list(projects)).modules[0].chat.messages.length, 1);
+  assert.equal((await service.list({ other: { name: "Other" } })).modules.length, 0);
+});
+
+test("production modules remain project scoped and cannot start before setup", async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-production-"));
+  try {
+    const projectRoot = path.join(workspaceRoot, "atlas");
+    const moduleDir = path.join(projectRoot, ".noyau/modules");
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.writeFile(path.join(moduleDir, "production.json"), JSON.stringify({
+      id: "activity-production", project: "Atlas", environment: "production", executionHost: "Home PC",
+      controlUnits: ["activity-bot-production.service"], setup: { status: "required", description: "API requise" },
+    }));
+    let controls = 0;
+    const service = new ModuleService({ workspaceRoot, store: new MemoryStore(), run: async (file, args) => {
+      if (args.includes("enable")) controls++;
+      return { stdout: "Id=activity-bot-production.service\nActiveState=inactive\n" };
+    }});
+    const projects = { atlas: { name: "Atlas" } };
+    const proposal = (await service.list(projects)).proposals[0];
+    assert.equal(proposal.environment, "production");
+    assert.equal(proposal.projectId, "atlas");
+    await service.install(proposal.id, projects);
+    const module = (await service.list(projects)).modules[0];
+    assert.equal(module.environment, "production");
+    assert.equal(module.executionHost, "Home PC");
+    assert.equal(module.enabled, false);
+    await assert.rejects(() => service.setEnabled(module.id, true), /API requise/);
+    assert.equal(controls, 0);
+    assert.equal((await service.list({ other: { name: "Other" } })).modules.length, 0);
+  } finally { await fs.rm(workspaceRoot, { recursive: true, force: true }); }
+});
+
 test("module discovery attaches manifest to project without project root", async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-modules-"));
-  const projectRoot = path.join(workspaceRoot, "meridian.app");
+  const projectRoot = path.join(workspaceRoot, "atlas.example");
   await fs.mkdir(path.join(projectRoot, ".noyau", "modules"), { recursive: true });
   await fs.mkdir(path.join(projectRoot, "scripts", "canva"), { recursive: true });
   await fs.writeFile(path.join(projectRoot, ".noyau", "modules", "canva.json"), JSON.stringify({
     id: "canva-telegram",
-    project: "Meridian",
+    project: "Atlas",
     name: "Canva Telegram",
     workingDirectory: "scripts/canva",
     primaryUnit: "canva-bot.service",
@@ -28,8 +79,8 @@ test("module discovery attaches manifest to project without project root", async
     actions: [{ id: "next", label: "Suivant", command: { file: "/usr/bin/node", args: ["daily.js", "next"] } }],
   }));
   const service = new ModuleService({ workspaceRoot, store: new MemoryStore(), homeDir: workspaceRoot, run: async () => ({ stdout: "" }) });
-  const [module] = await service.discover({ "project-meridian": { name: "Meridian", rootPath: null } });
-  assert.equal(module.id, "project-meridian--canva-telegram");
+  const [module] = await service.discover({ "project-atlas": { name: "Atlas", rootPath: null } });
+  assert.equal(module.id, "project-atlas--canva-telegram");
   assert.equal(module.workingDirectory, path.join(projectRoot, "scripts", "canva"));
   assert.deepEqual(module.actions[0].command.args, ["daily.js", "next"]);
 });
@@ -40,14 +91,14 @@ test("link-only module exposes setup without systemd control", async () => {
   await fs.mkdir(path.join(projectRoot, ".noyau", "modules"), { recursive: true });
   await fs.writeFile(path.join(projectRoot, ".noyau", "modules", "notion.json"), JSON.stringify({
     id: "notion",
-    project: "Atlas",
+    project: "Octanix",
     name: "Notion",
     links: [{ id: "setup", label: "Configurer", url: "https://www.notion.so/profile/integrations/internal" }],
     setup: { status: "required", label: "Connexion requise", description: "Token et page partagée requis." },
   }));
   let runs = 0;
   const service = new ModuleService({ workspaceRoot, store: new MemoryStore(), homeDir: workspaceRoot, run: async () => { runs += 1; return { stdout: "" }; } });
-  const [module] = await service.discover({ "project-atlas": { name: "Atlas", rootPath: null } });
+  const [module] = await service.discover({ "project-octanix": { name: "Octanix", rootPath: null } });
   const payload = await service.payload(module);
   assert.equal(payload.controllable, false);
   assert.equal(payload.enabled, false);
@@ -61,18 +112,18 @@ test("link module rejects non-HTTPS URLs", async () => {
   const service = new ModuleService({ workspaceRoot, store: new MemoryStore() });
   await assert.rejects(() => service.normalize({
     id: "unsafe",
-    project: "Atlas",
+    project: "Octanix",
     links: [{ id: "open", url: "javascript:alert(1)" }],
-  }, workspaceRoot, path.join(workspaceRoot, "unsafe.json"), [["project-atlas", { name: "Atlas" }]]), /Lien module invalide/);
+  }, workspaceRoot, path.join(workspaceRoot, "unsafe.json"), [["project-octanix", { name: "Octanix" }]]), /Lien module invalide/);
 });
 
 test("knowledge module accepts public Drive source", async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-module-"));
   const service = new ModuleService({ workspaceRoot, store: new MemoryStore() });
-  await fs.mkdir(path.join(workspaceRoot, "atlas"));
+  await fs.mkdir(path.join(workspaceRoot, "octanix"));
   const module = await service.normalize({
-    id: "drive", project: "Atlas", knowledge: { provider: "google-drive-public", rootId: "folder123456789" },
-  }, path.join(workspaceRoot, "atlas"), path.join(workspaceRoot, "drive.json"), [["project-atlas", { name: "Atlas" }]]);
+    id: "drive", project: "Octanix", knowledge: { provider: "google-drive-public", rootId: "folder123456789" },
+  }, path.join(workspaceRoot, "octanix"), path.join(workspaceRoot, "drive.json"), [["project-octanix", { name: "Octanix" }]]);
   assert.equal(module.knowledge.provider, "google-drive-public");
 });
 
@@ -84,7 +135,7 @@ test("systemd timer output exposes current schedule", () => {
 
 test("module action state persists through completion and service reload", async () => {
   const store = new MemoryStore();
-  const id = "project-meridian--canva";
+  const id = "project-atlas--canva";
   store.data[id] = {
     id,
     primaryUnit: "canva-bot.service",
@@ -150,14 +201,14 @@ test("runAction loads .env from project and working directories", async () => {
 test("parseAdbDevices parses USB and network devices", () => {
   const output = `List of devices attached
 emulator-5554	device
-192.168.1.42:5555	device
+10.0.0.42:5555	device
 offline-device	offline
 unauthorized-device	unauthorized
 `;
   const devices = parseAdbDevices(output);
   assert.deepEqual(devices, [
     { serial: "emulator-5554", network: false },
-    { serial: "192.168.1.42:5555", network: true },
+    { serial: "10.0.0.42:5555", network: true },
   ]);
 });
 
@@ -173,13 +224,13 @@ test("deviceBuild module normalizes Android and iOS configurations", async () =>
     deviceBuild: {
       platforms: ["android"],
       instructions: "Build debug APK",
-      adbSerial: "192.168.1.100:5555",
+      adbSerial: "10.0.0.100:5555",
     },
   }, projectRoot, path.join(projectRoot, "android.json"), [["project-myapp", { name: "MyApp" }]]);
 
   assert.deepEqual(androidModule.deviceBuild.platforms, ["android"]);
   assert.equal(androidModule.deviceBuild.instructions, "Build debug APK");
-  assert.equal(androidModule.deviceBuild.adbSerial, "192.168.1.100:5555");
+  assert.equal(androidModule.deviceBuild.adbSerial, "10.0.0.100:5555");
   assert.equal(androidModule.deviceBuild.outputDirectory, path.join(projectRoot, ".noyau", "builds", "app-android"));
 
   const dualModule = await service.normalize({
@@ -475,7 +526,7 @@ test("builds deduplicates multiple files with identical commit on same platform"
 
   // Create 2 android APKs with same commit (older app-debug.apk and newer custom named apk)
   const apk1 = path.join(outputDirectory, "app-debug.apk");
-  const apk2 = path.join(outputDirectory, "atlas-dev.apk");
+  const apk2 = path.join(outputDirectory, "octanix-dev.apk");
   await fs.writeFile(apk1, "apk 1");
   await fs.writeFile(`${apk1}.meta.json`, JSON.stringify({ version: "v1.0.0", commit: "a1b2c3d" }));
   const t1 = new Date(2026, 0, 1, 10, 0, 0);
@@ -490,10 +541,67 @@ test("builds deduplicates multiple files with identical commit on same platform"
   const builds = await service.builds(module);
 
   assert.equal(builds.length, 1);
-  assert.equal(builds[0].name, "atlas-dev.apk");
+  assert.equal(builds[0].name, "octanix-dev.apk");
 
   // Old duplicate file was pruned
   const remaining = await fs.readdir(outputDirectory);
-  assert.ok(remaining.includes("atlas-dev.apk"));
+  assert.ok(remaining.includes("octanix-dev.apk"));
   assert.ok(!remaining.includes("app-debug.apk"));
+});
+
+test("long-running actions run as transient units with input, progress, stop and resume", async () => {
+  const workingDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-long-"));
+  try {
+    const store = new MemoryStore();
+    const id = "project-atlas--growth";
+    const progressFile = path.join(workingDirectory, "run-state.json");
+    store.data[id] = {
+      id,
+      controlUnits: [],
+      schedules: [],
+      workingDirectory,
+      actions: [{
+        id: "run", label: "Lancer", longRunning: true,
+        input: { label: "Groupes", min: 1, max: 500, default: 100 },
+        resumeArgs: ["cli.py", "resume"], progressFile,
+        command: { file: "/usr/bin/python3", args: ["cli.py", "run", "{input}", "auto"], timeout: 900_000 },
+      }],
+    };
+    let active = "inactive";
+    const calls = [];
+    const run = async (file, args) => {
+      calls.push([file, args]);
+      if (file === "/usr/bin/systemctl" && args.includes("show")) return { stdout: `ActiveState=${active}\n` };
+      return { stdout: "" };
+    };
+    const service = new ModuleService({ workspaceRoot: os.tmpdir(), store, run });
+
+    await assert.rejects(service.runAction(id, "run", { input: 0 }), /entre 1 et 500/);
+    await service.runAction(id, "run", { input: 98 });
+    const [file, args] = calls.find(([name]) => name === "/usr/bin/systemd-run");
+    assert.equal(file, "/usr/bin/systemd-run");
+    assert.ok(args.includes(`--unit=noyau-action-${id}-run.service`));
+    assert.deepEqual(args.slice(-4), ["cli.py", "run", "98", "auto"]);
+
+    active = "active";
+    await fs.writeFile(progressFile, JSON.stringify({ state: "running", done: 3, total: 98, current: "$LUNA @luna", phase: "warmup", counts: { warmup: 3 } }));
+    let [action] = (await service.payload(store.get(id))).actions;
+    assert.equal(action.run.state, "running");
+    assert.equal(action.run.progress.done, 3);
+    assert.equal(action.run.resumable, false);
+    await assert.rejects(service.runAction(id, "run", { input: 5 }), /déjà en cours/);
+
+    await service.stopAction(id, "run");
+    assert.ok(calls.some(([name, list]) => name === "/usr/bin/systemctl" && list.includes("stop")));
+    active = "inactive";
+    [action] = (await service.payload(store.get(id))).actions;
+    assert.equal(action.run.state, "stopped");
+    assert.equal(action.run.resumable, true);
+
+    await service.runAction(id, "run", { resume: true });
+    const resumed = calls.filter(([name]) => name === "/usr/bin/systemd-run").at(-1)[1];
+    assert.deepEqual(resumed.slice(-2), ["cli.py", "resume"]);
+  } finally {
+    await fs.rm(workingDirectory, { recursive: true, force: true });
+  }
 });

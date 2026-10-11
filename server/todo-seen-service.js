@@ -85,13 +85,14 @@ export class TodoSeenService {
   }
 
   count(todo, seenAt) {
-    // Tache jamais ouverte: elle est nouvelle, donc entierement non lue.
-    if (!seenAt) return 1 + (todo.comments || []).length;
-    const comments = (todo.comments || []).filter((comment) => comment.createdAt && comment.createdAt > seenAt).length;
-    const changed = todo.activityAt && todo.activityAt > seenAt;
-    const latestComment = (todo.comments || []).reduce((latest, comment) => (comment.createdAt > latest ? comment.createdAt : latest), "");
-    const otherChange = changed && (!latestComment || todo.activityAt > latestComment) ? 1 : 0;
-    return comments + otherChange;
+    // Uniquement les nouveautés apportées par une IA / un agent (tâche ou commentaire).
+    // Les ajouts ou commentaires de l'utilisateur ne déclenchent aucune notification.
+    const isAgentTodo = todo.kind === "agent" || todo.authorKind === "agent";
+    const todoUnread = isAgentTodo && (!seenAt || (todo.createdAt && todo.createdAt > seenAt)) ? 1 : 0;
+    const comments = (todo.comments || []).filter(
+      (comment) => (comment.kind === "agent" || comment.authorKind === "agent") && (!seenAt || (comment.createdAt && comment.createdAt > seenAt))
+    ).length;
+    return todoUnread + comments;
   }
 
   decorate(todos, seen) {

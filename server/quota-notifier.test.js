@@ -25,7 +25,7 @@ test("QuotaNotifier tracks exhausted quota and notifies when reset time is reach
   });
   const profileService = {
     list: () => [
-      { id: "principal", name: "Noyau", quotaResetNotify: { claude: true, codex: true, antigravity: false } },
+      { id: "main", name: "Noyau", quotaResetNotify: { claude: true, codex: true, antigravity: false } },
     ],
   };
 
@@ -51,7 +51,7 @@ test("QuotaNotifier tracks exhausted quota and notifies when reset time is reach
   assert.equal(result, 1);
   assert.equal(sent.length, 1);
   assert.equal(sent.at(-1).payload.title, "Claude · Quota renouvelé");
-  assert.equal(sent.at(-1).profileId, "principal");
+  assert.equal(sent.at(-1).profileId, "main");
 
   // Subsequent check should not re-notify for the same reset
   await notifier.check();
@@ -74,7 +74,7 @@ test("QuotaNotifier respects profile opt-out for specific models", async () => {
   });
   const profileService = {
     list: () => [
-      { id: "principal", name: "Noyau", quotaResetNotify: { claude: true, codex: false, antigravity: false } },
+      { id: "main", name: "Noyau", quotaResetNotify: { claude: true, codex: false, antigravity: false } },
     ],
   };
 
@@ -108,7 +108,7 @@ test("QuotaNotifier re-arms when quota drops low again with a new reset time", a
   });
   const profileService = {
     list: () => [
-      { id: "principal", name: "Noyau", quotaResetNotify: { claude: true, codex: true, antigravity: false } },
+      { id: "main", name: "Noyau", quotaResetNotify: { claude: true, codex: true, antigravity: false } },
     ],
   };
 
@@ -143,12 +143,12 @@ test("QuotaNotifier sends reset to every profile device", async () => {
   const notifier = new QuotaNotifier({
     push: { send: async (...args) => { calls.push(args); return 2; } },
     providerState,
-    profileService: { list: () => [{ id: "principal", name: "Noyau", quotaResetNotify: { codex: true } }] },
+    profileService: { list: () => [{ id: "main", name: "Noyau", quotaResetNotify: { codex: true } }] },
     now: () => clock,
   });
   await notifier.check();
   clock = 2_001;
   assert.equal(await notifier.check(), 2);
   assert.equal(calls[0].length, 2);
-  assert.equal(calls[0][1], "principal");
+  assert.equal(calls[0][1], "main");
 });

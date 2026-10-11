@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { chatConfig, readModuleChat } from "./module-chat.js";
 
 const execFileAsync = promisify(execFile);
 const MODULE_PATTERN = /^[a-z0-9][a-z0-9-]{0,60}$/;
@@ -45,12 +46,25 @@ function externalLinks(links) {
   });
 }
 
+function actionArgs(args) {
+  if (!Array.isArray(args) || args.length > 30 || args.some((arg) => typeof arg !== "string" || arg.length > 300)) throw new Error("Action module invalide.");
+  return [...args];
+}
+
+function actionInput(value, args) {
+  const min = Math.max(1, Math.floor(Number(value.min) || 1));
+  const max = Math.min(100_000, Math.floor(Number(value.max) || 1000));
+  const fallback = Math.floor(Number(value.default) || min);
+  if (min > max || fallback < min || fallback > max || !args.some((arg) => arg.includes("{input}"))) throw new Error("Paramètre action invalide.");
+  return { label: cleanText(value.label, "Nombre", 30), min, max, default: fallback };
+}
+
 function knowledgeSource(value) {
   if (!value) return null;
   if (value.provider === "google-drive-public" && DRIVE_ID_PATTERN.test(String(value.rootId || ""))) {
-    return { provider: value.provider, rootId: value.rootId, label: cleanText(value.label, "Contenu Drive", 50), agentCommand: cleanText(value.agentCommand, "atlas-knowledge", 80) };
+    return { provider: value.provider, rootId: value.rootId, label: cleanText(value.label, "Contenu Drive", 50), agentCommand: cleanText(value.agentCommand, "octanix-knowledge", 80) };
   }
-  if (value.provider === "notion") return { provider: value.provider, rootId: null, label: cleanText(value.label, "Contenu Notion", 50), agentCommand: cleanText(value.agentCommand, "atlas-knowledge", 80) };
+  if (value.provider === "notion") return { provider: value.provider, rootId: null, label: cleanText(value.label, "Contenu Notion", 50), agentCommand: cleanText(value.agentCommand, "octanix-knowledge", 80) };
   throw new Error("Source connaissances module invalide.");
 }
 
@@ -162,7 +176,8 @@ export class ModuleService {
     const links = externalLinks(raw.links);
     const knowledge = knowledgeSource(raw.knowledge);
     const deviceBuild = deviceBuildConfig(raw.deviceBuild, raw.id, resolvedRoot);
-    if (!controlUnits.length && !links.length && !knowledge && !deviceBuild) throw new Error("Module sans contrôle, lien, connaissance ni build appareil.");
+    const chat = chatConfig(raw.chat, workingDirectory);
+    if (!controlUnits.length && !links.length && !knowledge && !deviceBuild && !raw.actions?.length) throw new Error("Module sans contrôle, lien, connaissance ni build appareil.");
     const primaryUnit = raw.primaryUnit || controlUnits[0] || null;
     if (primaryUnit && !controlUnits.includes(primaryUnit)) throw new Error("Unité principale module invalide.");
     const schedules = (Array.isArray(raw.schedules) ? raw.schedules : []).slice(0, 12).map((schedule) => {
@@ -173,6 +188,11 @@ export class ModuleService {
       const file = path.resolve(String(action.command?.file || ""));
       const args = action.command?.args;
       if (!MODULE_PATTERN.test(action.id) || !path.isAbsolute(String(action.command?.file || "")) || !EXECUTABLE_ROOTS.some((root) => file.startsWith(root)) || !Array.isArray(args) || args.length > 30 || args.some((arg) => typeof arg !== "string" || arg.length > 300)) throw new Error("Action module invalide.");
+      const longRunning = action.longRunning === true;
+      const input = longRunning && action.input ? actionInput(action.input, args) : null;
+      const resumeArgs = longRunning && action.resumeArgs ? actionArgs(action.resumeArgs) : null;
+      const progressFile = longRunning && action.progressFile ? path.resolve(workingDirectory, String(action.progressFile)) : null;
+      if (progressFile && (!within(workingDirectory, progressFile) || !progressFile.endsWith(".json"))) throw new Error("Progression action invalide.");
       return {
         id: action.id,
         label: cleanText(action.label, action.id, 50),
@@ -180,6 +200,7 @@ export class ModuleService {
         confirm: action.confirm ? cleanText(action.confirm, "", 180) : null,
         tone: ["primary", "neutral", "danger"].includes(action.tone) ? action.tone : "neutral",
         command: { file, args: [...args], timeout: Math.min(Math.max(Number(action.command.timeout) || 300_000, 1000), 900_000) },
+        ...(longRunning ? { longRunning, input, resumeArgs, progressFile } : {}),
       };
     });
     return {
@@ -188,6 +209,8 @@ export class ModuleService {
       projectId,
       name: cleanText(raw.name, raw.id, 60),
       description: cleanText(raw.description, "Module projet", 160),
+      environment: raw.environment === "production" ? "production" : "development",
+      executionHost: cleanText(raw.executionHost, "Ce PC", 80),
       glyph: cleanText(raw.glyph, raw.name?.[0] || "M", 3).toUpperCase(),
       accent: /^#[0-9a-f]{6}$/i.test(raw.accent) ? raw.accent : "#b8ff5e",
       projectRoot: resolvedRoot,
@@ -200,6 +223,7 @@ export class ModuleService {
       links,
       knowledge,
       deviceBuild,
+      chat,
       setup: raw.setup ? {
         status: raw.setup.status === "required" ? "required" : "ready",
         label: cleanText(raw.setup.label, raw.setup.status === "required" ? "Configuration requise" : "Prêt", 60),
@@ -272,6 +296,8 @@ export class ModuleService {
       projectId: module.projectId,
       name: module.name,
       description: module.description,
+      environment: module.environment || "development",
+      executionHost: module.executionHost || "Ce PC",
       glyph: module.glyph,
       accent: module.accent,
       controllable,
@@ -280,6 +306,7 @@ export class ModuleService {
       setup: module.setup || null,
       links: module.links || [],
       knowledge: module.knowledge || null,
+      chat: await readModuleChat(module),
       deviceBuild: module.deviceBuild ? {
         platforms: module.deviceBuild.platforms || ["android", "ios"],
         capabilities: {
@@ -293,7 +320,7 @@ export class ModuleService {
         const state = states.find((item) => item.Id === schedule.unit);
         return { id: schedule.id, label: schedule.label, time: timerTime(state?.TimersCalendar, schedule.defaultTime), active: state?.ActiveState === "active", nextRun: state?.NextElapseUSecRealtime || null };
       }),
-      actions: (module.actions || []).map(({ id, label, description, confirm, tone }) => ({ id, label, description, confirm, tone, run: this.actionRuns.get(`${module.id}:${id}`) || module.actionRuns?.[id] || null })),
+      actions: await Promise.all((module.actions || []).map((action) => this.actionPayload(module, action))),
     };
   }
 
@@ -309,7 +336,7 @@ export class ModuleService {
     const installed = Object.values(this.store.all()).filter((module) => projectIds.has(module.projectId));
     const payloads = await Promise.all(installed.map((module) => this.payload(module)));
     payloads.sort((a, b) => (b.deviceBuild ? 1 : 0) - (a.deviceBuild ? 1 : 0));
-    const proposals = discovered.filter((candidate) => !this.store.get(candidate.id)).map((candidate) => ({ id: candidate.id, projectId: candidate.projectId, name: candidate.name, description: candidate.description, glyph: candidate.glyph, accent: candidate.accent }));
+    const proposals = discovered.filter((candidate) => !this.store.get(candidate.id)).map((candidate) => ({ id: candidate.id, projectId: candidate.projectId, name: candidate.name, description: candidate.description, glyph: candidate.glyph, accent: candidate.accent, environment: candidate.environment, executionHost: candidate.executionHost }));
     proposals.sort((a, b) => (b.id.includes("build") ? 1 : 0) - (a.id.includes("build") ? 1 : 0));
     return { modules: payloads, proposals };
   }
@@ -317,6 +344,7 @@ export class ModuleService {
   async setEnabled(id, enabled) {
     const module = this.get(id);
     if (!module.controlUnits?.length) throw new Error("Module sans service contrôlable.");
+    if (enabled && module.setup?.status === "required") throw new Error(module.setup.description || "Configuration requise avant activation.");
     await this.systemctl([enabled ? "enable" : "disable", "--now", ...module.controlUnits]);
     return this.payload(module);
   }
@@ -799,7 +827,11 @@ export class ModuleService {
   }
 
   async loadModuleEnv(module) {
-    const env = { ...process.env };
+    return { ...process.env, ...(await this.loadDotEnv(module)) };
+  }
+
+  async loadDotEnv(module) {
+    const env = {};
     const candidates = [
       module.projectRoot ? path.join(module.projectRoot, ".env") : null,
       module.workingDirectory ? path.join(module.workingDirectory, ".env") : null,
@@ -821,10 +853,89 @@ export class ModuleService {
     return env;
   }
 
-  runAction(id, actionId) {
+  async actionPayload(module, action) {
+    const { id, label, description, confirm, tone } = action;
+    if (!action.longRunning) return { id, label, description, confirm, tone, run: this.actionRuns.get(`${module.id}:${id}`) || module.actionRuns?.[id] || null };
+    return { id, label, description, confirm, tone, longRunning: true, input: action.input || null, run: await this.longActionState(module, action) };
+  }
+
+  actionUnit(module, action) {
+    return `noyau-action-${module.id}-${action.id}.service`;
+  }
+
+  // Action longue = unité systemd transitoire : survit aux redémarrages de Noyau, sans limite de durée.
+  async longActionState(module, action) {
+    let active = "inactive";
+    try {
+      const { stdout = "" } = await this.systemctl(["show", this.actionUnit(module, action), "--property=ActiveState"]);
+      active = stdout.match(/ActiveState=(\w+)/)?.[1] || "inactive";
+    } catch { /* unit absente = inactive */ }
+    let progress = null;
+    if (action.progressFile) {
+      try { progress = JSON.parse(await fs.readFile(action.progressFile, "utf8")); } catch { /* pas encore de job */ }
+    }
+    const running = ["active", "activating", "reloading"].includes(active);
+    const stopping = active === "deactivating";
+    const total = Math.max(0, Number(progress?.total) || 0);
+    const done = Math.min(total, Math.max(0, Number(progress?.done) || 0));
+    if (!running && !stopping && !progress) return null;
+    const state = running ? "running" : stopping ? "stopping" : progress?.state === "done" ? "success" : progress?.state === "error" ? "error" : "stopped";
+    const counts = progress?.counts && typeof progress.counts === "object" ? Object.fromEntries(Object.entries(progress.counts).slice(0, 8).map(([key, value]) => [cleanText(key, "", 20), Number(value) || 0])) : null;
+    return {
+      state,
+      startedAt: progress?.startedAt || null,
+      finishedAt: running || stopping ? null : progress?.finishedAt || null,
+      progress: progress ? {
+        done,
+        total,
+        current: progress.current ? cleanText(progress.current, "", 80) : null,
+        phase: progress.phase ? cleanText(progress.phase, "", 30) : null,
+        nextAt: running && progress.nextAt ? String(progress.nextAt).slice(0, 40) : null,
+        counts,
+      } : null,
+      output: progress?.error ? cleanText(progress.error, "", 300) : "",
+      resumable: Boolean(!running && !stopping && action.resumeArgs && progress && progress.state !== "done" && done < total),
+    };
+  }
+
+  async startLongAction(module, action, options = {}) {
+    const current = await this.longActionState(module, action);
+    if (["running", "stopping"].includes(current?.state)) throw new Error("Action déjà en cours.");
+    let args;
+    if (options.resume) {
+      if (!current?.resumable) throw new Error("Rien à reprendre.");
+      args = action.resumeArgs;
+    } else {
+      args = action.command.args;
+      if (action.input) {
+        const value = Number(options.input);
+        if (!Number.isInteger(value) || value < action.input.min || value > action.input.max) throw new Error(`${action.input.label} : entre ${action.input.min} et ${action.input.max}.`);
+        args = args.map((arg) => arg.replaceAll("{input}", String(value)));
+      }
+    }
+    const env = { ...(await this.loadDotEnv(module)), PYTHONUNBUFFERED: "1" };
+    const envArgs = Object.entries(env).filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)).map(([key, value]) => `--setenv=${key}=${value}`);
+    await this.run("/usr/bin/systemd-run", [
+      "--user", `--unit=${this.actionUnit(module, action)}`, "--collect", "--quiet",
+      `--working-directory=${module.workingDirectory}`, "-p", "TimeoutStopSec=180", ...envArgs,
+      action.command.file, ...args,
+    ], { timeout: 30_000 });
+    return { state: "running", startedAt: new Date().toISOString() };
+  }
+
+  async stopAction(id, actionId) {
+    const module = this.get(id);
+    const action = module.actions.find((item) => item.id === actionId);
+    if (!action?.longRunning) throw new Error("Action non interruptible.");
+    await this.systemctl(["stop", "--no-block", this.actionUnit(module, action)]);
+    return this.longActionState(module, action);
+  }
+
+  runAction(id, actionId, options = {}) {
     const module = this.get(id);
     const action = module.actions.find((item) => item.id === actionId);
     if (!action) throw new Error("Action introuvable.");
+    if (action.longRunning) return this.startLongAction(module, action, options);
     const key = `${module.id}:${action.id}`;
     if (this.actionRuns.get(key)?.state === "running") throw new Error("Action déjà en cours.");
     const run = { state: "running", startedAt: new Date().toISOString() };

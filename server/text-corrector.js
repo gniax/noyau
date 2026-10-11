@@ -1,23 +1,4 @@
-import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { spawn } from "node:child_process";
-
-export function buildCorrectionPrompt(text, context = "todo") {
-  const label = context === "comment" ? "d'un commentaire" : "d'une tâche to-do";
-  return [
-    `Tu es un correcteur orthographique et syntaxique en français pour le texte ${label}.`,
-    "Ta mission : corriger les fautes d'orthographe, de grammaire, de ponctuation, les coquilles et fautes de frappe.",
-    "Règles strictes :",
-    "- Garde le sens exact, les termes techniques, URLs, identifiants, codes et noms de fichiers.",
-    "- Garde un ton naturel, direct et concis. Ne reformule pas inutilement si c'est clair.",
-    "- Réponds STRICTEMENT avec le texte corrigé uniquement, sans guillemets d'encadrement, sans explication, sans politesse.",
-    "",
-    `Texte à corriger :`,
-    text,
-  ].join("\n");
-}
+import { editDistance } from "./voice-commands.js";
 
 export function cleanCorrectedText(raw, fallback = "") {
   if (!raw || typeof raw !== "string") return fallback;
@@ -35,101 +16,42 @@ export function cleanCorrectedText(raw, fallback = "") {
   return text || fallback;
 }
 
+// Ecart de securite: un petit modele peut repondre a cote (explication, reformulation).
+// On mesure la distance d'edition: une correction reste proche, une reecriture s'en eloigne.
+export function tooDifferent(original, corrected) {
+  const a = String(original || "").trim();
+  const b = String(corrected || "").trim();
+  if (!b) return true;
+  if (b.length > a.length * 1.5 + 20 || b.length < a.length * 0.6) return true;
+  return editDistance(a, b) / Math.max(a.length, b.length) > 0.35;
+}
+
 export class TextCorrector {
-  constructor({ binary = "codex", claudeBinary = "claude", cwd = process.cwd(), timeout = 25_000, pickProvider = async () => "codex", spawnFn = spawn } = {}) {
-    this.binary = binary;
-    this.claudeBinary = claudeBinary;
-    this.cwd = cwd;
-    this.timeout = timeout;
-    this.pickProvider = pickProvider;
-    this.spawnFn = spawnFn;
+  constructor({ localLlm = null } = {}) {
+    this.localLlm = localLlm;
     this.lastProvider = null;
   }
 
-  async run(prompt) {
-    const preferred = await Promise.resolve(this.pickProvider()).catch(() => "codex");
-    const order = preferred === "claude" ? ["claude", "codex"] : ["codex", "claude"];
-    let lastError = null;
-    for (const provider of order) {
-      if (provider === "claude" && !this.claudeBinary) continue;
-      if (provider === "codex" && !this.binary) continue;
-      try {
-        const reply = provider === "claude" ? await this.runClaude(prompt) : await this.runCodex(prompt);
-        this.lastProvider = provider;
-        return reply;
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw lastError || new Error("Aucun LLM disponible pour la correction.");
+  async run(text) {
+    if (!this.localLlm) throw new Error("Modèle local de correction indisponible.");
+    const reply = await this.localLlm.chat([
+      { role: "system", content: "Corrige orthographe, grammaire et ponctuation du texte français. Réponds uniquement avec le texte corrigé. Préserve sens, noms, termes techniques, URL et identifiants." },
+      { role: "user", content: "rajouter un bouton pour suprimer une liste avec confirmation" },
+      { role: "assistant", content: "Rajouter un bouton pour supprimer une liste avec confirmation" },
+      { role: "user", content: text },
+    ], { maxTokens: 220 });
+    this.lastProvider = "local";
+    return reply;
   }
 
-  async runClaude(prompt) {
-    const reply = await new Promise((resolve, reject) => {
-      const child = this.spawnFn(this.claudeBinary, ["-p", "--output-format", "text"], {
-        cwd: this.cwd,
-        env: process.env,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let output = "";
-      let errorOutput = "";
-      child.stdout?.on("data", (chunk) => { output = `${output}${chunk}`.slice(0, 50_000); });
-      child.stderr?.on("data", (chunk) => { errorOutput = `${errorOutput}${chunk}`.slice(-4000); });
-      child.on("error", reject);
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new Error("Claude corrector: délai dépassé."));
-      }, this.timeout);
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        if (code !== 0) return reject(new Error(`Claude corrector (${code}): ${errorOutput.trim() || "échec sans détail"}`));
-        resolve(output.trim());
-      });
-      child.stdin.end(prompt);
-    });
-    if (!reply) throw new Error("Claude corrector: réponse vide.");
-    return reply.slice(0, 5000);
-  }
-
-  async runCodex(prompt) {
-    const output = path.join(os.tmpdir(), `noyau-correct-${crypto.randomBytes(8).toString("hex")}.txt`);
-    try {
-      await new Promise((resolve, reject) => {
-        const args = ["exec", "--ephemeral", "--sandbox", "read-only", "--color", "never", "-c", "notify=[]", "--output-last-message", output, "-C", this.cwd, "-"];
-        const child = this.spawnFn(this.binary, args, {
-          cwd: this.cwd,
-          env: process.env,
-          stdio: ["pipe", "ignore", "pipe"],
-        });
-        let errorOutput = "";
-        child.stderr?.on("data", (chunk) => { errorOutput = `${errorOutput}${chunk}`.slice(-4000); });
-        child.on("error", reject);
-        const timer = setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error("Codex corrector: délai dépassé."));
-        }, this.timeout);
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          if (code === 0) resolve();
-          else reject(new Error(`Codex corrector (${code}): ${errorOutput.trim() || "échec sans détail"}`));
-        });
-        child.stdin.end(prompt);
-      });
-      const reply = (await fs.readFile(output, "utf8")).trim().slice(0, 5000);
-      if (!reply) throw new Error("Codex corrector: réponse vide.");
-      return reply;
-    } finally {
-      await fs.rm(output, { force: true }).catch(() => {});
-    }
-  }
-
-  async correct(text, { context = "todo" } = {}) {
+  async correct(text) {
     const raw = String(text || "").trim();
     if (!raw) return text;
     try {
-      const prompt = buildCorrectionPrompt(raw, context);
-      const reply = await this.run(prompt);
-      return cleanCorrectedText(reply, text);
+      const reply = await this.run(raw);
+      const corrected = cleanCorrectedText(reply, raw);
+      // Un modele leger peut reformuler au lieu de corriger: dans le doute on garde l'original.
+      return tooDifferent(raw, corrected) ? raw : corrected;
     } catch {
       return text;
     }

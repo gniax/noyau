@@ -26,25 +26,27 @@ function extractJson(text) {
 }
 
 export class FinanceAdvisor {
-  constructor({ binary = "codex", claudeBinary = "claude", cwd, timeout = 120_000, pickProvider = async () => "codex" } = {}) {
+  constructor({ binary = "codex", claudeBinary = "claude", antigravityBinary = null, cwd, timeout = 120_000, spawnFn = spawn } = {}) {
     this.binary = binary;
     this.claudeBinary = claudeBinary;
+    this.antigravityBinary = antigravityBinary;
     this.cwd = cwd;
     this.timeout = timeout;
-    this.pickProvider = pickProvider;
+    this.spawnFn = spawnFn;
     this.lastProvider = null;
   }
 
   // Un fournisseur peut etre a sec: on prend celui qui a du quota, et on bascule si l'appel echoue.
   async run(prompt, schema = null) {
-    const preferred = await Promise.resolve(this.pickProvider()).catch(() => "codex");
-    const order = preferred === "claude" ? ["claude", "codex"] : ["codex", "claude"];
+    const order = ["antigravity", "codex", "claude"];
     let lastError = null;
     for (const provider of order) {
+      if (provider === "antigravity" && !this.antigravityBinary) continue;
       if (provider === "claude" && !this.claudeBinary) continue;
       if (provider === "codex" && !this.binary) continue;
       try {
-        const reply = provider === "claude" ? await this.runClaude(prompt, schema) : await this.runCodex(prompt, schema);
+        const reply = provider === "codex" ? await this.runCodex(prompt, schema) : await this.runPrintProvider(prompt, schema, provider);
+        if (schema) JSON.parse(reply);
         this.lastProvider = provider;
         return reply;
       } catch (error) {
@@ -54,29 +56,34 @@ export class FinanceAdvisor {
     throw lastError || new Error("Aucun agent finances disponible.");
   }
 
-  async runClaude(prompt, schema = null) {
+  async runPrintProvider(prompt, schema = null, provider = "claude") {
     const full = schema
       ? `${prompt}\n\nRéponds uniquement avec un JSON valide conforme à ce schéma, sans texte autour:\n${JSON.stringify(schema)}`
       : prompt;
     const reply = await new Promise((resolve, reject) => {
-      const child = spawn(this.claudeBinary, ["-p", "--output-format", "text"], { cwd: this.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+      const binary = provider === "antigravity" ? this.antigravityBinary : this.claudeBinary;
+      const args = provider === "antigravity"
+        ? ["-p", full, "--output-format", "text", "--effort", "low", "--disable-slash-commands", "--mode", "plan", "--sandbox"]
+        : ["-p", "--output-format", "text", "--tools", "", "--strict-mcp-config", "--mcp-config", "{}", "--no-session-persistence"];
+      const label = provider === "antigravity" ? "Antigravity" : "Claude";
+      const child = this.spawnFn(binary, args, { cwd: this.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
       let output = "";
       let errorOutput = "";
       child.stdout.on("data", (chunk) => { output = `${output}${chunk}`.slice(0, 200_000); });
       child.stderr.on("data", (chunk) => { errorOutput = `${errorOutput}${chunk}`.slice(-4000); });
-      child.on("error", reject);
+      child.on("error", (error) => { clearTimeout(timer); reject(error); });
       const timer = setTimeout(() => {
         child.kill("SIGTERM");
-        reject(new Error("Claude finance: délai dépassé."));
+        reject(new Error(`${label} finance: délai dépassé.`));
       }, this.timeout);
       child.on("close", (code) => {
         clearTimeout(timer);
-        if (code !== 0) return reject(new Error(`Claude finance (${code}): ${errorOutput.trim() || "échec sans détail"}`));
+        if (code !== 0) return reject(new Error(`${label} finance (${code}): ${errorOutput.trim() || "échec sans détail"}`));
         resolve(output.trim());
       });
-      child.stdin.end(full);
+      child.stdin.end(provider === "antigravity" ? undefined : full);
     });
-    if (!reply) throw new Error("Claude finance: réponse vide.");
+    if (!reply) throw new Error(`${provider} finance: réponse vide.`);
     return schema ? extractJson(reply) : reply.slice(0, 5000);
   }
 
@@ -86,17 +93,25 @@ export class FinanceAdvisor {
     if (schemaFile) await fs.writeFile(schemaFile, JSON.stringify(schema), { mode: 0o600 });
     try {
       await new Promise((resolve, reject) => {
-        const args = ["exec", "--ephemeral", "--sandbox", "read-only", "--color", "never", "-c", "notify=[]", "--output-last-message", output];
+        // Le conseiller n'a besoin d'aucun outil ni des documents projet: sans eux,
+        // la requete passe de ~15 000 tokens de prompt systeme a quelques centaines.
+        const args = [
+          "exec", "--ephemeral", "--sandbox", "read-only", "--color", "never",
+          "-c", "notify=[]",
+          "-c", "project_doc_max_bytes=0",
+          "-c", "experimental_supported_tools=[]",
+          "--output-last-message", output,
+        ];
         if (schemaFile) args.push("--output-schema", schemaFile);
         args.push("-C", this.cwd, "-");
-        const child = spawn(this.binary, args, {
+        const child = this.spawnFn(this.binary, args, {
           cwd: this.cwd,
           env: process.env,
           stdio: ["pipe", "ignore", "pipe"],
         });
         let errorOutput = "";
         child.stderr.on("data", (chunk) => { errorOutput = `${errorOutput}${chunk}`.slice(-4000); });
-        child.on("error", reject);
+        child.on("error", (error) => { clearTimeout(timer); reject(error); });
         child.on("close", (code) => code === 0 ? resolve() : reject(new Error(`Codex finance (${code}): ${errorOutput.trim() || "échec sans détail"}`)));
         child.stdin.end(prompt);
         const timer = setTimeout(() => {

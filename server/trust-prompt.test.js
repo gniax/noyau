@@ -37,7 +37,7 @@ test("un ecran ordinaire n'est jamais valide automatiquement", () => {
 test("ecran reel d'Antigravity: le curseur est deja sur le oui", () => {
   const pane = [
     "Accessing workspace:",
-    "/home/user/projects/atlas",
+    "/home/user/projects/octanix",
     "Do you trust the contents of this project?",
     "Antigravity CLI requires permission to read, edit, and execute files here.",
     "> Yes, I trust this folder",

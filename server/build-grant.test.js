@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createBuildGrant, iosInstallManifest, verifyBuildGrant } from "./build-grant.js";
+import { createBuildGrant, createProjectFileGrant, iosInstallManifest, verifyBuildGrant, verifyProjectFileGrant } from "./build-grant.js";
 
 test("build grant expires and rejects modifications", () => {
   const secret = Buffer.alloc(32, 7);
@@ -22,3 +22,24 @@ test("iOS install manifest escapes metadata and carries HTTPS artifact", () => {
   assert.match(manifest, /https:\/\/10\.0\.0\.1:4243\/install\/file\.ipa\?x=1&amp;y=2/);
   assert.match(manifest, /App &lt;VPN&gt;/);
 });
+
+test("project file grant signs, verifies and expires", () => {
+  const secret = Buffer.alloc(32, 7);
+  const now = 1_000_000;
+  const token = createProjectFileGrant(secret, {
+    projectId: "project-123",
+    filename: "test.png",
+    profileId: "main",
+    expiresAt: now + 5000,
+  });
+  const verified = verifyProjectFileGrant(secret, token, now);
+  assert.equal(verified?.projectId, "project-123");
+  assert.equal(verified?.filename, "test.png");
+  assert.equal(verified?.profileId, "main");
+
+  // Rejette après expiration
+  assert.equal(verifyProjectFileGrant(secret, token, now + 6000), null);
+  // Rejette altération
+  assert.equal(verifyProjectFileGrant(secret, `${token}x`, now), null);
+});
+

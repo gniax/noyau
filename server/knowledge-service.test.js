@@ -17,7 +17,7 @@ test("Drive public folder parser exposes folders and readable docs", () => {
 });
 
 test("Notion page id accepts URL and service never returns token", async () => {
-  assert.equal(notionId("https://www.notion.so/Atlas-0123456789abcdef0123456789abcdef?pvs=4"), "0123456789abcdef0123456789abcdef");
+  assert.equal(notionId("https://www.notion.so/Octanix-0123456789abcdef0123456789abcdef?pvs=4"), "0123456789abcdef0123456789abcdef");
   const store = new MemoryStore();
   const responses = [
     { name: "Noyau" },

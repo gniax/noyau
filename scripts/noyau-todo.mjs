@@ -18,18 +18,27 @@ function reference(id) {
 }
 
 async function getClient() {
-  const [token, sessions] = await Promise.all([
+  const [token, sessions, profiles] = await Promise.all([
     fs.readFile(path.join(dataDir, "access-token"), "utf8").then((v) => v.trim()).catch(() => ""),
     fs.readFile(path.join(dataDir, "sessions.json"), "utf8").then(JSON.parse).catch(() => ({})),
+    fs.readFile(path.join(dataDir, "profiles.json"), "utf8").then(JSON.parse).catch(() => ({})),
   ]);
   const cwd = path.resolve(process.cwd());
-  // Le dossier de travail designe la session, donc le profil et le projet a suivre.
-  const owner = Object.entries(sessions)
+  const exact = process.env.NOYAU_SESSION_ID && sessions[process.env.NOYAU_SESSION_ID] ? [process.env.NOYAU_SESSION_ID, sessions[process.env.NOYAU_SESSION_ID]] : null;
+  const owner = exact || Object.entries(sessions)
     .filter(([, session]) => session?.cwd && (cwd === path.resolve(session.cwd) || cwd.startsWith(`${path.resolve(session.cwd)}${path.sep}`)))
-    .sort((a, b) => Date.parse(b[1].agentStateUpdatedAt || 0) - Date.parse(a[1].agentStateUpdatedAt || 0))[0];
+    .sort((a, b) => {
+      const exactA = cwd === path.resolve(a[1].cwd) ? 1 : 0;
+      const exactB = cwd === path.resolve(b[1].cwd) ? 1 : 0;
+      if (exactA !== exactB) return exactB - exactA;
+      const lenDiff = path.resolve(b[1].cwd).length - path.resolve(a[1].cwd).length;
+      if (lenDiff !== 0) return lenDiff;
+      return Date.parse(b[1].agentStateUpdatedAt || 0) - Date.parse(a[1].agentStateUpdatedAt || 0);
+    })[0];
   const profileId = owner?.[1]?.profileId || "";
   const projectId = owner?.[1]?.projectId || null;
   const agentName = owner?.[1]?.name || "Agent";
+  const userName = profiles[profileId]?.name || "Moi";
 
   async function api(pathname, options = {}) {
     const response = await fetch(`https://127.0.0.1:4242${pathname}`, {
@@ -46,7 +55,7 @@ async function getClient() {
     return payload;
   }
 
-  return { api, projectId, agentName, cwd };
+  return { api, projectId, agentName, userName, cwd };
 }
 
 // Le commit courant sert de preuve dans le suivi: on l'ajoute au commentaire quand le dossier est un depot.
@@ -88,6 +97,7 @@ try {
       id: todo.id,
       text: todo.text,
       status: todo.status,
+      priority: todo.priority || null,
       dueDate: todo.dueDate,
       comments: todo.comments?.length || 0,
     })));
@@ -96,19 +106,37 @@ try {
     if (!text) throw new Error("Usage: node scripts/noyau-todo.mjs add \"Texte de la tâche\"");
     const result = await api("/api/todos", { method: "POST", body: JSON.stringify({ text: text.slice(0, 200), folderId: folder?.id || null, projectId, author: agentName, authorKind: "agent" }) });
     print({ created: reference(result.todo.id), id: result.todo.id, text: result.todo.text });
-  } else if (["comment", "note"].includes(command)) {
+  } else if (["comment", "note", "prompt", "user-comment"].includes(command)) {
     const todo = match(scoped, args[1]);
     if (!todo) throw new Error("Tâche introuvable (référence, id ou extrait de texte attendu).");
-    const text = args.slice(2).join(" ").trim();
-    if (!text) throw new Error("Usage: node scripts/noyau-todo.mjs comment <ref> \"Suivi\"");
-    await api(`/api/todos/${encodeURIComponent(todo.id)}/comments`, { method: "POST", body: JSON.stringify({ text: text.slice(0, 220), author: agentName, authorKind: "agent" }) });
-    print({ commented: reference(todo.id), text: todo.text });
+    let remaining = args.slice(2);
+    let asUser = ["prompt", "user-comment"].includes(command);
+    if (remaining[0] === "--user" || remaining[0] === "-u") {
+      asUser = true;
+      remaining = remaining.slice(1);
+    }
+    const rawText = remaining.join(" ").trim();
+    if (!rawText) throw new Error("Usage: node scripts/noyau-todo.mjs comment <ref> \"Suivi\" [--user] | prompt <ref> \"Demande\"");
+    let text = rawText;
+    if (!asUser && /^(?:demande(?:\s+de\s+l'utilisateur|\s+utilisateur)?|prompt(?:\s+utilisateur)?)\s*:\s*/i.test(text)) {
+      text = text.replace(/^(?:demande(?:\s+de\s+l'utilisateur|\s+utilisateur)?|prompt(?:\s+utilisateur)?)\s*:\s*/i, "").trim();
+      asUser = true;
+    }
+    const author = asUser ? userName : agentName;
+    const authorKind = asUser ? "user" : "agent";
+    await api(`/api/todos/${encodeURIComponent(todo.id)}/comments`, { method: "POST", body: JSON.stringify({ text: text.slice(0, 220), author, authorKind }) });
+    print({ commented: reference(todo.id), author: asUser ? userName : `IA · ${agentName}`, text: todo.text });
   } else if (["status", "move"].includes(command)) {
     const todo = match(scoped, args[1]);
     if (!todo) throw new Error("Tâche introuvable (référence, id ou extrait de texte attendu).");
-    const status = String(args[2] || "").trim();
+    let status = String(args[2] || "").trim();
     if (!status) throw new Error("Usage: node scripts/noyau-todo.mjs status <ref> <todo|review|done|zone>");
-    if (status === "done") throw new Error("Interdit: seul l'utilisateur valide une tâche. Utiliser « review ».");
+    const reviewCol = (view.columns || []).find((c) => c.id === "review" || c.kind === "review");
+    const isReviewEnabled = reviewCol ? reviewCol.enabled !== false : true;
+    if (status === "done" && isReviewEnabled) throw new Error("Interdit: seul l'utilisateur valide une tâche. Utiliser « review ».");
+    if (status === "review" && !isReviewEnabled) {
+      status = "done";
+    }
     await api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify({ status }) });
     print({ moved: reference(todo.id), status, text: todo.text });
   } else if (["report", "done-review", "trace"].includes(command)) {
@@ -120,8 +148,11 @@ try {
     // Suivi concis: une ligne, commit court en preuve.
     const text = `${stamp()}${commit ? ` · ${commit.split(" ")[0]}` : ""} · ${summary}`.slice(0, 220);
     await api(`/api/todos/${encodeURIComponent(todo.id)}/comments`, { method: "POST", body: JSON.stringify({ text, author: agentName, authorKind: "agent" }) });
-    await api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify({ status: "review" }) });
-    print({ reported: reference(todo.id), status: "review", commit, text: todo.text });
+    const reviewCol = (view.columns || []).find((c) => c.id === "review" || c.kind === "review");
+    const isReviewEnabled = reviewCol ? reviewCol.enabled !== false : true;
+    const targetStatus = isReviewEnabled ? "review" : "done";
+    await api(`/api/todos/${encodeURIComponent(todo.id)}`, { method: "PATCH", body: JSON.stringify({ status: targetStatus }) });
+    print({ reported: reference(todo.id), status: targetStatus, commit, text: todo.text });
   } else if (["find", "search"].includes(command)) {
     const todo = match(scoped, args.slice(1).join(" "));
     print(todo ? { ref: reference(todo.id), id: todo.id, text: todo.text, status: todo.status, comments: todo.comments || [] } : null);

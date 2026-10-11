@@ -54,14 +54,14 @@ test("Claude Design tool résout le cwd via projectId quand disponible", async (
   };
   const projects = {
     get(id) {
-      if (id === "project-1") return { rootPath: "/home/user/projects/atlas" };
+      if (id === "project-1") return { rootPath: "/home/user/projects/octanix" };
       return null;
     },
   };
   const tool = new ClaudeDesignTool({ store, projects, spawnFn });
   const result = await tool.run({ callerSessionId: "agent-2", prompt: "Ajuste le logo" });
 
-  assert.equal(result.cwd, "/home/user/projects/atlas");
+  assert.equal(result.cwd, "/home/user/projects/octanix");
   assert.equal(result.response, "Design prêt");
 });
 

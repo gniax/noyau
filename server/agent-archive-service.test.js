@@ -11,20 +11,20 @@ test("AgentArchiveService archives, lists, filters by profile, and removes entri
   const service = new AgentArchiveService({ file: archiveFile });
 
   await service.archive("noyau-codex-1", {
-    name: "Meridian",
+    name: "Atlas",
     assistant: "codex",
-    cwd: "/path/to/meridian",
+    cwd: "/path/to/atlas",
     projectId: "proj-1",
-    profileId: "principal",
+    profileId: "main",
     threadId: "thread-abc",
   }, { reason: "closed" });
 
   await service.archive("noyau-claude-2", {
-    name: "Atlas",
+    name: "Octanix",
     assistant: "claude",
-    cwd: "/path/to/atlas",
+    cwd: "/path/to/octanix",
     projectId: "proj-2",
-    profileId: "guest",
+    profileId: "aurora",
     agentSessionId: "session-xyz",
     shared: true,
   }, { reason: "manual" });
@@ -34,14 +34,14 @@ test("AgentArchiveService archives, lists, filters by profile, and removes entri
   assert.equal(listAll[0].id, "noyau-claude-2"); // newest first
   assert.equal(listAll[1].id, "noyau-codex-1");
 
-  const listPrincipal = await service.list({ profileId: "principal" });
-  assert.equal(listPrincipal.length, 2); // includes the primary profile and the shared guest one
+  const listMain = await service.list({ profileId: "main" });
+  assert.equal(listMain.length, 1); // les archives partagées restent privées au profil propriétaire
 
-  const listInvité = await service.list({ profileId: "guest" });
-  assert.equal(listInvité.length, 1); // includes only guest
+  const listAurora = await service.list({ profileId: "aurora" });
+  assert.equal(listAurora.length, 1); // includes only aurora
 
   const entry = await service.get("noyau-codex-1");
-  assert.equal(entry.name, "Meridian");
+  assert.equal(entry.name, "Atlas");
   assert.equal(entry.threadId, "thread-abc");
   assert.equal(entry.reason, "closed");
 
@@ -54,14 +54,26 @@ test("AgentArchiveService archives, lists, filters by profile, and removes entri
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
+test("un profil ne peut pas restaurer une archive partagée d'un autre profil", async () => {
+  const service = new AgentArchiveService();
+  await service.archive("agent-owner", { profileId: "owner", shared: true, assistant: "codex" });
+  let created = false;
+  await assert.rejects(() => service.restore("agent-owner", {
+    profileId: "visitor",
+    tmux: { async create() { created = true; } },
+  }), /Accès non autorisé/);
+  assert.equal(created, false);
+  assert.equal((await service.list({ profileId: "owner" })).length, 1);
+});
+
 test("AgentArchiveService restores an archived agent via tmux", async () => {
   const service = new AgentArchiveService();
   await service.archive("noyau-codex-old", {
-    name: "Meridian",
+    name: "Atlas",
     assistant: "codex",
-    cwd: "/path/to/meridian",
+    cwd: "/path/to/atlas",
     projectId: "proj-1",
-    profileId: "principal",
+    profileId: "main",
     threadId: "thread-12345",
     yolo: true,
   });
@@ -74,8 +86,8 @@ test("AgentArchiveService restores an archived agent via tmux", async () => {
     },
   };
 
-  const restored = await service.restore("noyau-codex-old", { tmux: mockTmux, profileId: "principal" });
-  assert.equal(restored.name, "Meridian");
+  const restored = await service.restore("noyau-codex-old", { tmux: mockTmux, profileId: "main" });
+  assert.equal(restored.name, "Atlas");
   assert.equal(createdArgs.threadId, "thread-12345");
   assert.equal(createdArgs.yolo, true);
 

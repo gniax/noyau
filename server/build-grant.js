@@ -18,6 +18,24 @@ export function createBuildGrant(secret, { moduleId, buildId, profileId, expires
   return `${payload}.${signature(secret, payload).toString("base64url")}`;
 }
 
+export function createProjectFileGrant(secret, { projectId, filename, profileId, expiresAt = Date.now() + 3600_000 }) {
+  const payload = Buffer.from(JSON.stringify({ projectId, filename, profileId, expiresAt })).toString("base64url");
+  return `${payload}.${signature(secret, payload).toString("base64url")}`;
+}
+
+export function verifyProjectFileGrant(secret, token, now = Date.now()) {
+  const [payload, encodedSignature, extra] = String(token || "").split(".");
+  if (!payload || !encodedSignature || extra) return null;
+  let supplied;
+  try { supplied = Buffer.from(encodedSignature, "base64url"); } catch { return null; }
+  const expected = signature(secret, payload);
+  if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return null;
+  let grant;
+  try { grant = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")); } catch { return null; }
+  if (!grant?.projectId || !grant?.filename || !grant?.profileId || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= now) return null;
+  return grant;
+}
+
 export function verifyBuildGrant(secret, token, now = Date.now()) {
   const [payload, encodedSignature, extra] = String(token || "").split(".");
   if (!payload || !encodedSignature || extra) return null;

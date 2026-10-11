@@ -147,6 +147,13 @@ export function parseClaudeUsage(text, contextWindow = 200_000) {
   };
 }
 
+// Apres un /clear ou un /compact, la transcription repart vide: le contexte est neuf, pas inconnu.
+export function parseFreshClaudeUsage(text, contextWindow = 200_000) {
+  const lines = jsonLines(text);
+  if (!lines.length || lines.some((entry) => entry.type === "assistant" && entry.message?.usage)) return null;
+  return { usedTokens: 0, remainingTokens: contextWindow, contextWindow, contextPercent: 100, rateRemainingPercent: null, rateResetsAt: null, estimated: true };
+}
+
 export function parsePaneUsage(text) {
   const match = String(text).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").match(/(\d{1,3})%\s+context left/i);
   return match ? { contextPercent: Number(match[1]), remainingTokens: null, usedTokens: null, contextWindow: null, rateRemainingPercent: null, rateResetsAt: null, estimated: true } : null;
@@ -161,9 +168,72 @@ export async function lastClaudeMessage(file) {
   }
 }
 
+export function parseAntigravityDb(buffer, contextWindow = 1_000_000, rateQuota = null) {
+  if (!buffer || !buffer.length) return null;
+  let usedTokens = null;
+  let idx = 0;
+  while ((idx = buffer.indexOf("bot-", idx + 1)) !== -1) {
+    const start = Math.max(0, idx - 40);
+    const slice = buffer.subarray(start, idx);
+    for (let i = 0; i < slice.length - 3; i++) {
+      if (slice[i] === 0x28) {
+        let val = 0;
+        let shift = 0;
+        let j = i + 1;
+        while (j < slice.length && j < i + 6) {
+          const b = slice[j++];
+          val |= (b & 0x7f) << shift;
+          if (!(b & 0x80)) break;
+          shift += 7;
+        }
+        if (val > 100 && val < 10_000_000) {
+          usedTokens = val;
+        }
+      }
+    }
+  }
+  if (usedTokens === null) return null;
+  const remainingTokens = Math.max(0, contextWindow - usedTokens);
+  const primary = rateQuota?.windows?.[0];
+  return {
+    usedTokens,
+    remainingTokens,
+    contextWindow,
+    contextPercent: Math.max(0, Math.round((remainingTokens / contextWindow) * 100)),
+    rateRemainingPercent: Number.isFinite(primary?.remainingPercent) ? primary.remainingPercent : null,
+    rateResetsAt: primary?.resetsAt || null,
+    estimated: false,
+  };
+}
+
+export function parseAntigravityTranscript(text, contextWindow = 1_000_000, rateQuota = null) {
+  const chars = text?.length || 0;
+  if (chars <= 0) return null;
+  const usedTokens = Math.round(chars / 3.8);
+  const remainingTokens = Math.max(0, contextWindow - usedTokens);
+  const primary = rateQuota?.windows?.[0];
+  return {
+    usedTokens,
+    remainingTokens,
+    contextWindow,
+    contextPercent: Math.max(0, Math.round((remainingTokens / contextWindow) * 100)),
+    rateRemainingPercent: Number.isFinite(primary?.remainingPercent) ? primary.remainingPercent : null,
+    rateResetsAt: primary?.resetsAt || null,
+    estimated: true,
+  };
+}
+
 export class UsageService {
-  constructor({ codexRoot = path.join(os.homedir(), ".codex", "sessions") } = {}) {
+  constructor({
+    codexRoot = path.join(os.homedir(), ".codex", "sessions"),
+    claudeRoot = path.join(os.homedir(), ".claude", "projects"),
+    antigravityRoot = path.join(os.homedir(), ".gemini", "antigravity-cli"),
+    providerState = null,
+  } = {}) {
     this.codexRoot = codexRoot;
+    this.claudeRoot = claudeRoot;
+    this.antigravityRoot = antigravityRoot;
+    this.providerState = providerState;
     this.codexFiles = new Map();
   }
 
@@ -183,7 +253,8 @@ export class UsageService {
       try {
         const environment = (await fs.readFile(`/proc/${pid}/environ`)).toString("utf8").split("\0");
         const value = environment.find((entry) => entry.startsWith("CODEX_THREAD_ID="))?.slice("CODEX_THREAD_ID=".length);
-        if (value) return value;
+        // Codex annonce un fil que rien n'a encore enregistre: le reprendre ferait sortir l'agent en erreur.
+        if (value && await this.codexFile(value)) return value;
       } catch { /* process exited */ }
       try {
         for (const descriptor of await fs.readdir(`/proc/${pid}/fd`)) {
@@ -192,6 +263,87 @@ export class UsageService {
           if (match) return match[1];
         }
       } catch { /* process exited */ }
+    }
+    return null;
+  }
+
+  async discoverClaudeTranscript(cwd, agentSessionId = null) {
+    if (!cwd) return null;
+    const dirName = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+    const dir = path.join(this.claudeRoot, dirName);
+    try {
+      if (agentSessionId) {
+        const specific = path.join(dir, `${agentSessionId}.jsonl`);
+        if (await fs.stat(specific).then(() => true, () => false)) return specific;
+      }
+      const entries = await fs.readdir(dir);
+      const files = await Promise.all(entries.filter((e) => e.endsWith(".jsonl")).map(async (entry) => {
+        const file = path.join(dir, entry);
+        try {
+          return { file, time: (await fs.stat(file)).mtimeMs };
+        } catch {
+          return null;
+        }
+      }));
+      return files.filter(Boolean).sort((a, b) => b.time - a.time)[0]?.file || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async readClaudeUsageTail(file, maxBytes = 4 * 1024 * 1024) {
+    if (!file) return "";
+    const handle = await fs.open(file, "r");
+    try {
+      const stat = await handle.stat();
+      const CHUNK = 512 * 1024;
+      let pos = stat.size;
+      let bytesRead = 0;
+      let remainder = "";
+      while (pos > 0 && bytesRead < maxBytes) {
+        const toRead = Math.min(CHUNK, pos);
+        pos -= toRead;
+        bytesRead += toRead;
+        const buffer = Buffer.alloc(toRead);
+        await handle.read(buffer, 0, toRead, pos);
+        const chunkStr = buffer.toString("utf8") + remainder;
+        if (chunkStr.includes('"usage"')) {
+          return chunkStr;
+        }
+        remainder = chunkStr.slice(0, 4096);
+      }
+      return remainder;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async discoverAntigravityConversation(panePid, cwd) {
+    if (panePid) {
+      for (const pid of await this.processTree(panePid)) {
+        try {
+          const fds = await fs.readdir(`/proc/${pid}/fd`);
+          for (const fd of fds) {
+            const link = await fs.readlink(`/proc/${pid}/fd/${fd}`).catch(() => "");
+            const match = link.match(/\/presence\/([0-9a-f-]{36})\.lock$/i);
+            if (match) return match[1];
+          }
+        } catch { /* process exited */ }
+      }
+    }
+    if (cwd) {
+      try {
+        const historyFile = path.join(this.antigravityRoot, "history.jsonl");
+        const lines = (await readTail(historyFile, 128 * 1024)).split("\n").filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const entry = JSON.parse(lines[i]);
+            if (entry.workspace && path.resolve(entry.workspace) === path.resolve(cwd) && entry.conversationId) {
+              return entry.conversationId;
+            }
+          } catch {}
+        }
+      } catch {}
     }
     return null;
   }
@@ -241,8 +393,47 @@ export class UsageService {
 
   async get(session, pane = "") {
     try {
-      if (session.assistant === "codex" && session.threadId) return parseCodexUsage(await readTail(await this.codexFile(session.threadId))) || parsePaneUsage(pane);
-      if (["claude", "claude-design"].includes(session.assistant) && session.transcriptPath) return parseClaudeUsage(await readTail(session.transcriptPath)) || parsePaneUsage(pane);
+      if (session.assistant === "codex") {
+        const threadId = session.threadId || (session.panePid ? await this.discoverCodexThread(session.panePid) : null);
+        if (threadId) {
+          const file = await this.codexFile(threadId);
+          if (file) {
+            const parsed = parseCodexUsage(await readTail(file));
+            if (parsed) return parsed;
+          }
+        }
+      }
+      if (["claude", "claude-design"].includes(session.assistant)) {
+        const transcriptPath = session.transcriptPath || await this.discoverClaudeTranscript(session.cwd, session.agentSessionId);
+        if (transcriptPath) {
+          const text = await this.readClaudeUsageTail(transcriptPath);
+          const parsed = parseClaudeUsage(text) || parseFreshClaudeUsage(text);
+          if (parsed) return parsed;
+        }
+      }
+      if (session.assistant === "antigravity") {
+        const conversationId = session.conversationId || await this.discoverAntigravityConversation(session.panePid, session.cwd);
+        if (conversationId) {
+          const rateQuota = this.providerState ? this.providerState.get("antigravity") : null;
+          const dbFile = path.join(this.antigravityRoot, "conversations", `${conversationId}.db`);
+          try {
+            const handle = await fs.open(dbFile, "r");
+            const stat = await handle.stat();
+            const toRead = Math.min(stat.size, 128 * 1024);
+            const buffer = Buffer.alloc(toRead);
+            await handle.read(buffer, 0, toRead, stat.size - toRead);
+            await handle.close();
+            const parsed = parseAntigravityDb(buffer, 1_000_000, rateQuota);
+            if (parsed) return parsed;
+          } catch {}
+          try {
+            const transcriptFile = path.join(this.antigravityRoot, "brain", conversationId, ".system_generated", "logs", "transcript.jsonl");
+            const text = await readTail(transcriptFile, 128 * 1024);
+            const parsed = parseAntigravityTranscript(text, 1_000_000, rateQuota);
+            if (parsed) return parsed;
+          } catch {}
+        }
+      }
     } catch { /* unavailable while agent writes */ }
     return parsePaneUsage(pane);
   }

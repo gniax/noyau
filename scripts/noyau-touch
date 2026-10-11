@@ -91,7 +91,12 @@ if [ -z "${DISPLAY:-}" ]; then
   exit 1
 fi
 
-# Kiosque optionnel: par defaut fenetre sans chrome, pour garder le plein ecran basculable depuis Noyau.
+if [ -x "${HOME}/.local/bin/noyau-app" ]; then
+  flock -u 9
+  exec "${HOME}/.local/bin/noyau-app" "$@"
+fi
+
+# Kiosque optionnel: repli Firefox si noyau-app absent
 if [ "${NOYAU_TOUCH_KIOSK:-0}" = "1" ]; then
   /usr/bin/firefox --new-instance --profile "$profile_root" --kiosk "$app_url" &
 else

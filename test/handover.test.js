@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { extractAntigravityMessages, extractClaudeMessages, extractCodexMessages, formatHandover, HandoverService } from "../server/handover.js";
 
-const antigravityConversationId = "00000000-0000-4000-8000-000000000001";
+const antigravityConversationId = "6f9dcc27-364b-4ee4-8d8a-9e3cc4cb1c47";
 
 const codexLines = [
   { payload: { type: "message", role: "user", content: [{ type: "input_text", text: "corrige le bouton Esc" }] } },

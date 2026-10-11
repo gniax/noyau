@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { resolveTrustPrompt } from "./trust-prompt.js";
@@ -12,7 +13,7 @@ function wait(milliseconds) {
 }
 const SESSION_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
 const FORMATS = ["#{session_name}", "#{session_activity}", "#{session_windows}", "#{pane_current_command}", "#{pane_current_path}", "#{pane_pid}"].join("\t");
-const CLAUDE_DESIGN_PROMPT = "Tu es agent Claude Design dédié. Traite demandes design/UI/UX transmises par autres agents du même projet. Produis résultat concret dans dépôt quand demandé, indique fichiers créés/modifiés, puis attends prochaine tâche. Ne change pas logique métier hors nécessité design.";
+const CLAUDE_DESIGN_PROMPT = "Tu es agent Claude Design dédié. Traite demandes design/UI/UX transmises par autres agents du même projet. Produis résultat concret directement dans le code du dépôt (pages, CSS, composants restent dans le dépôt, JAMAIS dans les fichiers partagés Noyau). Les fichiers partagés Noyau (node scripts/noyau-file.mjs put) sont réservés uniquement aux images/assets générés pour éviter de donner un chemin /tmp/ inaccessible. Ne change pas logique métier hors nécessité design.";
 
 export function validSessionId(id) {
   return SESSION_PATTERN.test(id);
@@ -32,8 +33,10 @@ export function classifyAssistant(command, storedAssistant) {
 }
 
 export class TmuxController {
-  constructor({ binary = "tmux", store, workspaceRoot, codexBinary = "codex", claudeBinary = "claude", antigravityBinary = "antigravity", antigravityArgs = [] }) {
+  constructor({ binary = "tmux", store, workspaceRoot, codexBinary = "codex", claudeBinary = "claude", antigravityBinary = "antigravity", antigravityArgs = [], codexSessionsRoot = path.join(os.homedir(), ".codex", "sessions"), agentSettingsRoot = null }) {
     this.binary = binary;
+    this.codexSessionsRoot = codexSessionsRoot;
+    this.agentSettingsRoot = agentSettingsRoot;
     this.store = store;
     this.workspaceRoot = workspaceRoot;
     this.commands = { codex: codexBinary, claude: claudeBinary, "claude-design": claudeBinary, antigravity: antigravityBinary };
@@ -41,8 +44,26 @@ export class TmuxController {
     this.antigravityArgs = antigravityArgs;
   }
 
+  // Allegement de contexte propre a un agent: fichier absent = reglages du projet, inchanges.
+  async agentSettingsArgs(id) {
+    if (!this.agentSettingsRoot || !validSessionId(id)) return [];
+    const file = path.join(this.agentSettingsRoot, `${id}.json`);
+    return fs.access(file).then(() => ["--settings", file], () => []);
+  }
+
   async run(args) {
     return execFileAsync(this.binary, args, { maxBuffer: 1024 * 1024 });
+  }
+
+  // Codex sort en erreur si le fil demande n'a pas de trace sur disque, et la fenetre tmux meurt avec lui.
+  async codexThreadResumable(threadId) {
+    if (!threadId) return false;
+    try {
+      const files = await fs.readdir(this.codexSessionsRoot, { recursive: true });
+      return files.some((file) => file.endsWith(`${threadId}.jsonl`));
+    } catch {
+      return false;
+    }
   }
 
   // La molette ne doit jamais devenir des fleches, et l'historique doit valoir la peine d'etre deroule.
@@ -86,12 +107,13 @@ export class TmuxController {
           yolo: Boolean(stored?.yolo),
           runningYolo: Boolean(stored?.runningYolo),
           permissionRestartPending: Boolean(stored?.permissionRestartPending),
-          projectLogo: Boolean(stored?.projectLogo),
+          projectLogo: stored?.projectLogo !== undefined ? Boolean(stored.projectLogo) : Boolean(stored?.projectId),
           projectId: stored?.projectId || null,
           profileId: stored?.profileId || null,
           shared: Boolean(stored?.shared),
           core: Boolean(stored?.core),
           favorite: Boolean(stored?.favorite),
+          description: stored?.description || null,
           switchedFrom: stored?.switchedFrom || null,
           switchedAt: stored?.switchedAt || null,
           managed: id.startsWith("noyau-"),
@@ -134,15 +156,17 @@ export class TmuxController {
         if (entry.assistant === "codex") {
           args.push(this.commands.codex, "--no-alt-screen");
           if (entry.yolo) args.push("--yolo");
+          if (entry.model) args.push("-m", String(entry.model));
           args.push("-c", "check_for_update_on_startup=false", "resume", entry.threadId ? String(entry.threadId) : "--last");
         } else if (["claude", "claude-design"].includes(entry.assistant)) {
-          args.push(this.commands.claude);
+          args.push(this.commands.claude, ...(entry.model ? ["--model", String(entry.model)] : []), ...(await this.agentSettingsArgs(id)));
           if (entry.yolo) args.push("--dangerously-skip-permissions");
           if (entry.agentSessionId) args.push("--resume", String(entry.agentSessionId));
           else if (entry.assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
           else args.push("--continue");
         } else if (entry.assistant === "antigravity") {
           args.push(this.commands.antigravity, ...this.antigravityArgs);
+          if (entry.model) args.push("--model", String(entry.model));
           if (entry.yolo) args.push("--dangerously-skip-permissions");
           if (entry.agentSessionId) args.push("--conversation", String(entry.agentSessionId));
           else args.push("--continue");
@@ -159,7 +183,7 @@ export class TmuxController {
     return { restored, failed };
   }
 
-  async create({ name, assistant, cwd, prompt, migratedFrom, yolo = false, projectLogo = false, projectId = null, profileId = null, shared = false, favorite = false, threadId = null, agentSessionId = null, transcriptPath = null }) {
+  async create({ name, description = null, assistant, model = null, cwd, prompt, migratedFrom, yolo = false, projectLogo = null, projectId = null, profileId = null, shared = false, favorite = false, threadId = null, agentSessionId = null, transcriptPath = null }) {
     if (!["codex", "claude", "claude-design", "shell", "antigravity"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
     let stat;
@@ -176,16 +200,22 @@ export class TmuxController {
     const args = ["new-session", "-d", "-s", id, "-c", resolvedCwd, "-e", `NOYAU_SESSION_ID=${id}`];
     if (assistant !== "shell") {
       args.push(this.commands[assistant]);
-      if (assistant === "antigravity") args.push(...this.antigravityArgs);
+      if (assistant === "antigravity") {
+        args.push(...this.antigravityArgs);
+        if (model) args.push("--model", String(model));
+      }
       if (assistant === "codex") {
         args.push("--no-alt-screen");
         if (unrestricted) args.push("--yolo");
+        if (model) args.push("-m", String(model));
         args.push("-c", "check_for_update_on_startup=false");
         // Les hooks Noyau (suivi to-do) sont locaux: sans ce drapeau, chaque session redemande leur validation.
         if (unrestricted) args.push("--dangerously-bypass-hook-trust");
-        if (threadId) args.push("resume", String(threadId));
+        if (threadId && await this.codexThreadResumable(threadId)) args.push("resume", String(threadId));
       }
       if (["claude", "claude-design"].includes(assistant)) {
+        if (assistant === "claude" && model) args.push("--model", String(model));
+        args.push(...(await this.agentSettingsArgs(id)));
         if (unrestricted) args.push("--dangerously-skip-permissions");
         if (agentSessionId) args.push("--resume", String(agentSessionId));
       }
@@ -204,14 +234,16 @@ export class TmuxController {
 
     const entry = {
       name: String(name || assistant).trim().slice(0, 60) || assistant,
+      description: String(description || "").trim().slice(0, 1000) || null,
       assistant,
+      ...(model ? { model: String(model) } : {}),
       cwd: resolvedCwd,
       createdAt: new Date().toISOString(),
       migratedFrom: migratedFrom || null,
       yolo: unrestricted,
       runningYolo: unrestricted,
       permissionRestartPending: false,
-      projectLogo: Boolean(projectLogo),
+      projectLogo: projectLogo !== null && projectLogo !== undefined ? Boolean(projectLogo) : Boolean(projectId),
       projectId: projectId || null,
       profileId: profileId || null,
       shared: Boolean(shared),
@@ -272,16 +304,19 @@ export class TmuxController {
     await this.run(["send-keys", "-t", id, "C-m"]);
   }
 
-  async restartAgent({ id, assistant, cwd, threadId, yolo = false }) {
+  async restartAgent({ id, assistant, model = null, cwd, threadId, yolo = false, resume = true }) {
     if (!validSessionId(id) || !["codex", "claude", "claude-design", "shell", "antigravity"].includes(assistant)) throw new Error("Agent invalide pour redémarrage.");
     const workingDirectory = path.resolve(cwd || this.workspaceRoot);
     // Un terminal n'a pas de conversation a reprendre: on relance simplement le shell.
     if (assistant === "shell") return this.run(["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory]);
     if (assistant === "antigravity") {
       const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands.antigravity, ...this.antigravityArgs];
+      if (model) args.push("--model", String(model));
       if (yolo) args.push("--dangerously-skip-permissions");
-      if (threadId) args.push("--conversation", String(threadId));
-      else args.push("--continue");
+      if (resume) {
+        if (threadId) args.push("--conversation", String(threadId));
+        else args.push("--continue");
+      }
       await this.run(args);
       void this.acceptTrustPrompt(id).catch(() => {});
       return undefined;
@@ -290,16 +325,38 @@ export class TmuxController {
     if (assistant === "codex") {
       args.push("--no-alt-screen");
       if (yolo) args.push("--yolo");
-      args.push("-c", "check_for_update_on_startup=false", "resume");
-      args.push(threadId ? String(threadId) : "--last");
+      if (model) args.push("-m", String(model));
+      args.push("-c", "check_for_update_on_startup=false");
+      if (yolo) args.push("--dangerously-bypass-hook-trust");
+      if (resume) {
+        args.push("resume");
+        args.push(threadId && await this.codexThreadResumable(threadId) ? String(threadId) : "--last");
+      }
     } else {
+      if (model && assistant === "claude") args.push("--model", String(model));
+      args.push(...(await this.agentSettingsArgs(id)));
       if (yolo) args.push("--dangerously-skip-permissions");
-      if (threadId) args.push("--resume", String(threadId));
-      else if (assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
-      else args.push("--continue");
+      if (resume) {
+        if (threadId) args.push("--resume", String(threadId));
+        else if (assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
+        else args.push("--continue");
+      } else if (assistant === "claude-design") {
+        args.push(CLAUDE_DESIGN_PROMPT);
+      }
     }
     await this.run(args);
     void this.acceptTrustPrompt(id).catch(() => {});
+  }
+
+  async clearHistory(id) {
+    if (!validSessionId(id)) return;
+    try {
+      await this.run(["clear-history", "-H", "-t", `=${id}:0.0`]);
+    } catch {
+      try {
+        await this.run(["clear-history", "-t", `=${id}:0.0`]);
+      } catch {}
+    }
   }
 
   async kill(id) {

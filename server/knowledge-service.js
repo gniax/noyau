@@ -52,21 +52,46 @@ async function fetchText(url, { fetchImpl = fetch, timeout = 15_000, limit = 2_0
   return text.replace(/^\uFEFF/, "");
 }
 
+const driveCache = new Map();
+const DRIVE_CACHE_TTL = 15 * 60 * 1000; // 15 min
+
+function getCached(key) {
+  const entry = driveCache.get(key);
+  if (entry && (Date.now() - entry.time < DRIVE_CACHE_TTL)) return entry.data;
+  if (entry) driveCache.delete(key);
+  return null;
+}
+
+function setCache(key, data) {
+  if (driveCache.size > 200) driveCache.clear();
+  driveCache.set(key, { time: Date.now(), data });
+}
+
 export async function listPublicDriveFolder(folderId, options = {}) {
   if (!DRIVE_ID_PATTERN.test(String(folderId || ""))) throw new Error("Dossier Drive invalide.");
+  const cacheKey = `list:${folderId}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
   const html = await fetchText(`https://drive.google.com/embeddedfolderview?id=${encodeURIComponent(folderId)}#list`, options);
-  return { id: folderId, items: parseDriveFolder(html) };
+  const data = { id: folderId, items: parseDriveFolder(html) };
+  setCache(cacheKey, data);
+  return data;
 }
 
 export async function readPublicDriveFile(fileId, kind, options = {}) {
   if (!DRIVE_ID_PATTERN.test(String(fileId || ""))) throw new Error("Fichier Drive invalide.");
+  const cacheKey = `read:${fileId}:${kind}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
   const routes = {
     document: `https://docs.google.com/document/d/${fileId}/export?format=txt`,
     spreadsheet: `https://docs.google.com/spreadsheets/d/${fileId}/export?format=csv`,
     presentation: `https://docs.google.com/presentation/d/${fileId}/export/txt`,
   };
   if (!routes[kind]) throw new Error("Aperçu texte indisponible pour ce fichier.");
-  return { id: fileId, kind, content: await fetchText(routes[kind], options) };
+  const data = { id: fileId, kind, content: await fetchText(routes[kind], options) };
+  setCache(cacheKey, data);
+  return data;
 }
 
 export async function searchPublicDrive(rootId, query, options = {}) {
@@ -75,24 +100,36 @@ export async function searchPublicDrive(rootId, query, options = {}) {
   const pending = [{ id: rootId, path: "" }];
   const visited = new Set();
   const found = [];
-  while (pending.length && visited.size < 120) {
+  while (pending.length && visited.size < 60 && found.length < 8) {
     const folder = pending.shift();
     if (visited.has(folder.id)) continue;
     visited.add(folder.id);
     const { items } = await listPublicDriveFolder(folder.id, options);
     for (const item of items) {
+      if (found.length >= 8) break;
       const path = folder.path ? `${folder.path}/${item.name}` : item.name;
-      if (item.name.toLocaleLowerCase("fr-FR").includes(needle)) found.push({ ...item, path, match: "name" });
-      if (item.kind === "folder" && pending.length < 200) pending.push({ id: item.id, path });
-      if (!item.readable || found.some((entry) => entry.id === item.id && entry.match === "content")) continue;
+      if (item.name.toLocaleLowerCase("fr-FR").includes(needle)) {
+        found.push({ id: item.id, name: item.name, kind: item.kind, path, match: "name" });
+      }
+      if (item.kind === "folder" && pending.length < 100) pending.push({ id: item.id, path });
+      if (!item.readable || found.some((entry) => entry.id === item.id)) continue;
       try {
         const { content } = await readPublicDriveFile(item.id, item.kind, options);
         const index = content.toLocaleLowerCase("fr-FR").indexOf(needle);
-        if (index >= 0) found.push({ ...item, path, match: "content", snippet: content.slice(Math.max(0, index - 140), index + needle.length + 220).replace(/\s+/g, " ").trim() });
+        if (index >= 0) {
+          found.push({
+            id: item.id,
+            name: item.name,
+            kind: item.kind,
+            path,
+            match: "content",
+            snippet: content.slice(Math.max(0, index - 50), index + needle.length + 80).replace(/\s+/g, " ").trim(),
+          });
+        }
       } catch { /* fichiers sans export public restent trouvables par nom */ }
     }
   }
-  return found.slice(0, 80);
+  return found.slice(0, 8);
 }
 
 function notionId(value) {
@@ -269,7 +306,7 @@ export class KnowledgeService {
       if (!config.token || !id) throw new Error("Page Notion invalide.");
       if (config.rootPageId && id !== config.rootPageId) {
         const scoped = this.scopedNotionPages(await this.notionPages(config.token, ""), config.rootPageId);
-        if (!scoped.some((page) => page.id === id)) throw new Error("Page hors espace Atlas.");
+        if (!scoped.some((page) => page.id === id)) throw new Error("Page hors espace Octanix.");
       }
       const payload = await notionRequest(config.token, `/pages/${id}/markdown`, { fetchImpl: this.fetchImpl });
       return { id, kind: "page", content: payload.markdown || "", truncated: Boolean(payload.truncated) };
@@ -286,15 +323,25 @@ export class KnowledgeService {
     const pages = this.scopedNotionPages(await this.notionPages(config.token, ""), config.rootPageId);
     const matches = [];
     for (const page of pages.slice(0, 30)) {
+      if (matches.length >= 8) break;
       try {
         const payload = await notionRequest(config.token, `/pages/${page.id}/markdown`, { fetchImpl: this.fetchImpl });
         const content = String(payload.markdown || "");
         const index = content.toLocaleLowerCase("fr-FR").indexOf(queryText.toLocaleLowerCase("fr-FR"));
         const nameMatch = page.name.toLocaleLowerCase("fr-FR").includes(queryText.toLocaleLowerCase("fr-FR"));
-        if (nameMatch || index >= 0) matches.push({ ...page, match: index >= 0 ? "content" : "name", snippet: index >= 0 ? content.slice(Math.max(0, index - 140), index + queryText.length + 220).replace(/\s+/g, " ").trim() : "" });
+        if (nameMatch || index >= 0) {
+          matches.push({
+            id: page.id,
+            name: page.name,
+            kind: page.kind,
+            url: page.url,
+            match: index >= 0 ? "content" : "name",
+            snippet: index >= 0 ? content.slice(Math.max(0, index - 50), index + queryText.length + 80).replace(/\s+/g, " ").trim() : "",
+          });
+        }
       } catch { /* page inaccessible ignoree */ }
     }
-    return matches.slice(0, 80);
+    return matches.slice(0, 8);
   }
 }
 

@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const IMAGE_EXTENSIONS = new Set([".svg", ".png", ".webp", ".jpg", ".jpeg", ".ico"]);
-const IGNORED_DIRECTORIES = new Set(["node_modules", "vendor", ".git", "dist", "build", "out", ".next", ".nuxt", "coverage", ".cache", "target", "tmp", "logs"]);
+export const IMAGE_EXTENSIONS = new Set([".svg", ".png", ".webp", ".jpg", ".jpeg", ".ico", ".gif", ".avif"]);
+export const IGNORED_DIRECTORIES = new Set(["node_modules", "vendor", ".git", "dist", "build", "out", ".next", ".nuxt", "coverage", ".cache", "target", "tmp", "logs", ".data", ".gemini"]);
 
 function candidateScore(file, depth) {
   const extension = path.extname(file).toLowerCase();
@@ -26,6 +26,12 @@ export class ProjectLogoService {
     this.maxEntries = maxEntries;
     this.ttl = ttl;
     this.cache = new Map();
+    this.listCache = new Map();
+  }
+
+  clearCache() {
+    this.cache.clear();
+    this.listCache.clear();
   }
 
   async find(root) {
@@ -59,5 +65,87 @@ export class ProjectLogoService {
     const value = candidates[0]?.target || null;
     this.cache.set(resolved, { value, expires: Date.now() + this.ttl });
     return value;
+  }
+
+  async list(roots, { offset = 0, limit = 30, search = "" } = {}) {
+    const listRoots = (Array.isArray(roots) ? roots : [roots]).filter(Boolean).map((r) => path.resolve(r));
+    if (!listRoots.length) return { images: [], total: 0, hasMore: false };
+    const cacheKey = listRoots.slice().sort().join("::");
+    let cached = this.listCache.get(cacheKey);
+    if (!cached || cached.expires <= Date.now()) {
+      const candidates = [];
+      const seen = new Set();
+      let visited = 0;
+      const maxEntries = this.maxEntries * 2;
+      const maxImages = 1500;
+
+      for (const root of listRoots) {
+        let stat;
+        try {
+          stat = await fs.stat(root);
+        } catch {
+          continue;
+        }
+        if (!stat.isDirectory()) continue;
+
+        const queue = [{ directory: root, depth: 0, originRoot: root }];
+        while (queue.length && visited < maxEntries && candidates.length < maxImages) {
+          const { directory, depth, originRoot } = queue.shift();
+          let dir;
+          try {
+            dir = await fs.opendir(directory);
+            for await (const entry of dir) {
+              if (++visited > maxEntries || candidates.length >= maxImages) break;
+              const target = path.join(directory, entry.name);
+              if (entry.isDirectory()) {
+                if (depth < this.maxDepth && !IGNORED_DIRECTORIES.has(entry.name) && !entry.isSymbolicLink()) {
+                  queue.push({ directory: target, depth: depth + 1, originRoot });
+                }
+                continue;
+              }
+              if (!entry.isFile()) continue;
+              const ext = path.extname(entry.name).toLowerCase();
+              if (!IMAGE_EXTENSIONS.has(ext)) continue;
+              if (seen.has(target)) continue;
+              seen.add(target);
+
+              const relativePath = path.relative(originRoot, target);
+              const score = candidateScore(relativePath, depth);
+              candidates.push({
+                path: target,
+                name: entry.name,
+                relativePath,
+                extension: ext,
+                score,
+              });
+            }
+          } catch {
+            /* unreadable */
+          } finally {
+            try { await dir?.close(); } catch {}
+          }
+        }
+      }
+
+      candidates.sort((a, b) => b.score - a.score || a.relativePath.localeCompare(b.relativePath));
+      cached = { candidates, expires: Date.now() + this.ttl };
+      this.listCache.set(cacheKey, cached);
+    }
+
+    let items = cached.candidates;
+    if (search) {
+      const q = String(search).toLowerCase();
+      items = items.filter((c) => c.name.toLowerCase().includes(q) || c.relativePath.toLowerCase().includes(q));
+    }
+
+    const start = Math.max(0, Number(offset) || 0);
+    const count = Math.max(1, Math.min(100, Number(limit) || 30));
+    const page = items.slice(start, start + count);
+
+    return {
+      images: page,
+      total: items.length,
+      hasMore: start + count < items.length,
+    };
   }
 }

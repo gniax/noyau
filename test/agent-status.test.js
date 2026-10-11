@@ -18,7 +18,7 @@ test("pane content decides between working and idle", () => {
   assert.equal(paneAgentState("Thinking…\n  Esc to interrupt"), "working");
   assert.equal(paneAgentState("✻ Doing… (2m 52s · thought for 6s)\n❯\n  ⏵⏵ bypass permissions on (shift+tab to"), "working");
   assert.equal(paneAgentState("● Bash(npm test)\n  ⎿  Running…\n\n  ⏵⏵ bypass permissions on"), "working");
-  assert.equal(paneAgentState("─ Worked for 11m 56s ─\n\n› Ask Codex to do anything\n\n  gpt-5.6-sol high · ~/projects/atlas"), "available");
+  assert.equal(paneAgentState("─ Worked for 11m 56s ─\n\n› Ask Codex to do anything\n\n  gpt-5.6-sol high · ~/projects/octanix"), "available");
   assert.equal(paneAgentState("❯\n  ? for shortcuts"), "available");
   assert.equal(paneAgentState("  ⏵⏵ bypass permissions on (shift+tab to cycle)"), null);
   assert.equal(paneAgentState("build output only"), null);
@@ -72,7 +72,7 @@ test("fin de tour Claude: l'etoile d'un recapitulatif n'est pas du travail", () 
   const pane = [
     "  Travail non commité en cours : certify.ts, engrave.ts, certify.test.ts",
     "✻ Worked for 17s · done 15:08",
-    "※ recap: Goal: hand off Codex work in atlas.",
+    "※ recap: Goal: hand off Codex work in octanix.",
     "──────",
     "❯ ",
     "──────",

@@ -4,9 +4,9 @@ import path from "node:path";
 
 const COLUMN_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const BUILTIN = [
-  { id: "todo", name: "À faire", kind: "todo" },
-  { id: "review", name: "À tester / valider", kind: "review" },
-  { id: "done", name: "Terminé", kind: "done" },
+  { id: "todo", name: "À faire", kind: "todo", enabled: true },
+  { id: "review", name: "À valider", kind: "review", enabled: true },
+  { id: "done", name: "Terminé", kind: "done", enabled: true },
 ];
 
 function cleanName(value) {
@@ -20,18 +20,24 @@ function normalize(columns) {
     if (!column || !COLUMN_ID.test(String(column.id || "")) || seen.has(column.id)) continue;
     const builtin = BUILTIN.find((item) => item.id === column.id);
     seen.add(column.id);
+    let name = cleanName(column.name) || builtin?.name || "Colonne";
+    if (column.id === "review" && (name === "À tester / valider" || name === "À tester")) {
+      name = "À valider";
+    }
+    const enabled = column.enabled !== false;
     list.push({
       id: column.id,
-      name: cleanName(column.name) || builtin?.name || "Colonne",
+      name,
       kind: builtin ? builtin.kind : "custom",
+      enabled: ["todo", "done"].includes(column.id) ? true : enabled,
     });
   }
   // Les trois colonnes de base restent presentes: aucun to-do ne peut se retrouver sans zone.
   for (const builtin of BUILTIN) {
     if (seen.has(builtin.id)) continue;
     const doneIndex = list.findIndex((column) => column.id === "done");
-    if (builtin.id === "done" || doneIndex === -1) list.push({ ...builtin });
-    else list.splice(doneIndex, 0, { ...builtin });
+    if (builtin.id === "done" || doneIndex === -1) list.push({ ...builtin, enabled: true });
+    else list.splice(doneIndex, 0, { ...builtin, enabled: true });
   }
   return list;
 }
@@ -81,6 +87,7 @@ export class BoardService {
   entry(boards, profileId) {
     const stored = boards[profileId];
     const columns = normalize(Array.isArray(stored) ? stored : stored?.columns);
+    // La relecture tourne sur le modele local: aucun quota consomme, donc active par defaut.
     const correction = Array.isArray(stored) ? true : stored?.correction !== false;
     return { columns, correction };
   }
@@ -126,14 +133,30 @@ export class BoardService {
     });
   }
 
-  async rename(profileId, id, name) {
+  async update(profileId, id, changes = {}) {
     return this.enqueue(async () => {
-      const label = cleanName(name);
-      if (!label) throw new Error("Nom de zone requis.");
       const current = this.entry(await this.read(), profileId).columns;
       if (!current.some((column) => column.id === id)) throw new Error("Zone introuvable.");
-      return this.save(profileId, current.map((column) => (column.id === id ? { ...column, name: label } : column)));
+      const updated = current.map((column) => {
+        if (column.id !== id) return column;
+        const next = { ...column };
+        if (changes.name !== undefined) {
+          const label = cleanName(changes.name);
+          if (label) next.name = label;
+        }
+        if (changes.enabled !== undefined) {
+          if (!["todo", "done"].includes(column.id)) {
+            next.enabled = Boolean(changes.enabled);
+          }
+        }
+        return next;
+      });
+      return this.save(profileId, updated);
     });
+  }
+
+  async rename(profileId, id, name) {
+    return this.update(profileId, id, { name });
   }
 
   async remove(profileId, id) {

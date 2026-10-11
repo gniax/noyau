@@ -9,8 +9,8 @@ test("Codex approval prompts are detected in visible pane tail", () => {
 });
 
 test("agent notification title includes project source", () => {
-  assert.equal(agentNotificationTitle("Atlas", "Codex a terminé"), "[Atlas] Codex a terminé");
-  assert.equal(agentNotificationTitle(" Atlas\nprod ", "Claude attend"), "[Atlas prod] Claude attend");
+  assert.equal(agentNotificationTitle("Octanix", "Codex a terminé"), "[Octanix] Codex a terminé");
+  assert.equal(agentNotificationTitle(" Octanix\nprod ", "Claude attend"), "[Octanix prod] Claude attend");
 });
 
 test("prompt watcher sends once until prompt disappears", async () => {
@@ -22,7 +22,7 @@ test("prompt watcher sends once until prompt disappears", async () => {
       captureVisible: async () => screen,
     },
     push: { send: async (payload) => payloads.push(payload) },
-    sessionLabel: () => "Atlas",
+    sessionLabel: () => "Octanix",
   });
   await watcher.tick();
   await watcher.tick();
@@ -32,6 +32,6 @@ test("prompt watcher sends once until prompt disappears", async () => {
   screen = "Would you like to grant these permissions?\nYes\nNo";
   await watcher.tick();
   assert.equal(payloads.length, 2);
-  assert.equal(payloads[0].title, "[Atlas] Codex attend validation");
+  assert.equal(payloads[0].title, "[Octanix] Codex attend validation");
   assert.equal(payloads[0].url, "/?session=noyau-codex-test");
 });

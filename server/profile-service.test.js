@@ -10,31 +10,76 @@ class MemoryStore {
   async setMany(entries) { for (const [id, value] of entries) this.data[id] = value; }
 }
 
-test("profile service seeds a single primary profile", async () => {
+test("profile service seeds isolated primary and partner profiles", async () => {
   const store = new MemoryStore();
-  const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/principal/TO DO.md", primaryTodoMountUri: "smb://nas/data" });
-  const seeded = await service.initialize();
-  assert.equal(seeded.created, 1);
-  assert.equal(service.primaryId(), "principal");
-  assert.equal(service.get("principal").theme, "noyau");
-  assert.equal(service.list().length, 1);
-
-  // Les profils suivants restent isoles: leur vault ne touche pas celui du profil principal.
-  const guest = await service.create({ name: "Invité", theme: "aurora" });
-  assert.equal(guest.todoFile, "/tmp/noyau/profiles/invite/TO DO.md");
-  assert.notEqual(service.get("principal").todoFile, guest.todoFile);
+  const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main/TO DO.md", primaryTodoMountUri: "smb://nas/data" });
+  await service.initialize();
+  assert.equal(service.primaryId(), "main");
+  assert.equal(service.get("main").theme, "noyau");
+  assert.equal(service.get("aurora").theme, "moving-castle");
+  assert.equal(service.get("aurora").todoFile, "/tmp/noyau/profiles/aurora/TO DO.md");
+  assert.notEqual(service.get("main").todoFile, service.get("aurora").todoFile);
 });
 
 test("profile service creates and updates safe profile settings", async () => {
-  const store = new MemoryStore({ principal: { name: "Noyau", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
+  const store = new MemoryStore({ main: { name: "Noyau", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
   const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
   await service.initialize();
-  const profile = await service.create({ name: "Camille Martin", theme: "aurora" });
-  assert.equal(profile.id, "camille-martin");
-  assert.equal(profile.todoFile, "/tmp/noyau/profiles/camille-martin/TO DO.md");
-  const updated = await service.update(profile.id, { todoFile: "/vault/camille/TO DO.md", todoMountUri: "smb://nas/partage" });
-  assert.equal(updated.todoFile, "/vault/camille/TO DO.md");
+  const profile = await service.create({ name: "Léa Maison", theme: "moving-castle" });
+  assert.equal(profile.id, "lea-maison");
+  assert.equal(profile.todoFile, "/tmp/noyau/profiles/lea-maison/TO DO.md");
+  const updated = await service.update(profile.id, { todoFile: "/vault/lea/TO DO.md", todoMountUri: "smb://nas/lea" });
+  assert.equal(updated.todoFile, "/vault/lea/TO DO.md");
   const notified = await service.update(profile.id, { quotaResetNotify: { codex: false, claude: true, antigravity: true } });
   assert.deepEqual(notified.quotaResetNotify, { codex: false, claude: true, antigravity: true });
   await assert.rejects(() => service.update(profile.id, { todoFile: "relative.md" }), /absolu requis/);
 });
+
+test("profile password management and authentication", async () => {
+  const store = new MemoryStore();
+  const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
+  await service.initialize();
+
+  // Initialement pas de mot de passe
+  assert.equal(service.list().find((p) => p.id === "main").hasPassword, false);
+
+  // Authentification via master token
+  const masterAuth = service.authenticate("master-token-123", "main", "master-token-123");
+  assert.equal(masterAuth?.id, "main");
+
+  // Définition d'un mot de passe pour aurora
+  const updatedAurora = await service.setPassword("aurora", "mon-chateau-secret");
+  assert.equal(updatedAurora.hasPassword, true);
+  assert.equal(updatedAurora.passwordHash, undefined); // hash non divulgué
+
+  // Authentification Aurora avec son mot de passe
+  const auroraAuth = service.authenticate("mon-chateau-secret", "aurora", "master-token-123");
+  assert.equal(auroraAuth?.id, "aurora");
+
+  // Authentification sans profileId (auto-détection)
+  const autoAuth = service.authenticate("mon-chateau-secret", null, "master-token-123");
+  assert.equal(autoAuth?.id, "aurora");
+
+  // Mauvais mot de passe
+  assert.equal(service.authenticate("mauvais-pass", "aurora", "master-token-123"), null);
+
+  // Suppression du mot de passe
+  const cleared = await service.setPassword("aurora", "");
+  assert.equal(cleared.hasPassword, false);
+});
+
+test("profile service enforces password strength on setPassword and create", async () => {
+  const store = new MemoryStore();
+  const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
+  await service.initialize();
+
+  await assert.rejects(() => service.setPassword("main", "1234"), /trop court/);
+  await assert.rejects(() => service.setPassword("main", "password"), /trop simple/);
+  await assert.rejects(() => service.setPassword("main", "11111111"), /répéter/);
+  await assert.rejects(() => service.setPassword("main", "abcdefgh"), /combiner lettres/);
+
+  // Valide
+  const updated = await service.setPassword("main", "Noyau-Safe2026!");
+  assert.equal(updated.hasPassword, true);
+});
+

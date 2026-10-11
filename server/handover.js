@@ -53,6 +53,20 @@ function pickTail(messages) {
   return kept;
 }
 
+export function parseCodexLine(line) {
+  if (!line.includes('"message"')) return null;
+  try {
+    const entry = JSON.parse(line);
+    const payload = entry.payload || entry;
+    if (payload.type !== "message" || !["user", "assistant"].includes(payload.role)) return null;
+    const content = Array.isArray(payload.content) ? payload.content.map((block) => block?.text || "").join(" ") : payload.content;
+    const clean = cleanText(content);
+    return clean ? { role: payload.role, text: clean } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function extractCodexMessages(text) {
   const messages = jsonLines(text).flatMap((entry) => {
     const payload = entry.payload || entry;
@@ -64,13 +78,36 @@ export function extractCodexMessages(text) {
   return pickTail(messages);
 }
 
+export function parseClaudeLine(line) {
+  if (!line.includes('"user"') && !line.includes('"assistant"')) return null;
+  try {
+    const entry = JSON.parse(line);
+    if (entry.isMeta || !["user", "assistant"].includes(entry.type)) return null;
+    const raw = entry.message?.content;
+    let text = "";
+    if (typeof raw === "string") text = raw;
+    else if (Array.isArray(raw)) {
+      text = raw.filter((block) => block?.type === "text").map((block) => block.text).join(" ");
+    }
+    const clean = cleanText(text);
+    if (!clean) return null;
+    if (entry.type === "assistant" && clean.startsWith("You've hit your session limit")) return null;
+    return { role: entry.type, text: clean };
+  } catch {
+    return null;
+  }
+}
+
 export function extractClaudeMessages(text) {
   const messages = jsonLines(text).flatMap((entry) => {
     if (!["user", "assistant"].includes(entry.type) || entry.isMeta) return [];
     const raw = entry.message?.content;
-    const content = Array.isArray(raw) ? raw.filter((block) => block?.type === "text").map((block) => block.text).join(" ") : raw;
+    let content = "";
+    if (typeof raw === "string") content = raw;
+    else if (Array.isArray(raw)) content = raw.filter((block) => block?.type === "text").map((block) => block.text).join(" ");
     const clean = cleanText(content);
-    return clean ? [{ role: entry.type, text: clean }] : [];
+    if (!clean || (entry.type === "assistant" && clean.startsWith("You've hit your session limit"))) return [];
+    return [{ role: entry.type, text: clean }];
   });
   return pickTail(messages);
 }
@@ -79,6 +116,62 @@ function antigravityUserText(content) {
   const request = String(content || "").match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i)?.[1] || content;
   const clean = cleanText(request);
   return HANDOVER_REQUEST.test(clean) ? "" : clean;
+}
+
+export function parseAntigravityLine(line) {
+  if (!line.includes('"USER_INPUT"') && !line.includes('"PLANNER_RESPONSE"')) return null;
+  try {
+    const entry = JSON.parse(line);
+    if (entry.type === "USER_INPUT") {
+      const clean = antigravityUserText(entry.content);
+      return clean ? { role: "user", text: clean } : null;
+    }
+    if (entry.type === "PLANNER_RESPONSE" && entry.source === "MODEL") {
+      const clean = cleanText(entry.content);
+      return clean ? { role: "assistant", text: clean } : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function scanTranscriptMessages(file, parseLineFn, limit = MESSAGE_LIMIT, maxBytes = 10 * 1024 * 1024) {
+  if (!file) return [];
+  const handle = await fs.open(file, "r");
+  try {
+    const stat = await handle.stat();
+    const CHUNK = 512 * 1024;
+    let pos = stat.size;
+    let bytesRead = 0;
+    let remainder = "";
+    const collected = [];
+
+    while (pos > 0 && collected.length < limit && bytesRead < maxBytes) {
+      const toRead = Math.min(CHUNK, pos);
+      pos -= toRead;
+      bytesRead += toRead;
+      const buffer = Buffer.alloc(toRead);
+      await handle.read(buffer, 0, toRead, pos);
+      const chunkStr = buffer.toString("utf8") + remainder;
+      const lines = chunkStr.split("\n");
+      remainder = lines.shift() || "";
+
+      for (let i = lines.length - 1; i >= 0 && collected.length < limit; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const msg = parseLineFn(line);
+        if (msg) collected.push(msg);
+      }
+    }
+    if (remainder && collected.length < limit) {
+      const msg = parseLineFn(remainder.trim());
+      if (msg) collected.push(msg);
+    }
+    return pickTail(collected.reverse());
+  } finally {
+    await handle.close();
+  }
 }
 
 export function extractAntigravityMessages(text) {
@@ -188,15 +281,15 @@ export class HandoverService {
     try {
       if (assistant === "codex") {
         const file = await this.codexFile({ threadId, cwd });
-        return file ? extractCodexMessages(await readTail(file)) : [];
+        return file ? await scanTranscriptMessages(file, parseCodexLine) : [];
       }
       if (["claude", "claude-design"].includes(assistant)) {
         const file = await this.claudeFile({ agentSessionId, cwd });
-        return file ? extractClaudeMessages(await readTail(file)) : [];
+        return file ? await scanTranscriptMessages(file, parseClaudeLine) : [];
       }
       if (assistant === "antigravity") {
         const file = await this.antigravityFile({ cwd });
-        return file ? extractAntigravityMessages(await readTail(file)) : [];
+        return file ? await scanTranscriptMessages(file, parseAntigravityLine) : [];
       }
     } catch { /* transcript illisible */ }
     return [];

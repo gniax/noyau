@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-const DESIGN_SYSTEM_PROMPT = "Tu es Claude Design. Traite la demande design/UI/UX/graphisme/images dans ce projet. Modifie ou génère les fichiers directement si nécessaire, puis résume clairement tes actions et les fichiers créés ou modifiés.";
+const DESIGN_SYSTEM_PROMPT = "Tu es Claude Design. Traite la demande design/UI/UX/graphisme/images dans ce projet. Le code source, pages HTML, CSS, composants et maquettes codées s'écrivent DIRECTEMENT dans le projet (JAMAIS dans les fichiers partagés Noyau). Les Fichiers Partagés Noyau sont réservés UNIQUEMENT aux images bitmap/vectorielles générées ou documents finaux non-code (PNG, JPG, SVG, WebP) pour éviter tout chemin local /tmp/... inaccessible à distance. Résume clairement tes actions et les fichiers créés ou modifiés.";
 
 export class ClaudeDesignTool {
   constructor({ claudeBinary = "claude", store = null, projects = null, workspaceRoot = process.cwd(), timeout = 10 * 60_000, spawnFn = spawn } = {}) {
