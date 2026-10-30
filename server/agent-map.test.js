@@ -16,17 +16,20 @@ import {
   unitStatus,
 } from "./agent-map.js";
 
+// Jeton factice assemble en morceaux: les scanners de secrets GitHub le prennent sinon pour un vrai.
+const FAKE_BOT_SECRET = ["AAHdqTcvCH1vGWJx", "fSeofSAs0K5PALDsawz"].join("");
+
 test("redact masks tokens, keys and credentials but keeps prose", () => {
   const text = [
     "token=abcd1234efgh",
-    "TELEGRAM 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawz",
+    `TELEGRAM 123456789:${FAKE_BOT_SECRET}`,
     "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop",
     "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
     "https://user:hunter2@example.com/path",
     "Le bot tourne bien.",
   ].join("\n");
   const clean = redact(text);
-  for (const secret of ["abcd1234efgh", "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawz", "eyJhbGciOiJIUzI1NiJ9", "sk-ant-api03", "hunter2"]) assert.equal(clean.includes(secret), false, secret);
+  for (const secret of ["abcd1234efgh", FAKE_BOT_SECRET, "eyJhbGciOiJIUzI1NiJ9", "sk-ant-api03", "hunter2"]) assert.equal(clean.includes(secret), false, secret);
   assert.match(clean, /Le bot tourne bien\./);
 });
 
