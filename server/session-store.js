@@ -40,12 +40,14 @@ export class SessionStore {
   }
 
   async persist() {
-    this.queue = this.queue.then(async () => {
+    const write = this.queue.then(async () => {
       await fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
       const temporary = `${this.file}.tmp`;
       await fs.writeFile(temporary, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600 });
       await fs.rename(temporary, this.file);
     });
-    return this.queue;
+    // One failed write (e.g. ENOSPC) must not poison every later persist.
+    this.queue = write.catch(() => {});
+    return write;
   }
 }

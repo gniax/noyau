@@ -105,7 +105,7 @@
 :root[data-theme="moving-castle"] .main-nav button { border-radius: 12px; font-size: 14px; }
 
 :root[data-theme="moving-castle"] .profile-chip { border-radius: 22px; border-color: #e1b04755; }
-:root[data-theme="moving-castle"] .profile-chip strong::before { content: "🎀 "; }
+:root[data-theme="moving-castle"] .profile-chip strong::before { content: " "; }
 :root[data-theme="moving-castle"] .profile-chip > span { background: linear-gradient(140deg, #e1b047, #c98b6e); color: #241c10; }
 
 :root[data-theme="moving-castle"] .panel,
@@ -191,12 +191,12 @@
 :root[data-theme="moving-castle"] button.ghost { border-radius: 20px; }
 
 :root[data-theme="moving-castle"] .finance-empty::before,
-:root[data-theme="moving-castle"] .empty-small::before { content: "🌙 "; }
-:root[data-theme="moving-castle"] .todo-folder-head strong::before { content: "🌸 "; }
-:root[data-theme="moving-castle"] .todo-list article.completed .todo-check strong::after { content: " 🕊️"; text-decoration: none; }
+:root[data-theme="moving-castle"] .empty-small::before { content: " "; }
+:root[data-theme="moving-castle"] .todo-folder-head strong::before { content: " "; }
+:root[data-theme="moving-castle"] .todo-list article.completed .todo-check strong::after { content: " "; text-decoration: none; }
 :root[data-theme="moving-castle"] .todo-check strong { font-size: 14px; }
 :root[data-theme="moving-castle"] .favorite-star { color: var(--castle-brass); }
-:root[data-theme="moving-castle"] .agent-card .agent-name::after { content: " ✦"; color: #e1b04788; font-size: .7em; }
+:root[data-theme="moving-castle"] .agent-card .agent-name::after { content: ""; color: #e1b04788; font-size: .7em; }
 :root[data-theme="moving-castle"] .shared-chip.own, :root[data-theme="moving-castle"] .todo-folder-tag { border-color: #e8a0b455; color: var(--castle-rose); }
 
 @media (prefers-reduced-motion: reduce) {

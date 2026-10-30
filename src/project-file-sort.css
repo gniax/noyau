@@ -1,0 +1,29 @@
+.file-sort-btn { height: 28px; padding: 0 11px; border-radius: 6px; border: 1px solid var(--c-344039); background: var(--c-171c19); color: var(--c-dbe3dd); font-size: 9px; font-weight: 700; cursor: pointer; }
+.file-sort-btn:hover { border-color: var(--green); color: var(--green); }
+.file-sort-btn.running { border-color: rgba(251, 191, 36, .45); color: #fbbf24; background: rgba(251, 191, 36, .08); }
+.file-sort-btn:disabled { opacity: .6; cursor: wait; }
+.file-sort { display: grid; gap: 6px; }
+.file-sort:empty { display: none; }
+.file-sort-running { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid rgba(251, 191, 36, .3); border-radius: 6px; background: rgba(251, 191, 36, .06); color: #fbbf24; font-size: 9px; }
+.file-sort-running i { width: 7px; height: 7px; border-radius: 50%; background: #fbbf24; animation: file-sort-pulse 1.2s ease-in-out infinite; }
+.file-sort-running.stale { color: var(--c-909992); border-color: var(--c-2b362f); background: var(--c-0d1210); }
+@keyframes file-sort-pulse { 50% { opacity: .25; } }
+.file-sort details { border: 1px solid var(--c-232b26); border-radius: 6px; background: var(--c-0d1210); }
+.file-sort summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 9px; cursor: pointer; list-style: none; font-size: 9px; }
+.file-sort summary::-webkit-details-marker { display: none; }
+.file-sort summary span { color: var(--c-909992); }
+.file-sort summary strong { color: var(--c-cad3cd); font-size: 9px; text-align: right; }
+.file-sort-done { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 6px 6px 9px; border: 1px solid rgba(184, 255, 94, .3); border-radius: 6px; background: var(--c-b8ff5e-0c); color: var(--green); font-size: 9px; }
+.file-sort-done button { width: 22px; height: 22px; border: 0; border-radius: 5px; background: transparent; color: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
+.file-sort-done button:hover { background: var(--c-b8ff5e-18); }
+.file-sort ul { list-style: none; margin: 0; padding: 0 9px 8px; display: grid; gap: 4px; max-height: 260px; overflow-y: auto; }
+.file-sort li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 0; border-top: 1px solid var(--c-1a211d); }
+.file-sort li > b, .file-sort li span b { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--c-cad3cd); font-size: 9px; }
+.file-sort li span { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.file-sort li small { color: var(--c-66716a); font-size: 8px; }
+.file-sort li button { flex: none; height: 24px; padding: 0 9px; border-radius: 5px; border: 1px solid rgba(184, 255, 94, .4); background: var(--c-b8ff5e-0c); color: var(--green); font-size: 8.5px; cursor: pointer; }
+.file-sort li button.danger, .file-sort-trash-actions button.danger { border-color: rgba(201, 119, 125, .45); background: rgba(201, 119, 125, .08); color: var(--c-c9777d); }
+.file-sort-trash-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 9px 6px; }
+.file-sort-trash-actions small { color: var(--c-66716a); font-size: 8px; }
+.file-sort-trash-actions button { height: 24px; padding: 0 10px; border-radius: 5px; border: 1px solid; font-size: 8.5px; font-weight: 700; cursor: pointer; }
+@media (max-width: 640px) { .file-sort li { flex-wrap: wrap; } .file-sort li span { flex-basis: 100%; } }

@@ -29,8 +29,8 @@ export async function suggestAgentDescription({ name = "", assistant = "", cwd =
   if (n.includes("noyau") || c.endsWith("/main")) {
     return "Développement, architecture et orchestration des agents Noyau.";
   }
-  if (n.includes("cellule rouge") || c.includes("cellulerouge")) {
-    return "Développement frontend et intégration pour la plateforme Cellule Rouge.";
+  if (n.includes("red cell") || c.includes("redcell")) {
+    return "Développement frontend et intégration pour la plateforme red cell.";
   }
   if (n.includes("nimbus") || c.includes("nimbus")) {
     return "Développement fullstack et maintenance du site communautaire Nimbus.";

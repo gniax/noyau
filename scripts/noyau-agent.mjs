@@ -143,6 +143,25 @@ try {
       method: "POST",
     });
     print(res);
+  } else if (command === "alias") {
+    const [target, alias] = args.slice(1);
+    if (!target || !alias) throw new Error("Usage: node scripts/noyau-agent.mjs alias 'ID stable ou nom' 'Ancien ID vérifié'");
+    print(await api(`/api/agent-tools/agents/${encodeURIComponent(target)}/aliases`, {
+      method: "POST",
+      body: JSON.stringify({ alias }),
+    }));
+  } else if (command === "memory" || command === "memoire") {
+    const target = args[1] === "self" ? process.env.NOYAU_SESSION_ID : args[1];
+    const action = args[2] || "read";
+    if (!target || !["read", "note", "set"].includes(action)) throw new Error("Usage: node scripts/noyau-agent.mjs memory <agent|self> [read | note <texte> | set <notes>]");
+    const pathname = `/api/agent-tools/agents/${encodeURIComponent(target)}/memory`;
+    if (action === "read") print((await api(pathname)).text);
+    else {
+      const text = args.slice(3).join(" ").trim();
+      if (!text && action === "note") throw new Error("Note mémoire vide.");
+      const state = await api(pathname, { method: "PUT", body: JSON.stringify({ text, append: action === "note" }) });
+      print({ success: true, id: state.agentId, revision: state.revision });
+    }
   } else if (["read", "context", "view", "get"].includes(command)) {
     const target = args[1];
     if (!target) throw new Error("Usage: node scripts/noyau-agent.mjs read 'Nom ou ID de l agent'");
@@ -156,6 +175,7 @@ try {
       method: "POST",
       body: JSON.stringify({ message, callerSessionId, callerName }),
     });
+    if (res.held) res.note = "L'utilisateur écrit dans cet agent : message mis en attente, livré dès qu'il envoie son prompt. Ne pas renvoyer.";
     print(res);
   } else if (["find", "search"].includes(command)) {
     const query = args.slice(1).join(" ").trim().toLowerCase();
@@ -165,7 +185,7 @@ try {
       a.name.toLowerCase().includes(query) ||
       (a.projectName && a.projectName.toLowerCase().includes(query)) ||
       a.assistant.toLowerCase().includes(query) ||
-      a.id.toLowerCase().includes(query) ||
+      [a.id, a.sessionId, ...(a.aliases || [])].some((id) => id?.toLowerCase().includes(query)) ||
       (a.cwd && a.cwd.toLowerCase().includes(query))
     ) : agents;
     print(matches);
@@ -195,12 +215,16 @@ try {
     if (!response.ok) throw new Error(payload.error || `Erreur ${response.status}`);
     print(payload);
   } else {
-    print(`Usage: node scripts/noyau-agent.mjs [create | assign | stop | list | read | send | find | files | putfile]
+    print(`Usage: node scripts/noyau-agent.mjs [create | assign | stop | list | read | send | find | alias | memory | files | putfile]
 - create [--name <nom>] [--prompt <texte>] [--project <id|nom>] [--assistant codex|claude|antigravity] [--model <id>] [--cwd <dir>] [--yolo|--no-yolo]
   Crée un nouvel agent sur Noyau, rattaché à un projet avec consigne initiale (reprend par défaut la permission yolo/dangerous).
 - assign <agent> <projet>   : Rattache un agent existant à un projet (nom ou identifiant).
 - stop <agent>              : Arrête et supprime un agent de Noyau.
-- list                      : Liste tous les agents actifs de Noyau (nom, projet, assistant, état, dossier).
+- list                      : Liste les agents (id stable, sessionId technique, moteur courant, anciens IDs, projet, état).
+- alias <agent> <ancienId>   : Rattache explicitement un ancien ID vérifié (propriétaire uniquement, collisions refusées).
+- memory <agent|self> read  : Relit la mémoire commune persistante de cet agent, quel que soit le moteur.
+- memory <agent|self> note "Texte" : Ajoute une décision ou un point de reprise durable, sans secret.
+- memory <agent|self> set "Notes"  : Remplace les notes durables (conserve passation et points automatiques).
 - read "Nom ou ID"          : Affiche les derniers échanges, le contexte récent et les fichiers du projet.
 - send "Nom ou ID" "Message": Transmet un message / tâche / contexte directement à l agent.
 - find "mots clés"          : Recherche un agent par nom, projet ou mot-clé.

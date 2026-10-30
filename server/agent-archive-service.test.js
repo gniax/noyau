@@ -69,6 +69,8 @@ test("un profil ne peut pas restaurer une archive partagée d'un autre profil", 
 test("AgentArchiveService restores an archived agent via tmux", async () => {
   const service = new AgentArchiveService();
   await service.archive("noyau-codex-old", {
+    agentId: "noyau-agent-stable-beef",
+    agentAliases: ["noyau-claude-previous"],
     name: "Atlas",
     assistant: "codex",
     cwd: "/path/to/atlas",
@@ -90,6 +92,8 @@ test("AgentArchiveService restores an archived agent via tmux", async () => {
   assert.equal(restored.name, "Atlas");
   assert.equal(createdArgs.threadId, "thread-12345");
   assert.equal(createdArgs.yolo, true);
+  assert.equal(createdArgs.agentId, "noyau-agent-stable-beef");
+  assert.deepEqual(createdArgs.agentAliases, ["noyau-claude-previous", "noyau-codex-old"]);
 
   const remaining = await service.list();
   assert.equal(remaining.length, 0); // removed upon restoration

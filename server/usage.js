@@ -330,6 +330,7 @@ export class UsageService {
           }
         } catch { /* process exited */ }
       }
+      return null;
     }
     if (cwd) {
       try {

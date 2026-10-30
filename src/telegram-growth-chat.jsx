@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./telegram-growth-chat.css";
 
 const STATE_LABELS = {
+  active: "Actif",
   running: "En cours",
   stopping: "Arrêt en cours",
   success: "Terminé",
@@ -98,7 +99,7 @@ function buildRows(messages) {
     const chat = message?.chat || "";
     const continued = Boolean(
       prev && direction !== "system" && prev.direction === direction && prev.sender === sender && prev.chat === chat
-      && (!date || !prev.date || date - prev.date < GROUP_WINDOW_MS),
+      && (!date || !prev.date || Math.abs(date - prev.date) < GROUP_WINDOW_MS),
     );
     const row = {
       type: "message",
@@ -173,55 +174,75 @@ function MessageRow({ row }) {
   );
 }
 
-export default function TelegramGrowthChat({ title = "Telegram Growth", messages = [], state, phase, current, nextAt }) {
-  const list = Array.isArray(messages) ? messages : [];
-  const rows = useMemo(() => buildRows(list), [list]);
+function dayFromKey(key) {
+  const [year, month, day] = String(key || "").split("-").map(Number);
+  return year ? new Date(year, month - 1, day) : null;
+}
+
+// Une journee affichee du plus recent au plus ancien; le flux vivant = dernier jour, les autres jours sont charges a la demande.
+export default function TelegramGrowthChat({ title = "Telegram Growth", messages = [], day = null, prevDay = null, nextDay = null, latestDay = null, onDay = null, state, phase, current, nextAt }) {
+  const live = Array.isArray(messages) ? messages : [];
+  const [page, setPage] = useState(null);
+  const [loadingDay, setLoadingDay] = useState(false);
+  const [dayError, setDayError] = useState("");
+  const view = page || { messages: live, day, prevDay, nextDay };
+  const list = Array.isArray(view.messages) ? view.messages : [];
+  const rows = useMemo(() => buildRows([...list].reverse()).filter((row) => row.type === "message"), [list]);
   const logRef = useRef(null);
-  const atBottomRef = useRef(true);
+  const atTopRef = useRef(true);
   const seenRef = useRef(null);
   const [unseen, setUnseen] = useState(0);
 
-  const scrollToBottom = useCallback((smooth) => {
+  async function goDay(target) {
+    if (!target || !onDay || loadingDay) return;
+    setDayError("");
+    // Retour au jour vivant: on reprend le flux rafraichi plutot qu'une copie figee.
+    if (target === day) { setPage(null); return; }
+    setLoadingDay(true);
+    try {
+      const next = await onDay(target);
+      setPage(next?.day === (latestDay || day) ? null : next);
+      seenRef.current = null;
+      setUnseen(0);
+      if (logRef.current) logRef.current.scrollTop = 0;
+    } catch (error) {
+      setDayError(error?.message || "Chargement impossible");
+    } finally {
+      setLoadingDay(false);
+    }
+  }
+
+  const scrollToTop = useCallback((smooth) => {
     const el = logRef.current;
     if (!el) return;
     const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth && !reduced ? "smooth" : "auto" });
-    atBottomRef.current = true;
+    el.scrollTo({ top: 0, behavior: smooth && !reduced ? "smooth" : "auto" });
+    atTopRef.current = true;
     setUnseen(0);
   }, []);
 
   const onScroll = useCallback(() => {
     const el = logRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD;
-    atBottomRef.current = atBottom;
-    if (atBottom) setUnseen(0);
+    const atTop = el.scrollTop <= BOTTOM_THRESHOLD;
+    atTopRef.current = atTop;
+    if (atTop) setUnseen(0);
   }, []);
 
   useLayoutEffect(() => {
-    const ids = rows.filter((row) => row.type === "message").map((row) => row.key);
+    const ids = rows.map((row) => row.key);
     const previous = seenRef.current;
     seenRef.current = ids;
+    if (page) return;
     const added = newMessageCount(previous || [], ids);
-    if (atBottomRef.current || previous === null) scrollToBottom(false);
+    if (atTopRef.current || previous === null) scrollToTop(false);
     else if (added) setUnseen((value) => value + added);
-  }, [rows, scrollToBottom]);
-
-  // The module may mount inside closed <details>; follow the bottom when it becomes visible.
-  const hasMessages = rows.length > 0;
-  useEffect(() => {
-    const el = logRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(() => {
-      if (atBottomRef.current && el.clientHeight > 0) scrollToBottom(false);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [hasMessages, scrollToBottom]);
+  }, [rows, page, scrollToTop]);
 
   const stateKey = STATE_LABELS[state] ? state : "idle";
   const next = parseDate(nextAt);
   const details = [phase, current].filter((value) => value != null && String(value).trim() !== "");
+  const shownDay = dayFromKey(view.day);
 
   return (
     <section className="tgc" aria-label={`Messagerie ${title}`}>
@@ -244,6 +265,15 @@ export default function TelegramGrowthChat({ title = "Telegram Growth", messages
         </span>
       </header>
 
+      {onDay && shownDay && (
+        <nav className="tgc-daynav" aria-label="Changer de jour">
+          <button type="button" onClick={() => goDay(view.prevDay)} disabled={!view.prevDay || loadingDay} aria-label="Jour précédent" title="Jour précédent">←</button>
+          <span>{loadingDay ? "Chargement…" : dayLabel(shownDay)}{page && <small> · historique</small>}</span>
+          <button type="button" onClick={() => goDay(view.nextDay)} disabled={!view.nextDay || loadingDay} aria-label="Jour suivant" title="Jour suivant">→</button>
+        </nav>
+      )}
+      {dayError && <p className="tgc-day-error" role="alert">{dayError}</p>}
+
       <div className="tgc-body">
         {rows.length === 0 ? (
           <p className="tgc-empty">Aucun message disponible</p>
@@ -258,18 +288,12 @@ export default function TelegramGrowthChat({ title = "Telegram Growth", messages
             tabIndex={0}
             onScroll={onScroll}
           >
-            {rows.map((row) => row.type === "day" ? (
-              <li key={row.key} className="tgc-day" role="separator" aria-label={dayLabel(row.date)}>
-                <span>{dayLabel(row.date)}</span>
-              </li>
-            ) : (
-              <MessageRow key={row.key} row={row} />
-            ))}
+            {rows.map((row) => <MessageRow key={row.key} row={row} />)}
           </ol>
         )}
         {unseen > 0 && (
-          <button type="button" className="tgc-jump" onClick={() => scrollToBottom(true)}>
-            <span aria-hidden="true">↓</span> {unseen} nouveau{unseen > 1 ? "x" : ""} message{unseen > 1 ? "s" : ""}
+          <button type="button" className="tgc-jump" onClick={() => scrollToTop(true)}>
+            <span aria-hidden="true">↑</span> {unseen} nouveau{unseen > 1 ? "x" : ""} message{unseen > 1 ? "s" : ""}
           </button>
         )}
       </div>

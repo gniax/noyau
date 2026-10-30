@@ -234,3 +234,11 @@
 @media (prefers-reduced-motion: reduce) {
   .tgc-badge-running .tgc-dot { animation: none; }
 }
+.tgc-badge-active { --tgc-badge: var(--green); }
+.tgc-daynav { display: grid; grid-template-columns: 36px minmax(0,1fr) 36px; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.tgc-daynav span { text-align: center; font-size: 12px; font-weight: 600; text-transform: capitalize; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tgc-daynav small { color: var(--muted); font-weight: 400; text-transform: none; }
+.tgc-daynav button { height: 32px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); font-size: 15px; cursor: pointer; }
+.tgc-daynav button:disabled { opacity: .3; cursor: default; }
+.tgc-day-error { margin: 4px 12px 0; color: var(--tgc-danger); font-size: 11px; }
+.tgc .tgc-jump { top: 12px; bottom: auto; }

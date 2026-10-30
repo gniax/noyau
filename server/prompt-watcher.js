@@ -1,3 +1,4 @@
+import { agentAlertBody } from "../shared/agent-alerts.js";
 const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 
 const CODEX_APPROVALS = [
@@ -70,8 +71,8 @@ export class PromptWatcher {
         if (!this.shouldNotify(session.id, session.profileId)) return;
         try {
           await this.push.send({
-            title: agentNotificationTitle(this.sessionLabel(session), "Codex attend validation"),
-            body: "Commande ou permission à accepter ou refuser.",
+            title: this.sessionLabel(session) || "Agent Noyau",
+            body: agentAlertBody("approval", session.name),
             tag: `approval-${session.id}`,
             url: `/?session=${encodeURIComponent(session.id)}${session.profileId ? `&profile=${encodeURIComponent(session.profileId)}` : ""}`,
             replyUrl: `/?session=${encodeURIComponent(session.id)}&reply=1${session.profileId ? `&profile=${encodeURIComponent(session.profileId)}` : ""}`,

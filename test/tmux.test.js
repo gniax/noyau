@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TmuxController, classifyAssistant, createSessionId, validSessionId } from "../server/tmux.js";
+import { TmuxController, chainCommands, classifyAssistant, createSessionId, literalKeyCommands, validSessionId } from "../server/tmux.js";
 
 test("session identifiers stay tmux-safe", () => {
   const id = createSessionId("codex");
-  assert.match(id, /^noyau-codex-[a-z0-9]+-[a-f0-9]{4}$/);
+  assert.match(id, /^noyau-agent-[a-z0-9]+-[a-f0-9]{4}$/);
   assert.equal(validSessionId(id), true);
   assert.equal(validSessionId("bad/name"), false);
 });
@@ -16,6 +16,50 @@ test("assistant classification uses metadata first", () => {
   assert.equal(classifyAssistant("node", "claude"), "claude");
   assert.equal(classifyAssistant("codex", null), "codex");
   assert.equal(classifyAssistant("zsh", null), "shell");
+});
+
+test("switching Claude, Codex and Antigravity preserves public ID, runtime ID, aliases and metadata", async () => {
+  const id = "noyau-agent-mvqmy99s-7a5f";
+  const entries = { [id]: { agentId: id, agentAliases: ["noyau-claude-mvnjtlij-8737"], assistant: "claude", core: true, createdAt: "2026-10-01", threadId: "obsolete", agentSessionId: "obsolete", transcriptPath: "obsolete", model: "old-model" } };
+  const store = { get: (key) => entries[key], set: async (key, value) => { entries[key] = value; } };
+  const controller = new TmuxController({ store, workspaceRoot: os.tmpdir() });
+  const commands = [];
+  controller.run = async (args) => { commands.push(args); return { stdout: "" }; };
+  controller.acceptTrustPrompt = async () => {};
+  for (const assistant of ["codex", "antigravity", "claude"]) {
+    const result = await controller.create({ replaceId: id, name: "Manager", assistant, cwd: os.tmpdir(), prompt: "handover", yolo: true });
+    assert.equal(result.id, id);
+    assert.equal(result.agentId, id);
+    assert.equal(result.assistant, assistant);
+    assert.equal(result.core, true);
+    assert.equal(result.createdAt, "2026-10-01");
+    assert.deepEqual(result.agentAliases, ["noyau-claude-mvnjtlij-8737"]);
+    assert.equal(result.threadId, null);
+    assert.equal(result.agentSessionId, null);
+    assert.equal(result.transcriptPath, null);
+    assert.equal(result.model, null);
+    assert.equal(result.migratedTo, null);
+  }
+  const replacements = commands.filter((args) => args[0] === "respawn-pane");
+  assert.equal(replacements.length, 3);
+  for (const args of replacements) {
+    assert.equal(args[3], `=${id}:0.0`);
+    assert.ok(args.includes(`NOYAU_SESSION_ID=${id}`));
+    assert.ok(args.includes("handover"));
+  }
+  assert.equal(commands.some((args) => ["new-session", "kill-session"].includes(args[0])), false);
+});
+
+test("failed replacement leaves previous identity and metadata intact", async () => {
+  const id = "noyau-claude-mvnjtlij-8737";
+  const entry = { assistant: "claude", agentId: "noyau-agent-mvnjtlij-8737" };
+  let saved = false;
+  const controller = new TmuxController({ store: { get: () => entry, set: async () => { saved = true; } }, workspaceRoot: os.tmpdir() });
+  controller.run = async () => { throw new Error("respawn failed"); };
+  await assert.rejects(controller.create({ replaceId: id, assistant: "codex", cwd: os.tmpdir() }), /respawn failed/);
+  assert.equal(saved, false);
+  assert.equal(entry.assistant, "claude");
+  await assert.rejects(controller.create({ replaceId: "invalid/id", assistant: "codex", cwd: os.tmpdir() }), /Session à remplacer introuvable/);
 });
 
 test("missing tmux socket is an empty session list", async () => {
@@ -181,4 +225,12 @@ test("clearHistory executes tmux clear-history", async () => {
 
   await controller.clearHistory("noyau-codex-test");
   assert.deepEqual(commands[0], ["clear-history", "-H", "-t", "=noyau-codex-test:0.0"]);
+});
+
+test("la saisie litterale garde un point-virgule final que tmux prendrait pour un separateur", () => {
+  assert.deepEqual(literalKeyCommands("s", "ls -la"), [["send-keys", "-t", "s", "-l", "--", "ls -la"]]);
+  assert.deepEqual(literalKeyCommands("s", "a;;"), [["send-keys", "-t", "s", "-l", "--", "a"], ["send-keys", "-t", "s", "-H", "3b", "3b"]]);
+  assert.deepEqual(literalKeyCommands("s", ";"), [["send-keys", "-t", "s", "-H", "3b"]]);
+  assert.deepEqual(literalKeyCommands("s", ""), []);
+  assert.deepEqual(chainCommands([["a"], ["b", "c"]]), ["a", ";", "b", "c"]);
 });

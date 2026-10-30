@@ -5,6 +5,8 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { chatConfig, readModuleChat } from "./module-chat.js";
+import { boardConfig, boardMedia, readModuleBoard } from "./module-board.js";
+import { delayMinutes, parseCalendarIterations, parseEnvironment, parseJournalRuns, parseTimerShow, planningConfig, queueOccurrences, queuePast, readPlanningState, slotFor, readBoosts, writeBoost, nearTime, parisDate, parisKey } from "./module-planning.js";
 
 const execFileAsync = promisify(execFile);
 const MODULE_PATTERN = /^[a-z0-9][a-z0-9-]{0,60}$/;
@@ -177,7 +179,8 @@ export class ModuleService {
     const knowledge = knowledgeSource(raw.knowledge);
     const deviceBuild = deviceBuildConfig(raw.deviceBuild, raw.id, resolvedRoot);
     const chat = chatConfig(raw.chat, workingDirectory);
-    if (!controlUnits.length && !links.length && !knowledge && !deviceBuild && !raw.actions?.length) throw new Error("Module sans contrôle, lien, connaissance ni build appareil.");
+    const board = boardConfig(raw.board, this.homeDir);
+    if (!controlUnits.length && !links.length && !knowledge && !deviceBuild && !raw.actions?.length && !raw.planning?.length && !board) throw new Error("Module sans contrôle, lien, connaissance ni build appareil.");
     const primaryUnit = raw.primaryUnit || controlUnits[0] || null;
     if (primaryUnit && !controlUnits.includes(primaryUnit)) throw new Error("Unité principale module invalide.");
     const schedules = (Array.isArray(raw.schedules) ? raw.schedules : []).slice(0, 12).map((schedule) => {
@@ -224,6 +227,8 @@ export class ModuleService {
       knowledge,
       deviceBuild,
       chat,
+      board,
+      planning: planningConfig(raw.planning, this.homeDir),
       setup: raw.setup ? {
         status: raw.setup.status === "required" ? "required" : "ready",
         label: cleanText(raw.setup.label, raw.setup.status === "required" ? "Configuration requise" : "Prêt", 60),
@@ -256,14 +261,31 @@ export class ModuleService {
   async install(id, projects) {
     const candidate = (await this.discover(projects)).find((module) => module.id === id);
     if (!candidate) throw new Error("Proposition module introuvable.");
-    await this.store.set(candidate.id, { ...candidate, installedAt: new Date().toISOString() });
-    return candidate;
+    const previous = this.store.get(candidate.id);
+    const installed = { ...candidate, installedAt: new Date().toISOString(), ...(previous?.environmentOverride ? { environmentOverride: previous.environmentOverride } : {}) };
+    await this.store.set(candidate.id, installed);
+    return installed;
   }
 
   get(id) {
     const module = this.store.get(id);
-    if (!module) throw new Error("Module introuvable.");
+    if (!module || module.removed) throw new Error("Module introuvable.");
     return module;
+  }
+
+  // Retrait = marqueur dans le store: le manifest et les services restent intacts, et la proposition ne revient pas en doublon.
+  async remove(id) {
+    const module = this.get(id);
+    await this.store.set(id, { id, projectId: module.projectId, name: module.name, glyph: module.glyph, accent: module.accent, description: module.description, removed: true, removedAt: new Date().toISOString(), ...(module.environmentOverride ? { environmentOverride: module.environmentOverride } : {}) });
+  }
+
+  // Choix Production/Modules de l'utilisateur, prioritaire sur le manifest (null = revenir au manifest).
+  async setEnvironment(id, environment) {
+    const module = this.get(id);
+    const next = environment === "production" || environment === "development" ? environment : null;
+    const { environmentOverride, ...rest } = module;
+    await this.store.set(id, next ? { ...rest, environmentOverride: next } : rest);
+    return this.payload(this.get(id));
   }
 
   async systemctl(args) {
@@ -296,7 +318,8 @@ export class ModuleService {
       projectId: module.projectId,
       name: module.name,
       description: module.description,
-      environment: module.environment || "development",
+      environment: module.environmentOverride || module.environment || "development",
+      defaultEnvironment: module.environment || "development",
       executionHost: module.executionHost || "Ce PC",
       glyph: module.glyph,
       accent: module.accent,
@@ -307,6 +330,8 @@ export class ModuleService {
       links: module.links || [],
       knowledge: module.knowledge || null,
       chat: await readModuleChat(module),
+      board: await readModuleBoard(module),
+      hasPlanning: Boolean(module.planning?.length),
       deviceBuild: module.deviceBuild ? {
         platforms: module.deviceBuild.platforms || ["android", "ios"],
         capabilities: {
@@ -329,16 +354,135 @@ export class ModuleService {
     const discovered = await this.discover(projects);
     for (const candidate of discovered) {
       const installed = this.store.get(candidate.id);
-      if (!installed) continue;
-      const refreshed = { ...candidate, installedAt: installed.installedAt, actionRuns: installed.actionRuns || {}, buildRun: installed.buildRun || null };
+      if (!installed || installed.removed) continue;
+      const refreshed = { ...candidate, installedAt: installed.installedAt, actionRuns: installed.actionRuns || {}, buildRun: installed.buildRun || null, ...(installed.environmentOverride ? { environmentOverride: installed.environmentOverride } : {}) };
       if (JSON.stringify(refreshed) !== JSON.stringify(installed)) await this.store.set(candidate.id, refreshed);
     }
-    const installed = Object.values(this.store.all()).filter((module) => projectIds.has(module.projectId));
+    const installed = Object.values(this.store.all()).filter((module) => projectIds.has(module.projectId) && !module.removed);
     const payloads = await Promise.all(installed.map((module) => this.payload(module)));
     payloads.sort((a, b) => (b.deviceBuild ? 1 : 0) - (a.deviceBuild ? 1 : 0));
     const proposals = discovered.filter((candidate) => !this.store.get(candidate.id)).map((candidate) => ({ id: candidate.id, projectId: candidate.projectId, name: candidate.name, description: candidate.description, glyph: candidate.glyph, accent: candidate.accent, environment: candidate.environment, executionHost: candidate.executionHost }));
     proposals.sort((a, b) => (b.id.includes("build") ? 1 : 0) - (a.id.includes("build") ? 1 : 0));
-    return { modules: payloads, proposals };
+    const removed = Object.values(this.store.all())
+      .filter((module) => module.removed && projectIds.has(module.projectId) && discovered.some((candidate) => candidate.id === module.id))
+      .map((module) => ({ id: module.id, projectId: module.projectId, name: module.name, glyph: module.glyph, accent: module.accent, description: module.description }));
+    return { modules: payloads, proposals, removed };
+  }
+
+  // Lecture seule: systemctl show + systemd-analyze calendar, jamais de start/restart (un timer Persistent publierait).
+  async planning(projectId, { days = 3, pastHours = 24, now = new Date() } = {}) {
+    const until = new Date(now.getTime() + days * 86_400_000);
+    const since = new Date(now.getTime() - pastHours * 3_600_000);
+    const modules = Object.values(this.store.all()).filter((module) => module.projectId === projectId && !module.removed && module.planning?.length);
+    const entries = modules.flatMap((module) => module.planning.map((entry) => ({ module, entry })));
+    const timers = [...new Set(entries.map(({ entry }) => entry.unit).filter(Boolean))];
+    let states = new Map();
+    if (timers.length) {
+      try {
+        const { stdout } = await this.systemctl(["show", ...timers, "--no-pager", "--property=Id,LoadState,ActiveState,UnitFileState,Unit,TimersCalendar,RandomizedDelayUSec,NextElapseUSecRealtime"]);
+        states = parseTimerShow(stdout);
+      } catch { /* timers illisibles: planning vide plutot qu'erreur */ }
+    }
+    const serviceOf = (entry) => states.get(entry.unit)?.Unit || (entry.unit ? entry.unit.replace(/\.timer$/, ".service") : null);
+    const envServices = [...new Set(entries.filter(({ entry }) => entry.enabledEnv).map(({ entry }) => serviceOf(entry)).filter(Boolean))];
+    const environments = new Map();
+    if (envServices.length) {
+      try {
+        const { stdout } = await this.systemctl(["show", ...envServices, "--no-pager", "--property=Id,Environment"]);
+        for (const [id, state] of parseTimerShow(stdout)) environments.set(id, parseEnvironment(state.Environment));
+      } catch { /* environnement inconnu: considere comme coupe */ }
+    }
+    const journalServices = [...new Set(entries.filter(({ entry }) => entry.kind !== "queue" && entry.unit).map(({ entry }) => serviceOf(entry)))];
+    let runs = new Map();
+    if (journalServices.length) {
+      try {
+        const { stdout } = await this.run("/usr/bin/journalctl", ["--user", ...journalServices.flatMap((unit) => ["-u", unit]), "JOB_TYPE=start", `--since=@${Math.floor(since.getTime() / 1000)}`, "-o", "json", "--output-fields=JOB_TYPE,JOB_RESULT,USER_UNIT,UNIT", "--no-pager"], { timeout: 15_000 });
+        runs = parseJournalRuns(stdout);
+      } catch { /* journal illisible: pas d'historique */ }
+    }
+    const iterations = Math.min(200, days * 24 * 6 + 4);
+    const calendarCache = new Map();
+    const occurrencesOf = async (calendar) => {
+      if (!calendarCache.has(calendar)) {
+        calendarCache.set(calendar, this.run("/usr/bin/systemd-analyze", ["calendar", `--iterations=${iterations}`, `--base-time=@${Math.floor(now.getTime() / 1000)}`, calendar], { timeout: 10_000 })
+          .then(({ stdout }) => parseCalendarIterations(stdout))
+          .catch(() => []));
+      }
+      return calendarCache.get(calendar);
+    };
+    const boostFiles = new Map();
+    for (const { entry } of entries.filter(({ entry }) => entry.boost)) {
+      if (!boostFiles.has(entry.boost.file)) boostFiles.set(entry.boost.file, await readBoosts(entry.boost.file));
+    }
+    const boostState = (entry) => boostFiles.get(entry.boost.file) || { slots: {}, occurrences: {} };
+    const boosts = entries.filter(({ entry }) => entry.boost && !entry.boost.group).map(({ module, entry }) => ({ moduleId: module.id, entryId: entry.id, label: entry.label, keys: entry.boost.keys, enabled: entry.boost.keys.every((key) => boostState(entry).slots[key] === true), accent: module.accent }));
+    // Bouton par occurrence: seulement sur le creneau boostable ("at"), lecture seule pour le passe.
+    const occurrenceBoost = (entry, date, past) => {
+      if (!entry.boost?.group || (entry.boost.at && !nearTime(date, entry.boost.at))) return {};
+      const boostKey = `${parisDate(date)}:${entry.boost.group}`;
+      return { boostKey, boost: boostState(entry).occurrences[boostKey] === true, boostable: !past };
+    };
+    const items = [];
+    const unscheduled = [];
+    for (const { module, entry } of entries) {
+      if (entry.kind === "boost") continue;
+      const state = entry.unit ? states.get(entry.unit) : null;
+      const service = serviceOf(entry);
+      const installed = !entry.unit || (state && state.LoadState !== "not-found");
+      const envValue = entry.enabledEnv ? environments.get(service)?.[entry.enabledEnv] : null;
+      const envOff = Boolean(entry.enabledEnv) && !["1", "true", "yes"].includes(String(envValue ?? "").toLowerCase());
+      const active = (entry.unit ? state?.ActiveState === "active" : true) && !envOff;
+      const proposal = await readPlanningState(entry);
+      const base = { moduleId: module.id, moduleName: module.name, accent: module.accent, entryId: entry.id, label: entry.label, kind: entry.kind, channels: entry.channels, unit: entry.unit, active };
+      const reason = !installed ? "timer non installé" : envOff ? `${entry.enabledEnv}=${envValue ?? "absent"}` : state?.ActiveState !== "active" && entry.unit ? "timer arrêté" : "";
+      for (const run of (service && entry.kind !== "queue" ? runs.get(service) : null) || []) {
+        items.push({ ...base, ...slotFor(entry, new Date(run.startedAt)), ...occurrenceBoost(entry, new Date(run.startedAt), true), at: run.startedAt, finishedAt: run.finishedAt, past: true, result: run.result });
+      }
+      if (entry.kind === "queue") {
+        for (const occurrence of await queuePast(entry, since, now)) items.push({ ...base, ...occurrence });
+        for (const occurrence of await queueOccurrences(entry, now, until)) items.push({ ...base, ...occurrence });
+        continue;
+      }
+      // Un timer coupe/absent ne produit aucune publication: une ligne d'etat au lieu de creneaux fictifs.
+      if (!installed || envOff || !state?.calendars?.length) {
+        unscheduled.push({ ...base, active: false, reason: reason || "non planifié", preview: proposal?.preview || "", proposalStatus: proposal?.status || "" });
+        continue;
+      }
+      const randomized = delayMinutes(state.RandomizedDelayUSec);
+      for (const calendar of state.calendars) {
+        for (const at of await occurrencesOf(calendar)) {
+          if (at > until) break;
+          if (at >= now) items.push({ ...base, ...slotFor(entry, at), ...occurrenceBoost(entry, at, false), at: at.toISOString(), randomizedMinutes: randomized || 0, preview: proposal?.byAt?.[parisKey(at)] || proposal?.preview || "", reason });
+        }
+      }
+    }
+    items.sort((a, b) => a.at.localeCompare(b.at));
+    return { from: since.toISOString(), now: now.toISOString(), until: until.toISOString(), items: items.slice(0, 300), unscheduled, boosts };
+  }
+
+  async setBoost(projectId, moduleId, entryId, enabled, date = null, now = new Date()) {
+    const module = this.get(moduleId);
+    if (module.projectId !== projectId) throw new Error("Module introuvable.");
+    const entry = (module.planning || []).find((item) => item.id === entryId);
+    if (!entry?.boost) throw new Error("Boost introuvable.");
+    if (!entry.boost.group) {
+      await writeBoost(entry.boost.file, { slots: entry.boost.keys, enabled: enabled === true }, { now });
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) throw new Error("Date de boost invalide.");
+    // Le script lit la cle du jour au moment de publier: une date passee ne servirait a rien.
+    if (date < parisDate(now)) throw new Error("Occurrence passée : boost non modifiable.");
+    await writeBoost(entry.boost.file, { occurrence: `${date}:${entry.boost.group}`, enabled: enabled === true }, { now });
+  }
+
+  async boardMedia(id, name) {
+    return boardMedia(this.get(id), name);
+  }
+
+  async chatDay(id, day) {
+    const module = this.get(id);
+    if (!module.chat) throw new Error("Module sans messagerie.");
+    return readModuleChat(module, { day: day ? String(day) : null });
   }
 
   async setEnabled(id, enabled) {

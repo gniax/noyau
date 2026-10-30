@@ -1,0 +1,40 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import "./workspace-navigation.css";
+import { AppIcon } from "./app-icon.jsx";
+
+export function WorkspaceNavigation({ projects = [], sessions = [], activeId, lastAgentId, view, onAgent, onView, onProject, onNewAgent, onLogout, projectIcon, agentIcon }) {
+  const [panel, setPanel] = useState(""); const [query, setQuery] = useState(""); const [projectFilter, setProjectFilter] = useState(""); const [editing, setEditing] = useState(false);
+  const fullViewport = useRef(window.innerHeight);
+  useEffect(() => {
+    const update = () => {
+      const el = document.activeElement; const focused = Boolean(el && (el.matches("input:not([type=file]), textarea, [contenteditable=true]") || el.closest("[contenteditable=true]")));
+      const visible = window.visualViewport?.height || window.innerHeight;
+      if (!focused) fullViewport.current = Math.max(window.innerHeight, visible);
+      setEditing(focused && fullViewport.current - visible > 120);
+    };
+    const later = () => queueMicrotask(update);
+    document.addEventListener("focusin", update); document.addEventListener("focusout", later); window.addEventListener("resize", update); window.visualViewport?.addEventListener("resize", update);
+    return () => { document.removeEventListener("focusin", update); document.removeEventListener("focusout", later); window.removeEventListener("resize", update); window.visualViewport?.removeEventListener("resize", update); };
+  }, []);
+  const filtered = useMemo(() => { const term = query.trim().toLocaleLowerCase("fr"); return sessions.filter((item) => (!projectFilter || item.projectId === projectFilter) && (!term || `${item.name || ""} ${item.project?.name || ""}`.toLocaleLowerCase("fr").includes(term))); }, [sessions, query, projectFilter]);
+  const openPanel = (name) => { setQuery(""); setProjectFilter(""); setPanel(name); };
+  const goView = (name) => { setPanel(""); onView(name); };
+  useEffect(() => { const chooseAgent = () => openPanel("agents"); const chooseProject = () => openPanel("projects"); window.addEventListener("noyau:choose-agent", chooseAgent); window.addEventListener("noyau:choose-project", chooseProject); return () => { window.removeEventListener("noyau:choose-agent", chooseAgent); window.removeEventListener("noyau:choose-project", chooseProject); }; }, []);
+  const returnToProject = () => { if (!activeId && view === "projects") return; const agent = sessions.find((item) => item.id === (activeId || lastAgentId)); const project = projects.find((item) => item.id === agent?.projectId); if (project) { setPanel(""); onProject(project.id); } else openPanel("projects"); };
+  const returnToAgent = () => { const previous = sessions.find((item) => item.id === lastAgentId); if (activeId) return; if (previous) { setPanel(""); onAgent(previous.id); } else openPanel("agents"); };
+  return <>
+    <nav className={`workspace-dock ${editing ? "keyboard-hidden" : ""}`} aria-label="Navigation principale">
+      <button type="button" aria-label="Accueil" aria-current={!activeId && view === "dashboard" ? "page" : undefined} onClick={() => goView("dashboard")}><span className="workspace-dock-icon"><AppIcon name="home" size={23}/></span><small>Accueil</small></button>
+      <button type="button" aria-label="Projets" aria-current={!activeId && view === "projects" ? "page" : undefined} onClick={returnToProject}><span className="workspace-dock-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><small>Projets</small></button>
+      <button type="button" aria-label="Agents" aria-current={activeId ? "page" : undefined} onClick={returnToAgent}><span className="workspace-dock-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="12" cy="8" r="3.2"/><path d="M5 20v-2a7 7 0 0 1 14 0v2M3 7a3 3 0 0 0 1 5M21 7a3 3 0 0 1-1 5"/></svg></span><small>Agents</small></button>
+      <button type="button" aria-label="Tâches" aria-current={!activeId && view === "todos" ? "page" : undefined} onClick={() => goView("todos")}><span className="workspace-dock-icon"><AppIcon name="task" size={23}/></span><small>Tâches</small></button>
+      <button type="button" aria-label="Plus" onClick={() => openPanel("more")}><span><AppIcon name="more" size={20}/></span><small>Plus</small></button>
+    </nav>
+    {panel && <div className="workspace-sheet-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPanel(""); }}><section className="workspace-sheet" role="dialog" aria-modal="true" aria-label={panel === "agents" ? "Choisir un agent" : panel === "projects" ? "Choisir un projet" : "Navigation et raccourcis"}>
+      <div className="workspace-sheet-handle" /><header><div><span className="workspace-sheet-eyebrow">NOYAU · VOTRE ESPACE</span><h2>{panel === "agents" ? "Vos agents" : panel === "projects" ? "Vos projets" : "Tout à portée de main"}</h2></div><button type="button" aria-label="Fermer navigation" onClick={() => setPanel("")}>×</button></header>
+      {panel === "agents" && <><label className="workspace-search"><span><AppIcon name="search" size={16}/></span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Rechercher un agent ou un projet" aria-label="Rechercher un agent" /></label><div className="workspace-chips"><button type="button" className={!projectFilter ? "selected" : ""} onClick={() => setProjectFilter("")}>Tous</button>{projects.map((p) => <button type="button" key={p.id} className={projectFilter === p.id ? "selected" : ""} onClick={() => setProjectFilter(p.id)}>{p.name}</button>)}</div><div className="workspace-sheet-list">{filtered.map((item) => <button className="workspace-list-item" type="button" key={item.id} onClick={() => { setPanel(""); onAgent(item.id); }}><span className="workspace-avatar">{agentIcon ? agentIcon(item) : <AppIcon name="folder" />}</span><span className="workspace-list-text"><b>{item.name}</b><small>{item.project?.name || "Sans projet"}</small></span><span className={`workspace-agent-ticket ${item.agentStatus?.state || "available"}`}><i className={`workspace-agent-dot ${item.agentStatus?.state || "available"}`} /><span>{item.agentStatus?.label || "Disponible"}</span></span><span>›</span></button>)}{!filtered.length && <p className="workspace-empty">Aucun agent trouvé.</p>}</div></>}
+      {panel === "projects" && <><div className="workspace-sheet-list">{projects.map((project) => { const count = sessions.filter((item) => item.projectId === project.id).length; return <button type="button" className="workspace-list-item" key={project.id} onClick={() => { setPanel(""); onProject(project.id); }}><span className="workspace-project-icon">{projectIcon ? projectIcon(project) : project.name?.slice(0, 1)}</span><span className="workspace-list-text"><b>{project.name}</b><small>{count} agent{count === 1 ? "" : "s"}</small></span><span>›</span></button>; })}{!projects.length && <p className="workspace-empty">Aucun projet disponible.</p>}</div><button type="button" className="workspace-secondary" onClick={() => goView("projects")}>Voir tous les projets et fichiers →</button></>}
+      {panel === "more" && <div className="workspace-links">{onNewAgent && <button type="button" onClick={() => { setPanel(""); onNewAgent(); }}><span><AppIcon name="plus"/></span><b>Nouvel agent</b><i>›</i></button>}{[["calendar", "Calendrier", "calendar"], ["budget", "Budget", "finances"], ["basket", "Courses", "groceries"], ["folder", "Projets et fichiers", "projects"], ["settings", "Réglages et profils", "settings"]].map(([icon, label, target]) => <button type="button" key={target} onClick={() => goView(target)}><span><AppIcon name={icon}/></span><b>{label}</b><i>›</i></button>)}{onLogout && <button type="button" onClick={() => { setPanel(""); onLogout(); }}><span><AppIcon name="lock"/></span><b>Se déconnecter</b><i>›</i></button>}</div>}
+    </section></div>}
+  </>;
+}

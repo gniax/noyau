@@ -22,7 +22,7 @@ test("profile service seeds isolated primary and partner profiles", async () => 
 });
 
 test("profile service creates and updates safe profile settings", async () => {
-  const store = new MemoryStore({ main: { name: "Noyau", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
+  const store = new MemoryStore({ main: { name: "Main", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
   const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
   await service.initialize();
   const profile = await service.create({ name: "Léa Maison", theme: "moving-castle" });

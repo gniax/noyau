@@ -10,11 +10,14 @@ Everything runs on your machine: no third-party service, no database, plain file
 
 **Agents** — Each agent is a persistent `tmux` session, so it survives a closed tab, a server restart or a dropped connection. The terminal is xterm.js over a WebSocket, with a key bar built for touch (Ctrl, Alt, Esc, paste, file upload, screen capture).
 
-- switch provider mid-conversation, context handed over;
+- conversation mode on top of the raw terminal: chat bubbles, live activity preview, request summary with jump-to-message, Enter to send / Shift+Enter for a new line;
+- switch provider mid-conversation (Codex ⇄ Claude ⇄ Antigravity) in the same tmux session, with a stable agent identity and a shared memory that survives the switch;
 - Codex / Claude / Antigravity quotas polled and displayed;
 - Web Push notifications when an agent waits for an answer;
 - archiving: closing an agent keeps its thread, one click brings it back where it stopped;
-- agent-to-agent tools: list running agents, read their context, hand them a task.
+- agent-to-agent tools: list running agents, read their context, hand them a task;
+- shared files per project: agents drop deliverables (images, PDF, builds) and the chat shows a one-click preview card;
+- project map: agents, services, timers and the links between them.
 
 **Projects** — Group agents by work without forcing a shared folder. A project can expose modules declared in `.noyau/modules/*.json`: systemd unit control, one-click actions, external links, Android/iOS builds installable from the phone, knowledge sources.
 
@@ -30,6 +33,8 @@ Everything runs on your machine: no third-party service, no database, plain file
 
 **Automatic tracking** — A `UserPromptSubmit` hook (Claude Code and Codex) hands the agent the open tasks of the current project and asks it to record every change or bug: create the task, or comment the existing one. Once handled, the agent moves it to "to verify" with the date and commit — never to "done", that stays a manual call. Tracking can be switched off per project and per agent.
 
+**Groceries & calendar** — Weekly meal planning, shopping lists and basket comparison across stores; tasks with a due date show up in the calendar.
+
 **Budget** — Envelope-based expense tracking, LLM-assisted categorisation, optional bank connection (Enable Banking) over local HTTPS.
 
 ![Budget](docs/screenshots/budget.png)
@@ -40,12 +45,15 @@ Everything runs on your machine: no third-party service, no database, plain file
 
 ```
 server/      Express API + WebSocket, one module per domain
-  tmux.js            session creation, restore and capture
+  tmux.js            session creation, restore, capture, provider switch
+  agent-memory.js    per-agent memory shared across providers
+  agent-conversation.js  transcript reading for the chat view
   session-store.js   atomic JSON persistence
   todo-service.js    Markdown vault read/write
   board-service.js   board zones, per-profile settings
   module-service.js  project modules, systemd, device builds
   finance-*.js       budget, banking, advisor
+shared/      code shared by server and UI (groceries, alerts)
 src/         React UI (single view, no router)
 scripts/     tools the agents call (tasks, agent-to-agent, design)
 test/        node:test unit tests
@@ -94,6 +102,10 @@ Noyau can start shell sessions and control project services, so treat its web UI
 
 The HTTPS listener serves the same UI as an installable PWA: push notifications, touch terminal, install of the iOS/Android builds produced by the modules. The local certificate is at `/noyau-ca.cer`.
 
+A Capacitor shell (`capacitor.config.json`, `scripts/build-mobile.mjs`) packages the UI as a native app: Face ID / fingerprint unlock bound to the OS keystore (see [docs/native-auth.md](docs/native-auth.md)), native notifications when an agent finishes, offline snapshots. The native projects are not part of this repository; generate them with `npx cap add android|ios`.
+
+![Mobile home](docs/screenshots/mobile.png)
+
 ![Agent terminal](docs/screenshots/terminal.png)
 
 ## Agent commands
@@ -104,6 +116,7 @@ node scripts/noyau-agent.mjs send "Name" "Message"     # hand over a task
 node scripts/noyau-todo.mjs list                       # tasks of the current project
 node scripts/noyau-todo.mjs add "Text"                 # create a task
 node scripts/noyau-todo.mjs report *A1B2 "What changed"
+node scripts/noyau-file.mjs put build.apk               # drop a deliverable in the project's shared files
 ```
 
 `server/todo-track-hook.js` installs as a `UserPromptSubmit` hook in `~/.claude/settings.json` and `~/.codex/hooks.json`.

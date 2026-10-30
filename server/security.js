@@ -131,9 +131,9 @@ export function verifyPassword(password, hash, salt) {
   }
 }
 
-export function createSessionToken({ profileId, issuedAt = Date.now() }, secret) {
+export function createSessionToken({ profileId, issuedAt = Date.now(), biometricDeviceId }, secret) {
   if (!secret) throw new Error("Secret requis pour token de session.");
-  const payload = Buffer.from(JSON.stringify({ p: String(profileId || ""), i: issuedAt })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ p: String(profileId || ""), i: issuedAt, ...(biometricDeviceId ? { b: biometricDeviceId } : {}) })).toString("base64url");
   const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
   return `${payload}.${signature}`;
 }
@@ -155,7 +155,8 @@ export function verifySessionToken(token, secret, maxAgeMs = SESSION_MAX_AGE_MS,
     if (!issuedAt || !profileId) return null;
     const age = now - issuedAt;
     if (age < 0 || age > maxAgeMs) return null;
-    return { profileId, issuedAt };
+    if (data.b !== undefined && (typeof data.b !== "string" || !/^[a-f0-9-]{36}$/.test(data.b))) return null;
+    return { profileId, issuedAt, ...(data.b ? { biometricDeviceId: data.b } : {}) };
   } catch {
     return null;
   }

@@ -4,3 +4,19 @@ dist/
 *.log
 .DS_Store
 .noyau/builds/
+*.jks
+*.keystore
+*.p12
+*.p8
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+test-results/
+playwright-report/
+**/.build/
+
+# Instance-specific Android CA and exact-host trust, generated at build time.
+android/app/src/debug/res/xml/network_security_config.xml
+android/app/src/debug/res/raw/noyau_local_ca.cer
+android/app/src/release/res/xml/network_security_config.xml
+android/app/src/release/res/raw/noyau_local_ca.cer

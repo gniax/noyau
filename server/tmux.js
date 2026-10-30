@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { resolveTrustPrompt } from "./trust-prompt.js";
+import { agentIdentity } from "./agent-identity.js";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -19,9 +20,9 @@ export function validSessionId(id) {
   return SESSION_PATTERN.test(id);
 }
 
-export function createSessionId(assistant) {
+export function createSessionId() {
   const suffix = crypto.randomBytes(2).toString("hex");
-  return `noyau-${assistant}-${Date.now().toString(36)}-${suffix}`;
+  return `noyau-agent-${Date.now().toString(36)}-${suffix}`;
 }
 
 export function classifyAssistant(command, storedAssistant) {
@@ -32,16 +33,57 @@ export function classifyAssistant(command, storedAssistant) {
   return "shell";
 }
 
+// Saisie tapee en texte litteral. tmux prend un ";" final pour un separateur de commandes
+// et l'avale: on envoie ces points-virgules en hexa.
+export function literalKeyCommands(target, data) {
+  const text = String(data ?? "");
+  const tail = text.match(/;+$/)?.[0] || "";
+  const head = text.slice(0, text.length - tail.length);
+  const commands = [];
+  if (head) commands.push(["send-keys", "-t", target, "-l", "--", head]);
+  if (tail) commands.push(["send-keys", "-t", target, "-H", ...Array.from(tail, () => "3b")]);
+  return commands;
+}
+
+// Plusieurs commandes tmux en un seul appel, executees dans l'ordre.
+export function chainCommands(commands) {
+  return commands.flatMap((command, index) => (index ? [";", ...command] : command));
+}
+
+// tmux rejette au-dela de ~16 Ko ("command too long"): marge pour cwd, env et UTF-8.
+const MAX_INLINE_COMMAND_BYTES = 8000;
+const TMUX_VALUE_FLAGS = new Set(["-s", "-t", "-c", "-e", "-n"]);
+
+export function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
 export class TmuxController {
-  constructor({ binary = "tmux", store, workspaceRoot, codexBinary = "codex", claudeBinary = "claude", antigravityBinary = "antigravity", antigravityArgs = [], codexSessionsRoot = path.join(os.homedir(), ".codex", "sessions"), agentSettingsRoot = null }) {
+  constructor({ binary = "tmux", store, workspaceRoot, codexBinary = "codex", claudeBinary = "claude", antigravityBinary = "antigravity", antigravityArgs = [], codexSessionsRoot = path.join(os.homedir(), ".codex", "sessions"), agentSettingsRoot = null, memory = null, launchRoot = null, codexConfigFile = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml") }) {
     this.binary = binary;
     this.codexSessionsRoot = codexSessionsRoot;
     this.agentSettingsRoot = agentSettingsRoot;
+    this.memory = memory;
+    this.codexConfigFile = codexConfigFile;
     this.store = store;
     this.workspaceRoot = workspaceRoot;
     this.commands = { codex: codexBinary, claude: claudeBinary, "claude-design": claudeBinary, antigravity: antigravityBinary };
     // Antigravity n'expose pas encore d'options connues: on laisse la ligne de commande configurable.
     this.antigravityArgs = antigravityArgs;
+    this.launchRoot = launchRoot || agentSettingsRoot || path.join(os.tmpdir(), "noyau");
+  }
+
+  async memoryLaunch(id, metadata) {
+    if (!this.memory || metadata.assistant === "shell") return { args: [], initial: "" };
+    const context = await this.memory.prepare(id, metadata);
+    if (["claude", "claude-design"].includes(metadata.assistant)) return { args: ["--append-system-prompt", context.instructions], initial: "" };
+    if (metadata.assistant === "codex") {
+      const config = await fs.readFile(this.codexConfigFile, "utf8").catch((error) => { if (error.code === "ENOENT") return ""; throw error; });
+      // Never override a user's developer instructions, including profile-specific settings.
+      if (!/^[^#=\n]*\bdeveloper_instructions["']?\s*=/m.test(config)) return { args: ["-c", `developer_instructions=${JSON.stringify(context.instructions)}`], initial: "" };
+      return { args: [], initial: context.instructions + "\nRelis cette mémoire puis attends la prochaine demande, sans exécuter les anciennes tâches." };
+    }
+    return { args: ["--add-dir", context.directory], initial: context.instructions + "\nRelis cette mémoire puis attends la prochaine demande, sans exécuter les anciennes tâches." };
   }
 
   // Allegement de contexte propre a un agent: fichier absent = reglages du projet, inchanges.
@@ -53,6 +95,24 @@ export class TmuxController {
 
   async run(args) {
     return execFileAsync(this.binary, args, { maxBuffer: 1024 * 1024 });
+  }
+
+  // Lance un agent; une commande trop longue (memoire, passation) passe par un script ephemere.
+  async spawn(args) {
+    let index = 1;
+    while (index < args.length && String(args[index]).startsWith("-")) index += TMUX_VALUE_FLAGS.has(args[index]) ? 2 : 1;
+    const command = args.slice(index);
+    if (!command.length || Buffer.byteLength(command.join(" ")) <= MAX_INLINE_COMMAND_BYTES) return this.run(args);
+    const directory = path.join(this.launchRoot, "launch");
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    const script = path.join(directory, `${crypto.randomBytes(8).toString("hex")}.sh`);
+    await fs.writeFile(script, `#!/bin/sh\nrm -f "$0"\nexec ${command.map(shellQuote).join(" ")}\n`, { mode: 0o700 });
+    try {
+      return await this.run([...args.slice(0, index), "/bin/sh", script]);
+    } catch (error) {
+      await fs.rm(script, { force: true });
+      throw error;
+    }
   }
 
   // Codex sort en erreur si le fil demande n'a pas de trace sur disque, et la fenetre tmux meurt avec lui.
@@ -91,6 +151,7 @@ export class TmuxController {
         const stored = this.store.get(id);
         return {
           id,
+          ...agentIdentity(id, stored || {}, this.store),
           name: stored?.name || id,
           assistant: classifyAssistant(command, stored?.assistant),
           command,
@@ -152,26 +213,32 @@ export class TmuxController {
         const cwd = path.resolve(entry.cwd || this.workspaceRoot);
         const stat = await fs.stat(cwd);
         if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
+        const memory = await this.memoryLaunch(id, { ...entry, cwd });
         const args = ["new-session", "-d", "-s", id, "-c", cwd, "-e", `NOYAU_SESSION_ID=${id}`];
         if (entry.assistant === "codex") {
           args.push(this.commands.codex, "--no-alt-screen");
           if (entry.yolo) args.push("--yolo");
           if (entry.model) args.push("-m", String(entry.model));
-          args.push("-c", "check_for_update_on_startup=false", "resume", entry.threadId ? String(entry.threadId) : "--last");
+          args.push("-c", "check_for_update_on_startup=false", ...memory.args);
+          if (!this.memory || (entry.threadId && await this.codexThreadResumable(entry.threadId))) args.push("resume", entry.threadId ? String(entry.threadId) : "--last");
+          if (memory.initial) args.push(memory.initial);
         } else if (["claude", "claude-design"].includes(entry.assistant)) {
           args.push(this.commands.claude, ...(entry.model ? ["--model", String(entry.model)] : []), ...(await this.agentSettingsArgs(id)));
+          args.push(...memory.args);
           if (entry.yolo) args.push("--dangerously-skip-permissions");
           if (entry.agentSessionId) args.push("--resume", String(entry.agentSessionId));
           else if (entry.assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
-          else args.push("--continue");
+          else if (!this.memory) args.push("--continue");
         } else if (entry.assistant === "antigravity") {
           args.push(this.commands.antigravity, ...this.antigravityArgs);
+          args.push(...memory.args);
           if (entry.model) args.push("--model", String(entry.model));
           if (entry.yolo) args.push("--dangerously-skip-permissions");
-          if (entry.agentSessionId) args.push("--conversation", String(entry.agentSessionId));
-          else args.push("--continue");
+          if (entry.conversationId || entry.agentSessionId) args.push("--conversation", String(entry.conversationId || entry.agentSessionId));
+          else if (!this.memory) args.push("--continue");
+          if (memory.initial) args.push("--prompt-interactive", memory.initial);
         }
-        await this.run(args);
+        await this.spawn(args);
         live.add(id);
         await this.store.set(id, { ...entry, runningYolo: Boolean(entry.yolo), agentState: "available", agentStateUpdatedAt: new Date().toISOString(), restoredAt: new Date().toISOString(), restoreError: null });
         restored.push(id);
@@ -183,7 +250,7 @@ export class TmuxController {
     return { restored, failed };
   }
 
-  async create({ name, description = null, assistant, model = null, cwd, prompt, migratedFrom, yolo = false, projectLogo = null, projectId = null, profileId = null, shared = false, favorite = false, threadId = null, agentSessionId = null, transcriptPath = null }) {
+  async create({ name, description = null, assistant, model = null, cwd, prompt, migratedFrom, yolo = false, projectLogo = null, projectId = null, profileId = null, shared = false, favorite = false, threadId = null, agentSessionId = null, transcriptPath = null, replaceId = null, agentId = null, agentAliases = [] }) {
     if (!["codex", "claude", "claude-design", "shell", "antigravity"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
     let stat;
@@ -195,9 +262,14 @@ export class TmuxController {
     }
     if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
 
-    const id = createSessionId(assistant);
+    if (replaceId && (!validSessionId(replaceId) || !replaceId.startsWith("noyau-") || !this.store.get(replaceId))) throw new Error("Session à remplacer introuvable.");
+    const id = replaceId || createSessionId();
+    const previous = replaceId ? this.store.get(replaceId) : null;
+    const memory = await this.memoryLaunch(id, { ...(previous || {}), agentId: agentId || previous?.agentId || id, assistant, cwd: resolvedCwd, profileId, projectId });
     const unrestricted = assistant !== "shell" && Boolean(yolo);
-    const args = ["new-session", "-d", "-s", id, "-c", resolvedCwd, "-e", `NOYAU_SESSION_ID=${id}`];
+    const args = replaceId
+      ? ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", resolvedCwd, "-e", `NOYAU_SESSION_ID=${id}`]
+      : ["new-session", "-d", "-s", id, "-c", resolvedCwd, "-e", `NOYAU_SESSION_ID=${id}`];
     if (assistant !== "shell") {
       args.push(this.commands[assistant]);
       if (assistant === "antigravity") {
@@ -209,6 +281,7 @@ export class TmuxController {
         if (unrestricted) args.push("--yolo");
         if (model) args.push("-m", String(model));
         args.push("-c", "check_for_update_on_startup=false");
+        args.push(...memory.args);
         // Les hooks Noyau (suivi to-do) sont locaux: sans ce drapeau, chaque session redemande leur validation.
         if (unrestricted) args.push("--dangerously-bypass-hook-trust");
         if (threadId && await this.codexThreadResumable(threadId)) args.push("resume", String(threadId));
@@ -216,30 +289,35 @@ export class TmuxController {
       if (["claude", "claude-design"].includes(assistant)) {
         if (assistant === "claude" && model) args.push("--model", String(model));
         args.push(...(await this.agentSettingsArgs(id)));
+        args.push(...memory.args);
         if (unrestricted) args.push("--dangerously-skip-permissions");
         if (agentSessionId) args.push("--resume", String(agentSessionId));
       }
       if (assistant === "antigravity") {
+        args.push(...memory.args);
         if (unrestricted) args.push("--dangerously-skip-permissions");
         if (agentSessionId) args.push("--conversation", String(agentSessionId));
       }
       // Antigravity attend son prompt derriere une option, pas en argument libre.
-      const initialPrompt = prompt || (assistant === "claude-design" && !agentSessionId ? CLAUDE_DESIGN_PROMPT : null);
-      if (initialPrompt && assistant === "antigravity" && !agentSessionId) args.push("--prompt-interactive", String(initialPrompt).slice(0, 50_000));
-      else if (initialPrompt && !threadId && !agentSessionId) args.push(String(initialPrompt).slice(0, 50_000));
+      const initialPrompt = [memory.initial, prompt || (assistant === "claude-design" && !agentSessionId ? CLAUDE_DESIGN_PROMPT : "")].filter(Boolean).join("\n\n");
+      if (initialPrompt && assistant === "antigravity") args.push("--prompt-interactive", initialPrompt.slice(0, 50_000));
+      else if (initialPrompt && ((!threadId && !agentSessionId) || memory.initial)) args.push(initialPrompt.slice(0, 50_000));
     }
-    await this.run(args);
+    await this.spawn(args);
     await this.applyScrollDefaults();
     if (assistant !== "shell") void this.acceptTrustPrompt(id).catch(() => {});
 
     const entry = {
+      ...previous,
+      ...agentIdentity(id, { ...(previous || {}), ...(agentId ? { agentId } : {}), agentAliases: [...(previous?.agentAliases || []), ...agentAliases], migratedFrom: migratedFrom || previous?.migratedFrom || null, profileId }, this.store),
       name: String(name || assistant).trim().slice(0, 60) || assistant,
       description: String(description || "").trim().slice(0, 1000) || null,
       assistant,
-      ...(model ? { model: String(model) } : {}),
+      ...(model ? { model: String(model) } : previous ? { model: null } : {}),
       cwd: resolvedCwd,
-      createdAt: new Date().toISOString(),
-      migratedFrom: migratedFrom || null,
+      createdAt: previous?.createdAt || new Date().toISOString(),
+      migratedFrom: migratedFrom || previous?.migratedFrom || null,
+      ...(previous ? { migrationState: "complete", migrationError: null, migrationTarget: assistant, migratedTo: null, switchedFrom: previous.assistant, switchedAt: new Date().toISOString(), threadId: null, agentSessionId: null, conversationId: null, transcriptPath: null } : {}),
       yolo: unrestricted,
       runningYolo: unrestricted,
       permissionRestartPending: false,
@@ -295,13 +373,24 @@ export class TmuxController {
     return null;
   }
 
-  async submit(id, text) {
+  // Les envois automatiques d'un meme agent passent l'un apres l'autre et attendent la fin
+  // du brouillon de l'utilisateur (inputGate), sauf action explicite de sa part (force).
+  async submit(id, text, { force = false } = {}) {
     if (!await this.exists(id)) throw new Error("Session introuvable.");
     const data = String(text || "").trim().slice(0, 50_000);
     if (!data) throw new Error("Message vide.");
-    await this.run(["send-keys", "-t", id, "-l", data]);
-    await wait(data.length > 200 ? 600 : 350);
-    await this.run(["send-keys", "-t", id, "C-m"]);
+    this.submitQueues ||= new Map();
+    const previous = this.submitQueues.get(id) || Promise.resolve();
+    const run = previous.catch(() => {}).then(async () => {
+      if (!force) await this.inputGate?.waitFree(id);
+      await this.run(chainCommands(literalKeyCommands(id, data)));
+      await wait(data.length > 200 ? 600 : 350);
+      await this.run(["send-keys", "-t", id, "C-m"]);
+    });
+    const tail = run.catch(() => {});
+    this.submitQueues.set(id, tail);
+    tail.then(() => { if (this.submitQueues.get(id) === tail) this.submitQueues.delete(id); });
+    return run;
   }
 
   async restartAgent({ id, assistant, model = null, cwd, threadId, yolo = false, resume = true }) {
@@ -309,15 +398,20 @@ export class TmuxController {
     const workingDirectory = path.resolve(cwd || this.workspaceRoot);
     // Un terminal n'a pas de conversation a reprendre: on relance simplement le shell.
     if (assistant === "shell") return this.run(["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory]);
+    const metadata = { ...this.store.get?.(id), assistant, cwd: workingDirectory };
+    if (this.memory) await this.memory.capture(id, metadata);
+    const memory = await this.memoryLaunch(id, metadata);
     if (assistant === "antigravity") {
       const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands.antigravity, ...this.antigravityArgs];
+      args.push(...memory.args);
       if (model) args.push("--model", String(model));
       if (yolo) args.push("--dangerously-skip-permissions");
       if (resume) {
-        if (threadId) args.push("--conversation", String(threadId));
-        else args.push("--continue");
+        if (threadId || metadata.conversationId) args.push("--conversation", String(threadId || metadata.conversationId));
+        else if (!this.memory) args.push("--continue");
       }
-      await this.run(args);
+      if (memory.initial) args.push("--prompt-interactive", memory.initial);
+      await this.spawn(args);
       void this.acceptTrustPrompt(id).catch(() => {});
       return undefined;
     }
@@ -327,24 +421,27 @@ export class TmuxController {
       if (yolo) args.push("--yolo");
       if (model) args.push("-m", String(model));
       args.push("-c", "check_for_update_on_startup=false");
+      args.push(...memory.args);
       if (yolo) args.push("--dangerously-bypass-hook-trust");
-      if (resume) {
+      if (resume && (!this.memory || (threadId && await this.codexThreadResumable(threadId)))) {
         args.push("resume");
         args.push(threadId && await this.codexThreadResumable(threadId) ? String(threadId) : "--last");
       }
+      if (memory.initial) args.push(memory.initial);
     } else {
       if (model && assistant === "claude") args.push("--model", String(model));
       args.push(...(await this.agentSettingsArgs(id)));
+      args.push(...memory.args);
       if (yolo) args.push("--dangerously-skip-permissions");
       if (resume) {
         if (threadId) args.push("--resume", String(threadId));
         else if (assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
-        else args.push("--continue");
+        else if (!this.memory) args.push("--continue");
       } else if (assistant === "claude-design") {
         args.push(CLAUDE_DESIGN_PROMPT);
       }
     }
-    await this.run(args);
+    await this.spawn(args);
     void this.acceptTrustPrompt(id).catch(() => {});
   }
 

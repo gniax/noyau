@@ -1,5 +1,8 @@
-export function shouldCopyTerminal({ event, targetInField, browserSelectionCollapsed, terminalSelection }) {
+export function shouldCopyTerminal({ event, targetInField, browserSelectionCollapsed, terminalSelection, assistant = null }) {
   const copyKey = String(event?.key || "").toLowerCase() === "c";
   const modifier = Boolean(event?.metaKey || event?.ctrlKey);
-  return copyKey && modifier && !event?.altKey && !targetInField && browserSelectionCollapsed && Boolean(terminalSelection);
+  if (!copyKey || !modifier || event?.altKey || targetInField) return false;
+  if (assistant && assistant !== "shell") return true;
+  return browserSelectionCollapsed && Boolean(terminalSelection);
 }
+

@@ -57,3 +57,17 @@ test("new-message indicator handles a rolling 100-message window without countin
   assert.equal(newMessageCount(previous, previous.slice(1)), 0);
   assert.equal(newMessageCount([], ["1"]), 1);
 });
+
+test("chat lists newest first, navigates by day and shows an active service", () => {
+  const messages = [
+    { id: "1", text: "Morning", timestamp: "2026-10-12T07:00:00Z", direction: "incoming", status: "received", sender: "A" },
+    { id: "2", text: "Evening", timestamp: "2026-10-12T18:00:00Z", direction: "incoming", status: "received", sender: "B" },
+  ];
+  const onDay = async () => ({ messages: [] });
+  const html = render({ messages, day: "2026-10-12", prevDay: "2026-10-11", nextDay: null, latestDay: "2026-10-12", onDay, state: "active" });
+  assert.ok(html.indexOf("Evening") < html.indexOf("Morning"));
+  assert.match(html, /aria-label="Jour précédent"/);
+  assert.match(html, /aria-label="Jour suivant" title="Jour suivant" disabled=""|disabled="" aria-label="Jour suivant"/);
+  assert.match(html, /Actif/);
+  assert.doesNotMatch(render({ messages }), /Jour précédent/);
+});

@@ -67,6 +67,8 @@ export class AgentArchiveService {
       const filtered = archives.filter((item) => item.id !== id);
       const archivedItem = {
         id,
+        agentId: entry.agentId || null,
+        agentAliases: entry.agentAliases || [],
         name: entry.name || entry.assistant || id,
         assistant: entry.assistant || "shell",
         cwd: entry.cwd || null,
@@ -113,6 +115,8 @@ export class AgentArchiveService {
       }
 
       const session = await tmux.create({
+        agentId: archived.agentId,
+        agentAliases: [...(archived.agentAliases || []), archived.id],
         name: archived.name,
         assistant: archived.assistant,
         cwd: archived.cwd,

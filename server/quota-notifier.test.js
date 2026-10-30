@@ -25,7 +25,7 @@ test("QuotaNotifier tracks exhausted quota and notifies when reset time is reach
   });
   const profileService = {
     list: () => [
-      { id: "main", name: "Noyau", quotaResetNotify: { claude: true, codex: true, antigravity: false } },
+      { id: "main", name: "Main", quotaResetNotify: { claude: true, codex: true, antigravity: false } },
     ],
   };
 
@@ -74,7 +74,7 @@ test("QuotaNotifier respects profile opt-out for specific models", async () => {
   });
   const profileService = {
     list: () => [
-      { id: "main", name: "Noyau", quotaResetNotify: { claude: true, codex: false, antigravity: false } },
+      { id: "main", name: "Main", quotaResetNotify: { claude: true, codex: false, antigravity: false } },
     ],
   };
 
@@ -108,7 +108,7 @@ test("QuotaNotifier re-arms when quota drops low again with a new reset time", a
   });
   const profileService = {
     list: () => [
-      { id: "main", name: "Noyau", quotaResetNotify: { claude: true, codex: true, antigravity: false } },
+      { id: "main", name: "Main", quotaResetNotify: { claude: true, codex: true, antigravity: false } },
     ],
   };
 
@@ -143,7 +143,7 @@ test("QuotaNotifier sends reset to every profile device", async () => {
   const notifier = new QuotaNotifier({
     push: { send: async (...args) => { calls.push(args); return 2; } },
     providerState,
-    profileService: { list: () => [{ id: "main", name: "Noyau", quotaResetNotify: { codex: true } }] },
+    profileService: { list: () => [{ id: "main", name: "Main", quotaResetNotify: { codex: true } }] },
     now: () => clock,
   });
   await notifier.check();

@@ -58,7 +58,13 @@ async function resolveProject(targetIdentifier, { projects, sessions, cwd }) {
     return { id: process.env.NOYAU_PROJECT_ID, ...projects[process.env.NOYAU_PROJECT_ID] };
   }
 
-  // 3. Détection par session active ou cwd
+  // 3. Projet de l'agent appelant: prioritaire sur la devinette par dossier.
+  const ownSession = process.env.NOYAU_SESSION_ID && sessions[process.env.NOYAU_SESSION_ID];
+  if (ownSession?.projectId && projects[ownSession.projectId]) {
+    return { id: ownSession.projectId, ...projects[ownSession.projectId] };
+  }
+
+  // 4. Détection par session active ou cwd
   const realCwd = path.resolve(cwd || process.cwd());
   const matchingSessions = Object.entries(sessions)
     .filter(([, s]) => s?.cwd && (realCwd === path.resolve(s.cwd) || realCwd.startsWith(`${path.resolve(s.cwd)}${path.sep}`)))
@@ -70,7 +76,7 @@ async function resolveProject(targetIdentifier, { projects, sessions, cwd }) {
     }
   }
 
-  // 4. Détection par correspondance du nom de dossier cwd avec un nom de projet
+  // 5. Détection par correspondance du nom de dossier cwd avec un nom de projet
   const cwdParts = realCwd.toLowerCase().split(path.sep);
   for (const [id, p] of Object.entries(projects)) {
     const pName = String(p.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -79,7 +85,7 @@ async function resolveProject(targetIdentifier, { projects, sessions, cwd }) {
     }
   }
 
-  // 5. Si un seul projet existe
+  // 6. Si un seul projet existe
   const allProjects = Object.entries(projects);
   if (allProjects.length === 1) {
     return { id: allProjects[0][0], ...allProjects[0][1] };
@@ -170,7 +176,7 @@ try {
     const ext = path.extname(resolvedSource).toLowerCase();
     const isCode = [".js", ".jsx", ".ts", ".tsx", ".php", ".py", ".rb", ".go", ".rs", ".c", ".cpp", ".java", ".vue", ".svelte"].includes(ext);
     if (isCode && !process.argv.includes("--force")) {
-      throw new Error(`Le code source (${ext}) doit être modifié directement dans le dépôt Git du projet, pas dans les Fichiers Partagés Noyau (réservés aux images, médias, documents, PDF, exports et archives).`);
+      throw new Error(`Le code source (${ext}) se modifie dans le dépôt Git du projet (ajouter --force si demandé explicitement dans les Fichiers Partagés).`);
     }
 
     // Args optionnels: [nom-destination] [projet]
@@ -209,6 +215,7 @@ try {
       sizeFormatted: formatBytes(stat.size),
       savedTo: targetPath,
       url: `/api/projects/${encodeURIComponent(targetProject.id)}/files/${encodeURIComponent(filename)}`,
+      previewHint: `Mentionne « ${filename} » dans ton message pour que l'utilisateur dispose d'un bouton d'aperçu direct en un clic.`,
     });
     process.exit(0);
   }

@@ -194,7 +194,7 @@ export function formatHandover({ source, target, cwd, messages }) {
   const history = messages.map((message) => `[${message.role === "user" ? "utilisateur" : sourceLabel}] ${message.text}`).join("\n");
   return [
     `Tu es ${targetLabel} et tu reprends le travail d'un agent ${sourceLabel} dans ${cwd}.`,
-    `Aucune passation rédigée n'était possible (quota ${sourceLabel} épuisé ou agent indisponible): voici l'historique brut de la dernière conversation.`,
+    `Voici l'historique brut de la dernière conversation transmis directement depuis les fichiers locaux.`,
     "Sers-t'en comme contexte, vérifie l'état réel du dépôt et du git avant toute modification, puis attends la prochaine demande de l'utilisateur.",
     "",
     `HISTORIQUE (${messages.length} derniers messages, du plus ancien au plus récent):`,
@@ -231,11 +231,12 @@ export class HandoverService {
     return stats.filter(Boolean).sort((left, right) => right.time - left.time)[0]?.file || null;
   }
 
-  async codexFile({ threadId, cwd }) {
+  async codexFile({ threadId, cwd, strict = false }) {
     if (threadId) {
       const match = await this.newestFile(this.codexRoot, (entry) => entry.endsWith(`${threadId}.jsonl`));
       if (match) return match;
     }
+    if (strict) return null;
     if (!cwd) return null;
     // Sans threadId on retient la conversation la plus recente ouverte sur ce dossier.
     const files = await fs.readdir(this.codexRoot, { recursive: true }).catch(() => []);
@@ -255,17 +256,23 @@ export class HandoverService {
     return scored.filter(Boolean).sort((left, right) => right.time - left.time)[0]?.file || null;
   }
 
-  async claudeFile({ agentSessionId, cwd }) {
+  async claudeFile({ agentSessionId, cwd, strict = false }) {
     const directory = cwd ? path.join(this.claudeRoot, cwd.replace(/[^a-zA-Z0-9]/g, "-")) : null;
-    if (agentSessionId && directory) {
+    if (agentSessionId && directory && /^[a-zA-Z0-9_-]+$/.test(agentSessionId)) {
       const file = path.join(directory, `${agentSessionId}.jsonl`);
       if (await fs.stat(file).then(() => true, () => false)) return file;
     }
+    if (strict) return null;
     return directory ? this.newestFile(directory) : null;
   }
 
-  async antigravityFile({ cwd }) {
+  async antigravityFile({ cwd, conversationId, strict = false }) {
     if (!cwd) return null;
+    if (conversationId && ANTIGRAVITY_CONVERSATION_ID.test(conversationId)) {
+      const file = path.join(this.antigravityRoot, "brain", conversationId, ".system_generated", "logs", "transcript_full.jsonl");
+      if (await fs.stat(file).then(() => true, () => false)) return file;
+    }
+    if (strict) return null;
     const history = jsonLines(await readTail(path.join(this.antigravityRoot, "history.jsonl")));
     const conversations = history
       .filter((entry) => entry.workspace && path.resolve(entry.workspace) === path.resolve(cwd) && ANTIGRAVITY_CONVERSATION_ID.test(entry.conversationId || ""))
@@ -277,26 +284,26 @@ export class HandoverService {
     return null;
   }
 
-  async messages({ assistant, threadId, agentSessionId, cwd }) {
+  async messages({ assistant, threadId, agentSessionId, conversationId, cwd, strict = false }) {
     try {
       if (assistant === "codex") {
-        const file = await this.codexFile({ threadId, cwd });
+        const file = await this.codexFile({ threadId, cwd, strict });
         return file ? await scanTranscriptMessages(file, parseCodexLine) : [];
       }
       if (["claude", "claude-design"].includes(assistant)) {
-        const file = await this.claudeFile({ agentSessionId, cwd });
+        const file = await this.claudeFile({ agentSessionId, cwd, strict });
         return file ? await scanTranscriptMessages(file, parseClaudeLine) : [];
       }
       if (assistant === "antigravity") {
-        const file = await this.antigravityFile({ cwd });
+        const file = await this.antigravityFile({ cwd, conversationId, strict });
         return file ? await scanTranscriptMessages(file, parseAntigravityLine) : [];
       }
     } catch { /* transcript illisible */ }
     return [];
   }
 
-  async prompt({ assistant, target, threadId, agentSessionId, cwd }) {
-    const messages = await this.messages({ assistant, threadId, agentSessionId, cwd });
+  async prompt({ assistant, target, threadId, agentSessionId, conversationId, cwd, strict = false }) {
+    const messages = await this.messages({ assistant, threadId, agentSessionId, conversationId, cwd, strict });
     if (!messages.length) return null;
     return formatHandover({ source: assistant, target, cwd, messages });
   }

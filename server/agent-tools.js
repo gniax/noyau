@@ -1,6 +1,7 @@
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { agentIdentity } from "./agent-identity.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,7 +26,7 @@ export function resolveProjectId(raw, projects) {
   const byExactName = all.find(([, p]) => p.name && p.name.trim().toLowerCase() === target.toLowerCase());
   if (byExactName) return byExactName[0];
 
-  // 4. Recherche par inclusion insensible à la casse (ex: "atlas" dans "Atlas.cc")
+  // 4. Recherche par inclusion insensible à la casse (ex: "atlas" dans "atlas.example")
   const byIncludes = all.find(([, p]) => p.name && (
     p.name.toLowerCase().includes(target.toLowerCase()) ||
     target.toLowerCase().includes(p.name.toLowerCase())
@@ -36,7 +37,7 @@ export function resolveProjectId(raw, projects) {
 }
 
 export class AgentCommunicationService {
-  constructor({ tmux, store, projects = null, handover = null, agentStatus = null, workspaceRoot = process.cwd(), projectFiles = null } = {}) {
+  constructor({ tmux, store, projects = null, handover = null, agentStatus = null, workspaceRoot = process.cwd(), projectFiles = null, memory = null } = {}) {
     this.tmux = tmux;
     this.store = store;
     this.projects = projects;
@@ -44,6 +45,7 @@ export class AgentCommunicationService {
     this.agentStatus = agentStatus;
     this.workspaceRoot = workspaceRoot;
     this.projectFiles = projectFiles;
+    this.memory = memory;
   }
 
   async list({ profileId = null } = {}) {
@@ -72,8 +74,11 @@ export class AgentCommunicationService {
         } catch { /* fallback status */ }
       }
 
+      const identity = agentIdentity(session.id, stored || session, this.store);
       return {
-        id: session.id,
+        id: identity.agentId,
+        sessionId: session.id,
+        aliases: identity.agentAliases,
         name: stored?.name || session.name || session.id,
         assistant: session.assistant,
         projectId: stored?.projectId || null,
@@ -100,8 +105,11 @@ export class AgentCommunicationService {
     const normalized = target.toLowerCase();
 
     // 1. Exact ID
-    const byId = agents.find((a) => a.id === target || a.id.toLowerCase() === normalized);
-    if (byId) return byId;
+    const byId = agents.filter((a) => [a.id, a.sessionId, ...a.aliases].some((id) => id.toLowerCase() === normalized));
+    if (byId.length > 1) throw new Error(`Identifiant agent ambigu : « ${target} ».`);
+    if (byId.length === 1) return byId[0];
+    // An unknown or inaccessible ID must never fall through to name/project guessing.
+    if (/^noyau-/i.test(target) || this.store?.get(target)) throw new Error(`Agent introuvable pour « ${target} ».`);
 
     // 2. Exact Name
     const byName = agents.find((a) => a.name.toLowerCase() === normalized);
@@ -129,7 +137,7 @@ export class AgentCommunicationService {
 
   async context(query, { profileId = null } = {}) {
     const agent = await this.resolve(query, { profileId });
-    const stored = this.store ? this.store.get(agent.id) : null;
+    const stored = this.store ? this.store.get(agent.sessionId) : null;
 
     let messages = [];
     if (this.handover) {
@@ -145,7 +153,7 @@ export class AgentCommunicationService {
 
     let visibleTail = "";
     try {
-      visibleTail = await this.tmux.captureVisible(agent.id).catch(() => "");
+      visibleTail = await this.tmux.captureVisible(agent.sessionId).catch(() => "");
     } catch { /* tail optionnel */ }
 
     let git = null;
@@ -195,12 +203,19 @@ export class AgentCommunicationService {
     if (!callerTitle) callerTitle = "un autre agent Noyau";
 
     const formatted = `[Message inter-agent de « ${callerTitle} »]:\n${text}`;
-    await this.tmux.submit(target.id, formatted);
+    // L'utilisateur ecrit dans cet agent: le message part des qu'il a envoye son prompt,
+    // l'appelant n'attend pas.
+    const held = Boolean(this.tmux.inputGate?.busy(target.sessionId));
+    const delivery = this.tmux.submit(target.sessionId, formatted);
+    if (held) delivery.catch((error) => console.warn(`[agent-tools] message différé vers ${target.id} perdu: ${error.message}`));
+    else await delivery;
 
     return {
       success: true,
+      held,
       target: {
         id: target.id,
+        sessionId: target.sessionId,
         name: target.name,
         assistant: target.assistant,
         project: target.projectName,
@@ -305,7 +320,8 @@ export class AgentCommunicationService {
     return {
       success: true,
       agent: {
-        id: session.id,
+        id: agentIdentity(session.id, session).agentId,
+        sessionId: session.id,
         name: session.name,
         assistant: session.assistant,
         model: targetModel || null,
@@ -326,7 +342,7 @@ export class AgentCommunicationService {
       const allList = this.projects?.all ? Object.values(this.projects.all()).map((p) => `« ${p.name} » (${p.id})`).join(", ") : "";
       throw new Error(`Projet « ${projectTarget} » introuvable. Projets existants : ${allList}`);
     }
-    const current = this.store ? this.store.get(agent.id) : null;
+    const current = this.store ? this.store.get(agent.sessionId) : null;
     if (!current) throw new Error("Agent introuvable dans le store.");
     const project = this.projects.get(targetProjectId);
     const updated = {
@@ -335,7 +351,7 @@ export class AgentCommunicationService {
       projectLogo: current.projectLogo !== false,
       shared: Boolean(project?.shared || current.shared),
     };
-    await this.store.set(agent.id, updated);
+    await this.store.set(agent.sessionId, updated);
     return {
       success: true,
       agent: {
@@ -349,14 +365,48 @@ export class AgentCommunicationService {
 
   async stop(query, { profileId = null } = {}) {
     const agent = await this.resolve(query, { profileId });
-    if (this.store && this.store.get(agent.id)?.core) {
+    if (this.store && this.store.get(agent.sessionId)?.core) {
       throw new Error("Agent de base du Noyau: non supprimable.");
     }
-    await this.tmux.kill(agent.id);
+    await this.tmux.kill(agent.sessionId);
     return {
       success: true,
       stopped: agent.id,
       name: agent.name,
     };
+  }
+
+  // Explicit repair for historical IDs whose predecessor metadata was deleted by old switches.
+  async addAlias(query, alias, { profileId = null } = {}) {
+    const agent = await this.resolve(query, { profileId });
+    const current = this.store?.get(agent.sessionId);
+    if (!current || (profileId && current.profileId !== profileId)) throw new Error("Agent appartient à autre profil.");
+    if (typeof alias !== "string" || !/^noyau-[a-zA-Z0-9_-]{1,74}$/.test(alias)) throw new Error("Alias agent invalide.");
+    const normalized = alias.toLowerCase();
+    for (const [sessionId, entry] of Object.entries(this.store.all())) {
+      if (sessionId === agent.sessionId) continue;
+      const identity = agentIdentity(sessionId, entry, this.store);
+      if ([sessionId, identity.agentId, ...identity.agentAliases].some((id) => id.toLowerCase() === normalized)) throw new Error("Identifiant déjà attribué à un autre agent.");
+    }
+    const identity = agentIdentity(agent.sessionId, { ...current, agentAliases: [...(current.agentAliases || []), alias] }, this.store);
+    await this.store.set(agent.sessionId, { ...current, ...identity });
+    return { success: true, id: identity.agentId, sessionId: agent.sessionId, aliases: identity.agentAliases };
+  }
+
+  async readMemory(query, { profileId = null } = {}) {
+    if (!this.memory) throw new Error("Mémoire agent indisponible.");
+    const agent = await this.resolve(query, { profileId });
+    const metadata = this.store.get(agent.sessionId);
+    await this.memory.prepare(agent.sessionId, metadata);
+    const state = await this.memory.read(agent.sessionId, metadata);
+    return { ...state, text: this.memory.render(state) };
+  }
+
+  async writeMemory(query, options, { profileId = null } = {}) {
+    if (!this.memory) throw new Error("Mémoire agent indisponible.");
+    const agent = await this.resolve(query, { profileId });
+    if (profileId && this.store.get(agent.sessionId)?.profileId !== profileId) throw new Error("Agent appartient à autre profil.");
+    const state = await this.memory.writeNotes(agent.sessionId, options);
+    return { ...state, text: this.memory.render(state) };
   }
 }

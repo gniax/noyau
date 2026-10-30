@@ -48,12 +48,12 @@ export function sanitizeProfile(profile) {
 }
 
 export class ProfileService {
-  constructor({ store, dataDir, primaryTodoFile, primaryTodoMountUri = null, primaryName = "Noyau" }) {
+  constructor({ store, dataDir, primaryTodoFile, primaryTodoMountUri = null, primaryName = "Main" }) {
     this.store = store;
     this.dataDir = path.resolve(dataDir);
     this.primaryTodoFile = path.resolve(primaryTodoFile);
     this.primaryTodoMountUri = primaryTodoMountUri || null;
-    this.primaryName = cleanName(primaryName) || "Noyau";
+    this.primaryName = cleanName(primaryName) || "Main";
   }
 
   profileTodoFile(id) {
@@ -223,7 +223,7 @@ export class ProfileService {
     if (!current) throw new Error("Profil introuvable.");
     const name = input.name === undefined ? current.name : cleanName(input.name);
     if (!name) throw new Error("Nom profil requis.");
-    const isAurora = id.toLowerCase().includes("aurora") || name.toLowerCase().includes("aurora");
+    const isAurora = id.toLowerCase().includes("bellin") || name.toLowerCase().includes("bellin");
     const rawTheme = input.theme === undefined ? current.theme : String(input.theme);
     if (!THEMES.has(rawTheme)) throw new Error("Thème profil invalide.");
     const theme = isAurora ? "moving-castle" : rawTheme;

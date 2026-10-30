@@ -11,13 +11,24 @@ test("Ctrl+C copie sélection terminal au lieu d'envoyer SIGINT", () => {
   }), true);
 });
 
-test("Ctrl+C sans sélection reste disponible pour interrompre commande", () => {
+test("Ctrl+C sans sélection sur shell reste disponible pour interrompre commande", () => {
   assert.equal(shouldCopyTerminal({
     event: { key: "c", ctrlKey: true },
     targetInField: false,
     browserSelectionCollapsed: true,
     terminalSelection: "",
+    assistant: "shell",
   }), false);
+});
+
+test("Ctrl+C sans sélection sur agent est intercepté pour empêcher sa fermeture", () => {
+  assert.equal(shouldCopyTerminal({
+    event: { key: "c", ctrlKey: true },
+    targetInField: false,
+    browserSelectionCollapsed: true,
+    terminalSelection: "",
+    assistant: "codex",
+  }), true);
 });
 
 test("copie navigateur et champs ne sont pas détournés", () => {

@@ -7,7 +7,36 @@ import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 import "./theme-castle.css";
 import { shouldCopyTerminal } from "./terminal-shortcuts.js";
+import { Clipboard } from "@capacitor/clipboard";
+import { Capacitor } from "@capacitor/core";
+import { createTapGuard } from "./tap-guard.js";
+import { AgentConversation } from "./agent-conversation.jsx";
+import { createConversationDraftStore } from "./conversation-drafts.js";
+import { WorkspaceNavigation } from "./workspace-navigation.jsx";
+import { MobileDashboard } from "./mobile-dashboard.jsx";
+import { quotaTone } from "./quota-tone.js";
+import "./mobile-workspace.css";
+import { AppIcon } from "./app-icon.jsx";
+import { TerminalAgentSwitcher, agentsInSameProject } from "./terminal-agent-switcher.jsx";
+import { readNativeClipboard } from "./native-clipboard.js";
 import TelegramGrowthChat from "./telegram-growth-chat.jsx";
+import AgentMapView from "./agent-map.jsx";
+import ProjectTracking from "./project-tracking.jsx";
+import { FileSortButton, FileSortPanel, useFileSort } from "./project-file-sort.jsx";
+import AgentMemory from "./agent-memory.jsx";
+import GroceriesView from "./groceries.jsx";
+import { isNative, nativeServer, nativeSocketUrl, openTerminalSocket, enableNativePush, enableNativeLocalAlerts, nativeLocalAlertsEnabled, scheduleNativeAgentAlert, forgetNativeSession, nativeNetworkStatus, shareNativeProjectFile, openWireGuard } from "./native-mobile.js";
+import { networkLabel } from "./native-connection.js";
+import { readProjectFile } from "./project-file-transport.js";
+import { ProjectFilePreviewModal, formatFileBytes, getFileIcon, getFileCategory, downloadProjectFile } from "./project-file-preview.jsx";
+import { advanceAgentAlert } from "./agent-alert-transition.js";
+import { readNativeNavigation, saveNativeNavigation, clearNativeNavigation } from "./native-navigation-state.js";
+import { NativeDownloads, NativeServerSetup, MobileApplicationSettings } from "./mobile-setup.jsx";
+import { BiometricBoundary, BiometricSettings } from "./native-biometric.jsx";
+import { disableBiometric, biometricStatus, enableBiometric, biometricClient } from "./native-biometric.js";
+import { canQueueOffline } from "./offline-policy.js";
+import { loginNavigation } from "./login-navigation.js";
+import { calendarSnapshot, sameSnapshotScope } from "./offline-snapshots.js";
 
 const assistantMeta = {
   codex: { label: "Codex", glyph: "C", color: "green" },
@@ -32,7 +61,7 @@ function activeProfileId() {
 }
 
 function profileCacheKey(key) {
-  return `${activeProfileId() || "primary"}:${key}`;
+  return `${isNative ? `${nativeServer()}:` : ""}${activeProfileId() || "primary"}:${key}`;
 }
 
 const ROOT_FOLDER = "root";
@@ -188,10 +217,11 @@ function applicationServerKey(value) {
   return Uint8Array.from(raw, (character) => character.charCodeAt(0));
 }
 
-const OFFLINE_QUEUE_KEY = "noyau-offline-queue";
+const offlineQueueKey = () => `${isNative ? `${nativeServer()}:` : ""}noyau-offline-queue`;
+let nativeReadOnlyOffline = false;
 
 function getOfflineQueue() {
-  try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return []; }
+  try { const saved = JSON.parse(localStorage.getItem(offlineQueueKey()) || "[]"); const safe = Array.isArray(saved) ? saved.filter((item) => item && canQueueOffline(item.path, item.method || "POST")) : []; if (safe.length !== saved.length) localStorage.setItem(offlineQueueKey(), JSON.stringify(safe)); return safe; } catch { return []; }
 }
 
 function enqueueOfflineMutation(mutation) {
@@ -201,7 +231,7 @@ function enqueueOfflineMutation(mutation) {
     timestamp: new Date().toISOString(),
     ...mutation,
   });
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  localStorage.setItem(offlineQueueKey(), JSON.stringify(queue));
   window.dispatchEvent(new CustomEvent("noyau:offline-queue", { detail: { count: queue.length } }));
 }
 
@@ -211,6 +241,7 @@ async function flushOfflineQueue() {
   const remaining = [];
   let flushed = 0;
   for (const item of queue) {
+    if (isNative && !item.profileId || item.profileId && item.profileId !== activeProfileId()) { remaining.push(item); continue; }
     try {
       const res = await fetch(item.path, {
         method: item.method || "POST",
@@ -220,7 +251,7 @@ async function flushOfflineQueue() {
         },
         body: item.body ? (typeof item.body === "string" ? item.body : JSON.stringify(item.body)) : undefined,
       });
-      if (res.ok || res.status < 500) {
+      if (res.ok) {
         flushed++;
       } else {
         remaining.push(item);
@@ -229,7 +260,7 @@ async function flushOfflineQueue() {
       remaining.push(item);
     }
   }
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remaining));
+  localStorage.setItem(offlineQueueKey(), JSON.stringify(remaining));
   window.dispatchEvent(new CustomEvent("noyau:offline-queue", { detail: { count: remaining.length } }));
   return { flushed, remaining: remaining.length };
 }
@@ -237,17 +268,25 @@ async function flushOfflineQueue() {
 async function api(path, options = {}) {
   const multipart = typeof FormData !== "undefined" && options.body instanceof FormData;
   const profileId = activeProfileId();
+  const token = typeof localStorage !== "undefined" ? (localStorage.getItem("noyau:token") || localStorage.getItem("token")) : null;
   const method = (options.method || "GET").toUpperCase();
   const isMutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
+  if (isNative && nativeReadOnlyOffline && isMutation && canQueueOffline(path, method)) throw Object.assign(new Error("Tâches et calendrier sont en lecture seule hors ligne. Reconnectez-vous pour les modifier."), { status: 409 });
 
   try {
     const response = await fetch(path, {
       ...options,
-      headers: { ...(multipart ? {} : { "Content-Type": "application/json" }), ...(profileId ? { "X-Noyau-Profile": profileId } : {}), ...options.headers },
+      headers: {
+        ...(multipart ? {} : { "Content-Type": "application/json" }),
+        ...(profileId ? { "X-Noyau-Profile": profileId } : {}),
+        ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
     });
     if (response.status === 204) return null;
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (isNative && response.status === 401 && !path.startsWith("/api/auth") && path !== "/api/logout") window.dispatchEvent(new Event("noyau:biometric-reauth"));
       const error = new Error(body.error || `Erreur ${response.status}`);
       error.status = response.status;
       error.retryAfter = Number(body.retryAfter || response.headers.get("retry-after")) || 0;
@@ -255,7 +294,8 @@ async function api(path, options = {}) {
     }
     return body;
   } catch (error) {
-    if (isMutation && (!error.status || error.status >= 500 || error.name === "TypeError" || /failed to fetch/i.test(error.message))) {
+    if (isMutation && !multipart && canQueueOffline(path, method) && (!error.status || error.status >= 500 || error.name === "TypeError" || /failed to fetch/i.test(error.message))) {
+      if (isNative) throw Object.assign(new Error("Connexion perdue : tâches et calendrier restent en lecture seule hors ligne. Vérifiez la connexion avant de modifier."), { status: 409 });
       enqueueOfflineMutation({ path, method, body: options.body, profileId });
       return { offlineQueued: true, success: true };
     }
@@ -275,6 +315,17 @@ function useCountdown() {
 
 const VERSION_KEY = "noyau:version";
 const TOUCH_MODE = new URLSearchParams(location.search).get("touch") === "1";
+
+// Certaines WebViews natives sont bord à bord sans exposer les insets système.
+if (["android", "ios"].includes(window.Capacitor?.getPlatform?.())) {
+  document.documentElement.classList.add("native-platform");
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:fixed;top:0;padding-top:env(safe-area-inset-top,0px);visibility:hidden";
+  document.documentElement.appendChild(probe);
+  const inset = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+  probe.remove();
+  if (!inset && screen.height - window.innerHeight < 32) document.documentElement.style.setProperty("--safe-top-fallback", window.Capacitor?.getPlatform?.() === "ios" ? "54px" : "28px");
+}
 
 function appPath(parameters = {}) {
   const search = new URLSearchParams();
@@ -324,24 +375,8 @@ function BootRing({ percent }) {
 }
 
 function Boot({ percent, step, offline, detail, attempts, onRetry, onReset, onEnterOffline }) {
-  const [vpnGuideOpen, setVpnGuideOpen] = useState(false);
-  const isApple = /iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent) && !window.MSStream;
-
-  const handleWireGuardClick = () => {
-    if (isApple) {
-      setVpnGuideOpen(true);
-    } else {
-      try {
-        window.location.href = "intent://#Intent;package=com.wireguard.android;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;end";
-      } catch {
-        try {
-          window.location.href = "wireguard://";
-        } catch {
-          setVpnGuideOpen(true);
-        }
-      }
-    }
-  };
+  const [vpnError, setVpnError] = useState("");
+  const handleWireGuardClick = () => { setVpnError(""); openWireGuard().catch((error) => setVpnError(error.message)); };
 
   return (
     <div className="boot">
@@ -352,7 +387,7 @@ function Boot({ percent, step, offline, detail, attempts, onRetry, onReset, onEn
         <small className={offline ? "boot-step error" : "boot-step"}>{offline ? "VPN déconnecté" : step}</small>
         {offline && (
           <div className="boot-vpn-box">
-            <div className="vpn-prompt-card" onClick={handleWireGuardClick} role="button" tabIndex={0} title="Cliquer pour instructions WireGuard">
+            <div className="vpn-prompt-card" onClick={handleWireGuardClick} role="button" tabIndex={0} title="Ouvrir WireGuard">
               <div className="vpn-shield-badge">
                 <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
@@ -362,15 +397,17 @@ function Boot({ percent, step, offline, detail, attempts, onRetry, onReset, onEn
               <strong className="vpn-badge-title">TURN ON VPN FIRST</strong>
               <p className="vpn-badge-sub">Le Noyau tourne sur ton serveur privé local. Active WireGuard pour synchroniser en direct.</p>
               <button type="button" className="vpn-redirect-button" onClick={(e) => { e.stopPropagation(); handleWireGuardClick(); }}>
-                🛡️ Ouvrir l’application WireGuard
+                 Ouvrir l’application WireGuard
               </button>
             </div>
 
+            {isNative && Capacitor.getPlatform() === "ios" && <p className="muted boot-detail">Une seule fois : dans Raccourcis, crée « Noyau WireGuard » avec l’action « Ouvrir l’app » → WireGuard.</p>}
+            {vpnError && <p role="status" className="muted boot-detail">{vpnError}</p>}
             <p className="muted boot-detail">{detail || "Vérifie le tunnel WireGuard / le Wi-Fi local."} ({attempts} tentative{attempts > 1 ? "s" : ""})</p>
 
             <div className="boot-actions boot-vpn-actions">
               <button type="button" className="primary highlight-offline" onClick={onEnterOffline}>
-                ⚡ Accéder au Noyau en hors-ligne
+                Accéder au Noyau en hors-ligne
               </button>
               <button type="button" className="ghost" onClick={onRetry}>Réessayer connexion</button>
               <button type="button" className="ghost danger" onClick={onReset}>Réinitialiser</button>
@@ -379,51 +416,17 @@ function Boot({ percent, step, offline, detail, attempts, onRetry, onReset, onEn
         )}
       </div>
 
-      {vpnGuideOpen && (
-        <div className="modal-backdrop" onClick={() => setVpnGuideOpen(false)}>
-          <div className="modal vpn-guide-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
-              <h2>🛡️ Activer WireGuard {isApple ? "sur iOS" : "sur mobile"}</h2>
-              <button type="button" className="icon-button" onClick={() => setVpnGuideOpen(false)}>×</button>
-            </div>
-            <div className="vpn-guide-content">
-              <p className="muted small">
-                Sur iOS, Safari bloque l'ouverture directe d'applications VPN tierces (adresse invalide).
-              </p>
-              <div className="vpn-guide-steps">
-                <div className="vpn-guide-step">
-                  <span className="step-num">1</span>
-                  <div>
-                    <strong>Ouvrir l’app WireGuard</strong>
-                    <small>Ouvre WireGuard depuis ton écran d'accueil et active ton tunnel.</small>
-                  </div>
-                </div>
-                <div className="vpn-guide-step highlight">
-                  <span className="step-num">2</span>
-                  <div>
-                    <strong>⚡ Recommandé : Activer « Sur demande » (On-Demand)</strong>
-                    <small>Dans WireGuard, modifie ton tunnel et active <strong>« Sur demande »</strong> (Wi-Fi et Cellulaire). WireGuard s'allumera automatiquement chaque fois que tu ouvriras Noyau !</small>
-                  </div>
-                </div>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="primary" onClick={() => { setVpnGuideOpen(false); onEnterOffline(); }}>
-                  ⚡ Accéder au Noyau en hors-ligne
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+
     </div>
   );
 }
 
-function Login({ onLogin }) {
+function Login({ onLogin, onOffline }) {
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [remember, setRemember] = useState(false);
+  const [biometricOffer, setBiometricOffer] = useState(null);
   const [profiles, setProfiles] = useState([]);
   const [selectedProfileId, setSelectedProfileId] = useState(() => {
     try {
@@ -465,7 +468,16 @@ function Login({ onLogin }) {
       if (res?.profile?.id) {
         try { localStorage.setItem(PROFILE_KEY, res.profile.id); } catch { /* ignore */ }
       }
-      onLogin();
+      if (res?.token) {
+        try { localStorage.setItem("noyau:token", res.token); localStorage.setItem("token", res.token); } catch { /* ignore */ }
+      }
+      if (isNative && res?.profile?.id) {
+        try {
+          const status = await biometricStatus(res.profile.id);
+          if (status.available && !status.enabled) { setBiometricOffer({ profileId: res.profile.id, label: status.label }); return; }
+        } catch { /* Login remains usable if biometric hardware is unavailable. */ }
+      }
+      setToken(""); onLogin();
     } catch (reason) {
       setError(reason.message);
     } finally {
@@ -474,6 +486,8 @@ function Login({ onLogin }) {
   }
 
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId);
+
+  if (biometricOffer) return <main className="login-shell"><section className="login-card"><Mark /><h1>Connexion plus rapide</h1><p>Activer {biometricOffer.label} pour ce profil sur cet appareil ? Votre mot de passe ne sera pas enregistré.</p>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary wide" type="button" disabled={loading} onClick={async () => { setLoading(true); setError(""); try { await enableBiometric(biometricOffer.profileId, token); setToken(""); setBiometricOffer(null); onLogin(); } catch (reason) { setError(reason.message || "Activation impossible."); } finally { setLoading(false); } }}>{loading ? "Activation…" : `Activer ${biometricOffer.label}`}</button><button className="ghost wide" type="button" disabled={loading} onClick={() => { setToken(""); setBiometricOffer(null); onLogin(); }}>Plus tard</button></section></main>;
 
   return (
     <main className="login-shell">
@@ -524,13 +538,16 @@ function Login({ onLogin }) {
           {error && <p className="form-error">{error}</p>}
           <button className="primary wide" disabled={!token || loading}>{loading ? "Connexion…" : "Entrer"}</button>
         </form>
+        {onOffline && <button className="ghost wide" type="button" onClick={onOffline}>Continuer hors ligne</button>}
         <p className="login-hint">Session limitée à 2h max pour ta sécurité. Clé master dans terminal en secours.</p>
       </section>
     </main>
   );
 }
 
-function SwitchProfileModal({ target, onClose, onConfirm }) {
+function SwitchProfileModal({ target, onClose, onConfirm, onBiometric }) {
+  const [biometric, setBiometric] = useState(null);
+  useEffect(() => { let active = true; if (isNative) biometricStatus(target.id).then((value) => { if (active && value.enabled && value.available) setBiometric(value); }).catch(() => {}); return () => { active = false; }; }, [target.id]);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -555,6 +572,7 @@ function SwitchProfileModal({ target, onClose, onConfirm }) {
           <h2>Accéder à {target.name}</h2>
           <button type="button" className="ghost" onClick={onClose} aria-label="Fermer">✕</button>
         </header>
+        {biometric && <button type="button" className="primary wide" disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onBiometric(); } catch (err) { setError(err.message || "Authentification impossible."); } finally { setBusy(false); } }}>Utiliser {biometric.label}</button>}
         <form onSubmit={submit}>
           <p className="muted" style={{ marginBottom: "16px" }}>
             Entre le mot de passe pour basculer sur le profil <strong>{target.name}</strong>.
@@ -644,7 +662,7 @@ function CloseAgentHost() {
         </header>
         <div className="close-agent-choices">
           <button type="button" className="close-agent-choice" onClick={() => answer("archive")} autoFocus>
-            <strong>🗄 Archiver</strong>
+            <strong> Archiver</strong>
             <span>L'agent se ferme. Sa conversation reste dans « Agents archivés » pour le relancer plus tard.</span>
           </button>
           <button type="button" className="close-agent-choice danger" onClick={() => answer("exit")}>
@@ -661,19 +679,73 @@ function CloseAgentHost() {
   );
 }
 
+const projectImageCache = new Map();
+
+function preloadProjectImage(src) {
+  if (!isNative || !src || typeof src !== "string" || !src.startsWith("/api/")) return;
+  if (projectImageCache.has(src)) return;
+  fetch(src, { credentials: "include" })
+    .then((response) => {
+      if (!response.ok) throw new Error("Image indisponible");
+      return response.blob();
+    })
+    .then((blob) => {
+      if (!projectImageCache.has(src)) {
+        projectImageCache.set(src, URL.createObjectURL(blob));
+      }
+    })
+    .catch(() => {});
+}
+
+function useProjectImage(src) {
+  const cached = projectImageCache.get(src);
+  const [resolved, setResolved] = useState(() => cached || (isNative && src?.startsWith("/api/") ? "" : src));
+  useEffect(() => {
+    if (!isNative || !src?.startsWith("/api/")) { setResolved(src); return; }
+    if (projectImageCache.has(src)) {
+      setResolved(projectImageCache.get(src));
+      return;
+    }
+    let disposed = false;
+    const controller = new AbortController();
+    fetch(src, { credentials: "include", signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("Image indisponible");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (disposed) return;
+        let objectUrl = projectImageCache.get(src);
+        if (!objectUrl) {
+          objectUrl = URL.createObjectURL(blob);
+          projectImageCache.set(src, objectUrl);
+        }
+        setResolved(objectUrl);
+      })
+      .catch(() => {});
+    return () => { disposed = true; controller.abort(); };
+  }, [src]);
+  return cached || resolved;
+}
+
+function ProjectImage({ src, ...props }) {
+  const image = useProjectImage(src);
+  return image ? <img src={image} {...props} /> : null;
+}
+
 function AgentIcon({ assistant, small = false, logoUrl = null }) {
   const meta = assistantMeta[assistant] || assistantMeta.shell;
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [logoUrl]);
-  if (logoUrl && !failed) return <span className={`agent-icon project-logo ${small ? "small" : ""}`}><img src={logoUrl} alt="" onError={() => setFailed(true)} /></span>;
+  const image = useProjectImage(logoUrl); const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [image]);
+  if (image && !failed) return <span className={`agent-icon project-logo ${small ? "small" : ""}`}><img src={image} alt="" onError={() => setFailed(true)} /></span>;
   return <span className={`agent-icon ${meta.color} ${small ? "small" : ""}`}>{meta.glyph}</span>;
 }
 
 function ProjectIcon({ project, small = false }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [project?.logoUrl]);
-  if (project?.logoUrl && !failed) return <span className={`agent-icon project-logo ${small ? "small" : ""}`}><img src={project.logoUrl} alt="" onError={() => setFailed(true)} /></span>;
-  return <span className={`agent-icon violet ${small ? "small" : ""}`}>{project ? "P" : "📁"}</span>;
+  const image = useProjectImage(project?.logoUrl); const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [image]);
+  if (image && !failed) return <span className={`agent-icon project-logo ${small ? "small" : ""}`}><img src={image} alt="" onError={() => setFailed(true)} /></span>;
+  return <span className={`agent-icon violet ${small ? "small" : ""}`}>{project ? "P" : <AppIcon name="folder" size={16} />}</span>;
 }
 
 function RelativeTime({ date }) {
@@ -907,7 +979,7 @@ function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
   );
 }
 
-function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile, todoUnread = 0, sortMode = "recent", onCycleSort, lastInteractedMap = {} }) {
+function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOpenMap, onNew, onLogout, open, onClose, profiles, profileId, onSwitchProfile, todoUnread = 0, sortMode = "recent", onCycleSort, lastInteractedMap = {} }) {
   const [expandedProjects, setExpandedProjects] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(profileCacheKey("agents-expanded-projects"))) || {};
@@ -1039,6 +1111,7 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onNe
       <nav className="main-nav">
         <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
         <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg></span>Projets</button>
+        <button className={!activeId && view === "groceries" ? "active" : ""} onClick={() => { onOpen(null); onView("groceries"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m3 4 3 1 2 12h10l3-10H6M9 21h.01M18 21h.01M10 8c0-4 6-4 6 0" /></svg></span>Courses</button>
         <button className={!activeId && view === "calendar" ? "active" : ""} onClick={() => { onOpen(null); onView("calendar"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /><circle cx="8" cy="14" r=".75" fill="currentColor" /><circle cx="12" cy="14" r=".75" fill="currentColor" /><circle cx="16" cy="14" r=".75" fill="currentColor" /><circle cx="8" cy="18" r=".75" fill="currentColor" /><circle cx="12" cy="18" r=".75" fill="currentColor" /><circle cx="16" cy="18" r=".75" fill="currentColor" /></svg></span>Calendrier</button>
         <button className={!activeId && view === "todos" ? "active" : ""} onClick={() => { onOpen(null); onView("todos"); onClose(); }}><span>✓</span>Todo{todoUnread > 0 && <b className="nav-badge" title={`${todoUnread} changement${todoUnread > 1 ? "s" : ""} non lu${todoUnread > 1 ? "s" : ""}`}>{todoUnread > 99 ? "99+" : todoUnread}</b>}</button>
         <button className={!activeId && ["finances", "finance-transactions", "finance-agent", "finance-modules"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
@@ -1078,7 +1151,8 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onNe
       <div className="session-list">
         {projectGroups.map((group) => {
           // Un projet a agent unique n'a pas besoin d'accordeon: l'agent s'affiche directement.
-          if (group.sessions.length === 1) return renderSessionButton(group.sessions[0]);
+          const mapButton = group.projectId ? <button className="sidebar-map-btn" title={`Carte ${group.name}`} aria-label={`Carte ${group.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenMap?.(group.projectId); onClose(); }}><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="2.5" /><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="7" r="1.8" /><circle cx="6" cy="18.5" r="1.8" /><circle cx="18.5" cy="18" r="1.8" /><path d="M6.5 7.2l3.6 3.3M17.4 8l-3.5 2.6M7.4 17.4l2.8-3.6M16.9 16.8l-3-3" /></svg></button> : null;
+          if (group.sessions.length === 1) return mapButton ? <div className="sidebar-single-agent" key={group.sessions[0].id}>{renderSessionButton(group.sessions[0])}{mapButton}</div> : renderSessionButton(group.sessions[0]);
           const hasActive = activeId && group.sessions.some((s) => s.id === activeId);
           const isOpen = Boolean(expandedProjects[group.projectId]) || Boolean(hasActive);
           return (
@@ -1095,6 +1169,7 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onNe
               <span className="sidebar-group-meta">
                 {group.hasWorking && <i className="live-dot working" title="Un agent travaille" />}
                 <small className="sidebar-group-count">{group.sessions.length}</small>
+                {mapButton}
               </span>
             </summary>
             <div className="sidebar-group-items">
@@ -1111,10 +1186,12 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onNe
 }
 
 function Header({ title, subtitle, onMenu, actionLabel = "Nouvel agent", onAction }) {
+  const [network, setNetwork] = useState(null);
+  useEffect(() => { if (!isNative) return; let disposed = false; const update = () => nativeNetworkStatus().then((value) => { if (!disposed) setNetwork(value); }).catch(() => {}); update(); window.addEventListener("noyau:network-return", update); return () => { disposed = true; window.removeEventListener("noyau:network-return", update); }; }, []);
   return (
     <header className="topbar">
       <button className="icon-button menu-button" onClick={onMenu} aria-label="Menu">☰</button>
-      <div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
+      <div><h2>{title}</h2>{isNative && network ? <p className="native-header-network">{networkLabel(network)} · VPN non vérifiable</p> : subtitle && <p>{subtitle}</p>}</div>
       <div className="top-actions">
         <FullscreenToggle />
         {onAction && <button className="primary" onClick={onAction}><span>+</span> {actionLabel}</button>}
@@ -1131,7 +1208,7 @@ function FullscreenToggle({ className = "" }) {
     document.addEventListener("fullscreenchange", sync);
     return () => document.removeEventListener("fullscreenchange", sync);
   }, []);
-  if (!document.fullscreenEnabled) return null;
+  if (isNative || !document.fullscreenEnabled) return null;
   const toggle = async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
@@ -1302,14 +1379,14 @@ function ContextControl({ session, onRefresh }) {
         aria-expanded={open}
         title={advice?.message || `Contexte: ${advice?.percent ?? "—"}% restant`}
       >
-        {advice ? <ContextGauge advice={advice} small /> : <b>{session.usage?.contextPercent ?? "—"}%</b>}
-        <i aria-hidden="true">⚡</i>
+        <span className="agent-context-ring" style={{ "--remaining": `${Number.isFinite(Number(advice?.percent ?? session.usage?.contextPercent)) ? Math.max(0, Math.min(100, Number(advice?.percent ?? session.usage?.contextPercent))) : 0}%` }}><b>{advice?.estimated || session.usage?.estimated ? "~" : ""}{advice?.percent ?? session.usage?.contextPercent ?? "—"}%</b></span><span className="agent-context-count">{session.usage?.remainingTokens != null ? `${session.usage.estimated ? "~" : ""}${formatTokens(session.usage.remainingTokens)} restants` : "Contexte"}</span>
+
       </button>
       {open && (
         <div className={`context-control-menu ${audit ? "wide" : ""}`}>
           <p className="context-control-state">
             {advice?.message || "Contexte encore large: rien à faire pour l'instant."}
-            {session.usage?.remainingTokens ? <em>{session.usage.estimated ? "~" : ""}{formatTokens(session.usage.remainingTokens)} disponibles</em> : null}
+            {session.usage?.remainingTokens != null ? <em>{session.usage.estimated ? "Environ " : ""}{new Intl.NumberFormat("fr-FR").format(session.usage.remainingTokens)} tokens de contexte restants</em> : <em>Nombre de tokens restant indisponible pour cet agent.</em>}
           </p>
           <button className={advice?.action === "compact" ? "primary" : ""} disabled={busy === "compact"} onClick={() => optimize("compact")}>
             {busy === "compact" ? "…" : "Réduire le contexte"}<small>Résume la conversation et garde l'essentiel</small>
@@ -1372,10 +1449,10 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
               tabIndex={0}
               aria-label="Description de l'agent"
             >
-              ℹ
+              <AppIcon name="info" size={15} />
             </span>
             {session.canEdit === false && <b className="shared-chip" title={`Agent partagé par ${session.owner?.name || "autre profil"}`}>⇄ {session.owner?.name || "partagé"}</b>}
-            {session.canEdit !== false && session.shared && <b className="shared-chip own" title="Agent partagé avec les autres profils">⇄ partagé</b>}
+            {session.canEdit !== false && session.shared && <b className="shared-chip own" title="Agent partagé avec les autres profils">⇄<span className="shared-chip-label"> partagé</span></b>}
           </strong>
           {session.description ? (
             <small className="agent-desc-line" title={session.description}>
@@ -1416,7 +1493,7 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
         <div className="agent-card-actions">
           <button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button>
           {!session.core && <button className="agent-card-archive" onClick={() => onArchive(session)} title="Fermer l'agent (archiver ou quitter)" aria-label={`Fermer ${session.name}`}>⏻</button>}
-          <button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`}>Éditer</button>
+          <button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`} title="Éditer">✎<span className="agent-card-edit-label"> Éditer</span></button>
         </div>
       )}
     </article>
@@ -1538,9 +1615,9 @@ function TodoDetailOverlay({ todo, onClose, onTag }) {
           title="Changer l'attribution"
           aria-label="Attribution de la tâche"
         >
-          <option value="aurora">🌸 Aurora</option>
-          <option value="main">👤 Moi</option>
-          <option value="all">👥 Tout le monde</option>
+          <option value="aurora"> Aurora</option>
+          <option value="main"> Moi</option>
+          <option value="all"> Tout le monde</option>
         </select>
         {onTag && <button className="ghost" onClick={() => { onTag(entry); onClose(); }}>Taguer dans la conversation</button>}
       </header>
@@ -1561,7 +1638,7 @@ function TodoDetailOverlay({ todo, onClose, onTag }) {
               <div className={`todo-comment-item ${isAgent ? "comment-agent" : "comment-user"}`} key={item.id}>
                 <div className="todo-comment-meta">
                   <span className={`todo-comment-avatar ${isAgent ? "agent" : "user"}`}>
-                    {isAgent ? "🤖" : "👤"}
+                    {isAgent ? "Agent" : "Profil"}
                   </span>
                   <strong className={`todo-comment-author ${isAgent ? "agent" : "user"}`}>
                     {authorText}
@@ -1650,7 +1727,7 @@ function AgentArchives({ onOpen, compact = false }) {
             <div className="agent-archive-row__info">
               <strong>{archive.name}</strong>
               <small>
-                {[assistantMeta[archive.assistant]?.label || archive.assistant, archive.cwd ? `📁 ${archive.cwd.split("/").filter(Boolean).pop()}` : null, formatCommentDate(archive.archivedAt)].filter(Boolean).join(" · ")}
+                {[assistantMeta[archive.assistant]?.label || archive.assistant, archive.cwd ? ` ${archive.cwd.split("/").filter(Boolean).pop()}` : null, formatCommentDate(archive.archivedAt)].filter(Boolean).join(" · ")}
                 {archive.reason === "reaped" ? " · fermé tout seul" : ""}
               </small>
             </div>
@@ -1658,7 +1735,7 @@ function AgentArchives({ onOpen, compact = false }) {
               <button className="agent-archive-restore" aria-label={`Restaurer ${archive.name}`} onClick={() => restore(archive)} disabled={busy === archive.id} title="Relancer cet agent avec son fil de discussion">
                 {busy === archive.id ? "…" : <>↺<span> Restaurer</span></>}
               </button>
-              <button className="agent-archive-forget" onClick={() => forget(archive)} disabled={busy === archive.id} title="Oublier définitivement cette archive" aria-label={`Oublier ${archive.name}`}>🗑</button>
+              <button className="agent-archive-forget" onClick={() => forget(archive)} disabled={busy === archive.id} title="Oublier définitivement cette archive" aria-label={`Oublier ${archive.name}`}><AppIcon name="trash" size={16}/></button>
             </div>
           </article>
         ))}
@@ -1804,7 +1881,7 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
           <small className="resources-loading">{error || "Mesure…"}</small>
         )}
         <button type="button" className="resources-optimize" onClick={optimize} disabled={busy || !data} title="Un agent analyse et propose des optimisations. Il ne stoppe rien sans ta confirmation.">
-          {busy ? "…" : status || "⚙ Optimiser"}
+          {busy ? "…" : status || "Optimiser"}
         </button>
       </summary>
       {data && (
@@ -1825,12 +1902,8 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
           {tab === "swap" && (
             <div className="resource-swap-help">
               <p>
-                Le swap est de la RAM de secours écrite sur le disque. Linux y range ce qui dort (serveurs de dev oubliés, onglets inactifs) pour garder la vraie RAM aux applis actives.
-                Beaucoup de swap n'est grave que si le PC rame : c'est alors qu'il relit sans cesse le disque.
-              </p>
-              <p>
                 <b>{formatMb(memory.swapUsedMb)}</b> / {formatMb(memory.swapTotalMb)} utilisés · swappiness {memory.swappiness ?? "?"}
-                <button type="button" className="resources-optimize" onClick={(event) => optimize(event, "swap")} disabled={busy}>⚙ Optimiser le swap</button>
+                <button type="button" className="resources-optimize" onClick={(event) => optimize(event, "swap")} disabled={busy}><AppIcon name="settings" size={15}/> Optimiser le swap</button>
               </p>
             </div>
           )}
@@ -1842,12 +1915,12 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
                   <b>{item.name}</b>
                   <small>
                     {tab === "agents"
-                      ? [item.projectName ? `📁 ${item.projectName}` : item.kind === "session" ? "Sans projet" : null, item.assistant, `${item.processes} proc.`].filter(Boolean).join(" · ")
+                      ? [item.projectName ? ` ${item.projectName}` : item.kind === "session" ? "Sans projet" : null, item.assistant, `${item.processes} proc.`].filter(Boolean).join(" · ")
                       : item.agentName || `pid ${item.pid}`}
                   </small>
                   {tab === "agents" && item.detachedApps?.length > 0 && (
                     <small className="resource-row__launched" title="Processus lancés par l'agent, détachés de sa session">
-                      ↳ a lancé : {item.detachedApps.slice(0, 3).map((app) => `${app.name} ${formatMb(app.rssMb)}${app.gui ? " 🔒" : ""}`).join(" · ")}
+                      ↳ a lancé : {item.detachedApps.slice(0, 3).map((app) => `${app.name} ${formatMb(app.rssMb)}${app.gui ? " " : ""}`).join(" · ")}
                     </small>
                   )}
                 </span>
@@ -1871,7 +1944,7 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
                     <button type="button" className="resource-kill" onClick={() => kill(item)} disabled={killing === item.id} title={item.kind === "session" ? "Archiver et tuer tous ses processus" : "Tuer cette session hors Noyau"}>
                       {killing === item.id ? "…" : item.kind === "session" ? "Archiver" : "Kill"}
                     </button>
-                  ) : <span className="resource-kill-locked" title="Agent de base ou d'un autre profil">🔒</span>
+                  ) : <span className="resource-kill-locked" title="Agent de base ou d'un autre profil"><AppIcon name="lock" size={14}/></span>
                 )}
               </div>
             ))}
@@ -1884,7 +1957,7 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
   );
 }
 
-function Dashboard({ sessions, projects, quotas, onSessionsChanged, onOpen, onNew, onEdit, onFavorite, onArchive, onProjects, onFinances, onRefreshQuotas, voice, onVoice, muted, onMuted, power, onTogglePower, powerBusy, sortMode = "recent", onSetSortMode, profileId, lastInteractedMap = {} }) {
+function Dashboard({ sessions, projects, onProject, onView, profileName, quotas, onSessionsChanged, onOpen, onNew, onEdit, onFavorite, onArchive, onProjects, onFinances, onRefreshQuotas, voice, onVoice, muted, onMuted, power, onTogglePower, powerBusy, sortMode = "recent", onSetSortMode, profileId, lastInteractedMap = {} }) {
   const [refreshingQuotas, setRefreshingQuotas] = useState(false);
   const [quotaRefreshState, setQuotaRefreshState] = useState("");
   const [hardware, setHardware] = useState(null);
@@ -2029,13 +2102,16 @@ function Dashboard({ sessions, projects, quotas, onSessionsChanged, onOpen, onNe
   const greeting = now.getHours() < 12 ? "Bonjour" : now.getHours() < 18 ? "Bon après-midi" : "Bonsoir";
   return (
     <div className="page dashboard">
+      <MobileDashboard sessions={sessions} projects={projects} greeting={greeting} profileName={profileName} onOpenAgent={onOpen} onOpenProject={onProject} onView={onView} onNew={onNew} projectIcon={(project) => <ProjectIcon project={project} small />} hardware={hardware} weather={weather} power={power} powerBusy={powerBusy} onTogglePower={onTogglePower} voice={voice} onVoice={onVoice} quotas={[{name:"Codex",windows:codexWindows},{name:"Claude",windows:claudeWindows},{name:"Antigravity",windows:antigravityWindows}]} onRefreshQuotas={() => onRefreshQuotas().catch((error) => window.alert(error.message))} resources={() => <><ResourcesPanel onOpen={onOpen} onSessionsChanged={onSessionsChanged}/><AgentArchives onOpen={onOpen}/></>} />
+      <div className="dashboard-desktop-details">
       <section className="hero-row">
         <div>
           <p className="eyebrow">{weekday} · CENTRE DE CONTRÔLE</p>
           <div className="hero-title">
             <h1>{greeting}.</h1>
-            {weather && <span className={`weather-inline ${weather.isDay ? "day" : "night"}`} title={`Ressenti ${Math.round(weather.apparentTemperature)}°C`}><i /><b>{Math.round(weather.temperature)}°</b><span>{weatherLabel(weather.code)}</span><small>Open-Meteo</small></span>}
-            {hardware && (
+            {isNative && <div className="native-dashboard-sensors"><span className={`weather-inline ${weather?.isDay ? "day" : "night"}`}><i /><b>{weather ? `${Math.round(weather.temperature)}°` : "—"}</b><span>{weather ? weatherLabel(weather.code) : "Météo"}</span></span><span className={`hardware-inline ${hardware?.state || "normal"}`}><i className="hardware-pulse-dot" /><b>{hardware?.cpuTemp != null ? `${hardware.cpuTemp}°` : "—"}</b><span>CPU</span></span></div>}
+            {!isNative && weather && <span className={`weather-inline ${weather.isDay ? "day" : "night"}`} title={`Ressenti ${Math.round(weather.apparentTemperature)}°C`}><i /><b>{Math.round(weather.temperature)}°</b><span>{weatherLabel(weather.code)}</span><small>Open-Meteo</small></span>}
+            {!isNative && hardware && (
               <span
                 className={`hardware-inline ${hardware.state || "normal"}`}
                 title={`${hardware.alertLabel || "Monitoring PC"} — CPU: ${hardware.cpuTemp || "—"}°C · Coque: ${hardware.skinTemp || "—"}°C · Ventilo: ${hardware.fanRpm ? `${hardware.fanRpm} RPM` : "inactif"}`}
@@ -2053,7 +2129,7 @@ function Dashboard({ sessions, projects, quotas, onSessionsChanged, onOpen, onNe
                 {hardware.fanRpm ? (
                   <>
                     <small className="hw-sep">·</small>
-                    <span className="hw-fan">🌀 {Math.round(hardware.fanRpm / 100) / 10}k</span>
+                    <span className="hw-fan"> {Math.round(hardware.fanRpm / 100) / 10}k</span>
                   </>
                 ) : null}
               </span>
@@ -2072,7 +2148,7 @@ function Dashboard({ sessions, projects, quotas, onSessionsChanged, onOpen, onNe
                 aria-pressed={Boolean(power?.sleeping)}
                 title={power?.sleeping ? "Mode basse consommation actif (conteneurs Docker gelés) · Cliquer pour réveiller" : "Mettre en veille basse consommation (pause conteneurs Docker)"}
               >
-                <span className="system-power__icon" aria-hidden="true">{power?.sleeping ? "⚡" : "🌙"}</span>
+                <span className="system-power__icon" aria-hidden="true"><AppIcon name="settings"/></span>
                 <span>
                   <strong>{powerBusy ? "Action en cours…" : power?.sleeping ? "Sortir de veille" : "Veille éco"}</strong>
                   <small>
@@ -2107,7 +2183,7 @@ function Dashboard({ sessions, projects, quotas, onSessionsChanged, onOpen, onNe
                 onClick={() => onMuted(!muted)}
                 title={muted ? "Réactiver les sons" : "Couper les sons"}
                 aria-label={muted ? "Réactiver les sons" : "Couper les sons"}
-              >{muted ? "🔇" : "🔔"}</button>
+              ><AppIcon name="volume" size={17}/>{muted && <span className="sr-only">Sons coupés</span>}</button>
             </div>
           </div>
         </div>
@@ -2115,7 +2191,7 @@ function Dashboard({ sessions, projects, quotas, onSessionsChanged, onOpen, onNe
 
       <section className="metrics">
         <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div className="active-agents-content"><small>AGENTS ACTIFS</small><div className="active-agents-data"><div className="active-total-block"><strong className="active-total">{sessions.length}</strong><em>en ligne</em></div><div className="agent-breakdown"><span><b>{codexCount}</b><em>Codex</em></span><span><b>{claudeCount}</b><em>Claude</em></span>{antigravityCount > 0 && <span><b>{antigravityCount}</b><em>Antigravity</em></span>}<span><b>{shellCount}</b><em>Terminal</em></span></div></div><p className="active-agents-footer"><span>{linkedProjects} projet{linkedProjects > 1 ? "s" : ""} lié{linkedProjects > 1 ? "s" : ""}</span><span>{favoriteCount} favori{favoriteCount > 1 ? "s" : ""}</span></p></div></article>
-        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">QUOTAS IA<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); setQuotaRefreshState("Actualisation…"); try { const result = await onRefreshQuotas(); const failed = Object.entries(result?.refreshed || {}).filter(([, state]) => !state.ok).map(([provider]) => provider); setQuotaRefreshState(failed.length ? `Échec: ${failed.join(", ")}` : `Actualisé ${new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`); } catch (error) { setQuotaRefreshState(error.message || "Actualisation impossible"); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label="Rafraîchir quotas" title="Rafraîchir quotas"><span aria-hidden="true">↻</span></button><em className="quota-refresh-state">{quotaRefreshState}</em></small><div className="quota-providers"><div className="quota-codex"><span>CODEX</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-antigravity"><span>ANTIGRAVITY</span>{antigravityWindows.length ? <div className="quota-dials">{antigravityWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className="quota-ring" style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
+        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">QUOTAS IA<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); setQuotaRefreshState("Actualisation…"); try { const result = await onRefreshQuotas(); const failed = Object.entries(result?.refreshed || {}).filter(([, state]) => !state.ok).map(([provider]) => provider); setQuotaRefreshState(failed.length ? `Échec: ${failed.join(", ")}` : `Actualisé ${new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`); } catch (error) { setQuotaRefreshState(error.message || "Actualisation impossible"); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label="Rafraîchir quotas" title="Rafraîchir quotas"><span aria-hidden="true">↻</span></button><em className="quota-refresh-state">{quotaRefreshState}</em></small><div className="quota-providers"><div className="quota-codex"><span>CODEX</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-antigravity"><span>ANTIGRAVITY</span>{antigravityWindows.length ? <div className="quota-dials">{antigravityWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
       </section>
 
       <ResourcesPanel onOpen={onOpen} onSessionsChanged={onSessionsChanged} />
@@ -2244,6 +2320,7 @@ function Dashboard({ sessions, projects, quotas, onSessionsChanged, onOpen, onNe
       <section className="future-grid">
         <article className="panel"><span>NOUVEAU</span><h3>Budget</h3><p>Capacité épargne, enveloppes et alertes mensuelles.</p><button onClick={onFinances}>Ouvrir</button></article>
       </section>
+      </div>
     </div>
   );
 }
@@ -2262,6 +2339,46 @@ function ModuleSchedule({ moduleId, schedule, onSave }) {
   }
   const nextRun = schedule.nextRun?.match(/\d{4}-\d{2}-\d{2} (\d{2}:\d{2})/)?.[1];
   return <label className="module-schedule"><span><strong>{schedule.label}</strong><small>{schedule.active ? `Prochain ${nextRun || time}` : "Timer arrêté"}</small></span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} /><button onClick={save} disabled={saving || time === schedule.time}>{saving ? "…" : "OK"}</button></label>;
+}
+
+// Tableau lecture seule fourni par le module (cartes, images locales, liens https).
+function ModuleBoard({ module }) {
+  const board = module.board;
+  if (!board) return null;
+  if (board.availability !== "ready") return <small className="module-run">{board.availability === "waiting" ? "Tableau pas encore généré — lancer l'action du module." : "Tableau illisible."}</small>;
+  const media = (image) => `/api/modules/${encodeURIComponent(module.id)}/board/media/${encodeURIComponent(image.file)}${image.version ? `?v=${encodeURIComponent(image.version)}` : ""}`;
+  return (
+    <div className="module-board">
+      {(board.title || board.summary) && <header>{board.title && <strong>{board.title}</strong>}{board.summary && <small>{board.summary}</small>}</header>}
+      {board.sections.map((section, index) => (
+        <section key={`${section.title}-${index}`}>
+          {section.title && <h4>{section.title}</h4>}
+          {section.note && <p className="module-board-note">{section.note}</p>}
+          {section.rows.length > 0 && (
+            <table><tbody>{section.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table>
+          )}
+          {section.cards.map((card, cardIndex) => (
+            <article key={`${card.title}-${cardIndex}`} className={`module-board-card ${card.tone}`}>
+              <div className="module-board-head"><strong>{card.title}{card.subtitle && <small>{card.subtitle}</small>}</strong>{card.badge && <span>{card.badge}</span>}</div>
+              {card.lines.map((line, lineIndex) => <p key={lineIndex}>{line}</p>)}
+              {card.images.length > 0 && (
+                <div className="module-board-images">
+                  {card.images.map((image) => (
+                    <figure key={image.file} className={image.size}>
+                      <a href={media(image)} target="_blank" rel="noreferrer"><img src={media(image)} alt={image.label || card.title} loading="lazy" /></a>
+                      {image.label && <figcaption>{image.label}</figcaption>}
+                    </figure>
+                  ))}
+                </div>
+              )}
+              {card.links.length > 0 && <div className="module-board-links">{card.links.map((link) => <a key={link.url} href={link.url} target="_blank" rel="noreferrer">{link.label}</a>)}</div>}
+            </article>
+          ))}
+        </section>
+      ))}
+      {board.generatedAt && <small className="module-run">Mis à jour {new Date(board.generatedAt).toLocaleString("fr-FR")}</small>}
+    </div>
+  );
 }
 
 function ModuleKnowledge({ module, onConfigured }) {
@@ -2376,7 +2493,7 @@ function ModuleKnowledge({ module, onConfigured }) {
         {!configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Token Notion ntn_…" autoComplete="off" required />}
         {pages.length > 0 && (
           <label style={{ display: "grid", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--c-a0aaa2)" }}>Choisir la page racine :</span>
+            <span style={{ fontSize: "10px", color: "var(--c-a0aca3)" }}>Choisir la page racine :</span>
             <select value={selectedRoot} onChange={(event) => setSelectedRoot(event.target.value)}>
               <option value="all">Toutes les pages partagées ({pages.length})</option>
               {pages.map((page) => (
@@ -2397,7 +2514,7 @@ function ModuleKnowledge({ module, onConfigured }) {
             {stack.at(-1)?.name || (notion ? (rootLabel || "Pages Notion") : "Drive Octanix")}
           </strong>
           <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
-            {notion && <button type="button" onClick={() => (loadPages(), setShowConfig(true))} title="Changer la page racine ou le token" aria-label="Réglages">⚙</button>}
+            {notion && <button type="button" onClick={() => (loadPages(), setShowConfig(true))} title="Changer la page racine ou le token" aria-label="Réglages"><AppIcon name="settings" size={16}/></button>}
             <button onClick={() => load(stack.at(-1) || null, stack)} disabled={busy} aria-label="Rafraîchir">↻</button>
           </div>
         </header>
@@ -2656,7 +2773,121 @@ function ModuleLongAction({ module, action, onAction }) {
   );
 }
 
-function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefreshBuilds, onRefresh }) {
+const PLANNING_KIND = { publication: "Publication", preparation: "Préparation", queue: "File" };
+
+function planningDayLabel(date) {
+  const start = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const offset = Math.round((start(date) - start(new Date())) / 86_400_000);
+  const name = date.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "short" });
+  return offset === 0 ? `Aujourd'hui · ${name}` : offset === -1 ? `Hier · ${name}` : offset === 1 ? `Demain · ${name}` : name;
+}
+
+const PLANNING_RESULT = { ok: "✓ fait", failed: "✗ échec", running: "en cours" };
+
+function ProjectPlanning({ project, nested = false }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    const load = () => api(`/api/projects/${encodeURIComponent(project.id)}/planning?days=3`)
+      .then((next) => { if (!cancelled) { setData(next); setError(""); } })
+      .catch((reason) => { if (!cancelled) setError(reason.message); });
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [open, project.id]);
+  const [boostBusy, setBoostBusy] = useState("");
+  async function toggleBoost(boost) {
+    const date = boost.boostKey ? boost.boostKey.slice(0, 10) : null;
+    const when = date ? ` le ${new Date(boost.at).toLocaleString("fr-FR", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : "";
+    if (!boost.enabled && !window.confirm(`Activer le boost payé pour « ${boost.label} »${when} ?`)) return;
+    setBoostBusy(boost.boostKey || boost.entryId);
+    try {
+      setData(await api(`/api/projects/${encodeURIComponent(project.id)}/planning/boost`, { method: "PATCH", body: JSON.stringify({ moduleId: boost.moduleId, entryId: boost.entryId, enabled: !boost.enabled, date }) }));
+      setError("");
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setBoostBusy("");
+    }
+  }
+  const items = data?.items || [];
+  const unscheduled = data?.unscheduled || [];
+  const boosts = data?.boosts || [];
+  const days = [];
+  for (const item of items) {
+    const key = planningDayLabel(new Date(item.at));
+    if (days[days.length - 1]?.key !== key) days.push({ key, items: [] });
+    days[days.length - 1].items.push(item);
+  }
+  const upcoming = items.filter((item) => !item.past && item.kind !== "preparation").length;
+  const done = items.filter((item) => item.past && item.kind !== "preparation").length;
+  const time = (value) => new Date(value).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const nowIndex = (list) => list.findIndex((item) => !item.past);
+  return (
+    <details className={`project-modules project-planning ${nested ? "nested" : ""}`} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary><span>{nested ? "Publications" : "Planning publications"}</span><small>{data ? `${upcoming} à venir · 3 jours · ${done} passée${done > 1 ? "s" : ""} (24 h)` : "24 h passées · 3 jours à venir"}</small><b>›</b></summary>
+      <div className="planning-body">
+        {error && <p className="planning-empty">{error}</p>}
+        {!data && !error && <p className="planning-empty">Chargement…</p>}
+        {data && !items.length && !unscheduled.length && <p className="planning-empty">Aucune publication.</p>}
+        {boosts.length > 0 && (
+          <section className="planning-boosts">
+            <h4>Boosts payés · global</h4>
+            {boosts.map((boost) => (
+              <div className="planning-boost" key={`${boost.moduleId}-${boost.entryId}`} style={{ "--module-accent": boost.accent }}>
+                <span><strong>{boost.label}</strong><small>{boost.at ? `créneau ${boost.at} · ` : ""}{boost.keys.join(" + ")}</small></span>
+                <button className={`module-toggle ${boost.enabled ? "enabled" : ""}`} role="switch" aria-checked={boost.enabled} disabled={boostBusy === boost.entryId} onClick={() => toggleBoost(boost)}><i /><span>{boost.enabled ? "Boost" : "Off"}</span></button>
+              </div>
+            ))}
+          </section>
+        )}
+        {unscheduled.length > 0 && (
+          <section className="planning-day planning-unscheduled">
+            <h4>Non planifié</h4>
+            {unscheduled.map((item) => (
+              <div className="planning-item off" key={`${item.moduleId}-${item.entryId}`} style={{ "--module-accent": item.accent }}>
+                <time>—</time>
+                <div>
+                  <strong>{item.label}</strong>
+                  <small>{[item.channels.join(" + "), item.moduleName, item.reason].filter(Boolean).join(" · ")}</small>
+                  {item.preview && <em>{item.proposalStatus ? `${item.proposalStatus} · ` : ""}{item.preview}</em>}
+                </div>
+                <span className="planning-state">coupé</span>
+              </div>
+            ))}
+          </section>
+        )}
+        {days.map((day) => (
+          <section className="planning-day" key={day.key}>
+            <h4>{day.key}</h4>
+            {day.items.map((item, index) => (
+              <React.Fragment key={`${item.entryId}-${item.at}-${index}`}>
+                {index === nowIndex(day.items) && index > 0 && <div className="planning-now">maintenant</div>}
+                <div className={`planning-item ${item.past ? `past ${item.result}` : item.active ? "" : "off"} ${item.kind}`} style={{ "--module-accent": item.accent }}>
+                  <time>{item.past ? time(item.at) : item.late ? "en retard" : `${item.randomizedMinutes ? "vers " : ""}${time(item.at)}`}</time>
+                  <div>
+                    <strong>{item.label}{item.past && item.boost && <b className="planning-boost-chip">boosté</b>}</strong>
+                    <small>{[item.channels.join(" + "), PLANNING_KIND[item.kind], item.moduleName].filter(Boolean).join(" · ")}{!item.past && item.randomizedMinutes ? ` · ±${item.randomizedMinutes} min` : ""}{item.past && item.finishedAt && item.finishedAt !== item.at ? ` · fini ${time(item.finishedAt)}` : ""}</small>
+                    {item.preview && <em>{item.preview}</em>}
+                  </div>
+                  <span className="planning-state">
+                    {item.boostable && <button type="button" className={`planning-boost-btn ${item.boost ? "on" : ""}`} aria-pressed={item.boost} disabled={boostBusy === item.boostKey} title={item.boost ? "Boost payé activé : cliquer pour l'annuler" : "Activer le boost payé pour cette publication"} onClick={() => toggleBoost({ ...item, enabled: item.boost })}>{item.boost ? "Boost" : "Off"}</button>}
+                    {item.past ? PLANNING_RESULT[item.result] || item.result : item.active ? "prévu" : "coupé"}
+                  </span>
+                </div>
+              </React.Fragment>
+            ))}
+          </section>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, onSchedule, onBuild, onRefreshBuilds, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
   async function toggle() {
@@ -2664,6 +2895,14 @@ function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefr
     setBusy(true);
     try {
       await onToggle(module.id, !module.enabled);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function configure(run) {
+    setBusy(true);
+    try {
+      await run();
     } finally {
       setBusy(false);
     }
@@ -2690,7 +2929,7 @@ function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefr
   return (
     <details className="project-module" style={{ "--module-accent": module.accent }}>
       <summary>
-        <span className="module-glyph">{module.glyph}</span>
+        <span className="module-glyph">{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span>
         <div>
           <strong>{module.name}</strong>
           <small>{module.environment === "production" ? `${module.executionHost || "Ce PC"} · ${{ active: "Actif", inactive: "Arrêté", failed: "En échec", activating: "Démarrage", deactivating: "Arrêt en cours", unknown: "État inconnu" }[module.state] || module.state} · ` : ""}{module.description}</small>
@@ -2714,6 +2953,14 @@ function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefr
         <b className="module-chevron">›</b>
       </summary>
       <div className="project-module-body">
+        <div className="module-config">
+          <label title={`Manifest : ${module.defaultEnvironment === "production" ? "Production" : "Modules"}`}>
+            <input type="checkbox" checked={module.environment === "production"} disabled={busy} onChange={(event) => configure(() => onEnvironment?.(module.id, event.target.checked ? "production" : "development"))} />
+            <span>Production</span>
+          </label>
+          {module.environment !== module.defaultEnvironment && <button className="module-config-reset" disabled={busy} onClick={() => configure(() => onEnvironment?.(module.id, null))}>Valeur du manifest</button>}
+          <button className="module-config-remove" disabled={busy} onClick={() => { if (window.confirm(`Retirer ${module.name} de Noyau ? Le manifest et les services ne sont pas touchés.`)) configure(() => onRemove?.(module.id)); }}>Retirer</button>
+        </div>
         {module.setup && (
           <p className={`module-setup ${module.setup.status}`}>
             <strong>{module.setup.label}</strong>
@@ -2743,11 +2990,17 @@ function ProjectModule({ module, onToggle, onAction, onSchedule, onBuild, onRefr
           </div>
         )}
         {(module.actions || []).filter((action) => action.longRunning).map((action) => <ModuleLongAction key={action.id} module={module} action={action} onAction={onAction} />)}
+        <ModuleBoard module={module} />
         {module.chat && <>
           <TelegramGrowthChat
             title={module.name}
             messages={module.chat.messages}
-            state={chatRun?.state || (module.state === "failed" ? "error" : "idle")}
+            day={module.chat.day}
+            prevDay={module.chat.prevDay}
+            nextDay={module.chat.nextDay}
+            latestDay={module.chat.latestDay}
+            onDay={(day) => api(`/api/modules/${encodeURIComponent(module.id)}/chat?day=${encodeURIComponent(day)}`)}
+            state={chatRun?.state || (module.state === "failed" ? "error" : module.controllable && module.enabled ? "active" : "idle")}
             phase={chatRun?.progress?.phase}
             current={chatRun?.progress?.current}
             nextAt={chatRun?.progress?.nextAt}
@@ -2885,480 +3138,7 @@ function ProjectReporting({ project, agents, todos, onRefresh }) {
   );
 }
 
-function formatFileBytes(bytes) {
-  if (!bytes || bytes === 0) return "0 o";
-  const k = 1024;
-  const sizes = ["o", "Ko", "Mo", "Go"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
-}
-
-function getFileIcon(ext) {
-  const e = String(ext || "").toLowerCase();
-  if ([".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".bmp", ".ico"].includes(e)) return "🖼️";
-  if ([".pdf"].includes(e)) return "📄";
-  if ([".mp4", ".webm", ".mov", ".mkv"].includes(e)) return "🎬";
-  if ([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"].includes(e)) return "🎵";
-  if ([".csv", ".tsv"].includes(e)) return "📊";
-  if ([".zip", ".tar", ".gz", ".rar", ".7z"].includes(e)) return "📦";
-  if ([".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".bash", ".zsh", ".json", ".html", ".css", ".sql", ".rs", ".go", ".c", ".cpp"].includes(e)) return "💻";
-  if ([".md", ".markdown", ".txt", ".doc", ".docx", ".log"].includes(e)) return "📝";
-  return "📁";
-}
-
-function getFileCategory(ext) {
-  const e = String(ext || "").toLowerCase();
-  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico"].includes(e)) return "image";
-  if ([".pdf"].includes(e)) return "pdf";
-  if ([".mp4", ".webm", ".mov", ".mkv"].includes(e)) return "video";
-  if ([".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac"].includes(e)) return "audio";
-  if ([".csv", ".tsv"].includes(e)) return "csv";
-  if ([".json"].includes(e)) return "json";
-  if ([".md", ".markdown"].includes(e)) return "markdown";
-  if ([
-    ".txt", ".text", ".log", ".env", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs", ".jsx",
-    ".ts", ".tsx", ".html", ".htm", ".css", ".scss", ".sass", ".less", ".py", ".yml", ".yaml",
-    ".xml", ".sql", ".rs", ".go", ".c", ".cpp", ".h", ".hpp", ".php", ".rb", ".toml", ".ini",
-    ".conf", ".diff", ".patch", ".dockerfile", ".gitignore", ".gitattributes"
-  ].includes(e)) return "text";
-  return "other";
-}
-
-function parseCsvRows(text) {
-  if (!text) return { headers: [], rows: [] };
-  const firstLine = text.split(/\r?\n/)[0] || "";
-  let delimiter = ",";
-  const commas = (firstLine.match(/,/g) || []).length;
-  const semis = (firstLine.match(/;/g) || []).length;
-  const tabs = (firstLine.match(/\t/g) || []).length;
-  if (semis > commas && semis > tabs) delimiter = ";";
-  else if (tabs > commas && tabs > semis) delimiter = "\t";
-
-  const rows = [];
-  let currentRow = [];
-  let currentCell = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const nextChar = text[i + 1];
-
-    if (char === '"') {
-      if (inQuotes && nextChar === '"') {
-        currentCell += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === delimiter && !inQuotes) {
-      currentRow.push(currentCell.trim());
-      currentCell = "";
-    } else if ((char === "\r" || char === "\n") && !inQuotes) {
-      if (char === "\r" && nextChar === "\n") i++;
-      currentRow.push(currentCell.trim());
-      if (currentRow.some((c) => c !== "")) rows.push(currentRow);
-      currentRow = [];
-      currentCell = "";
-    } else {
-      currentCell += char;
-    }
-  }
-  if (currentCell || currentRow.length > 0) {
-    currentRow.push(currentCell.trim());
-    if (currentRow.some((c) => c !== "")) rows.push(currentRow);
-  }
-
-  if (rows.length === 0) return { headers: [], rows: [] };
-  const headers = rows[0];
-  const bodyRows = rows.slice(1);
-  return { headers, rows: bodyRows };
-}
-
-function ProjectFilePreviewModal({ file, files, project, onClose, onSelectFile, onDownload }) {
-  const profileId = activeProfileId();
-  const previewUrl = `/api/projects/${encodeURIComponent(project.id)}/files/${encodeURIComponent(file.name)}?inline=1${profileId ? `&profile=${encodeURIComponent(profileId)}` : ""}`;
-
-  const category = getFileCategory(file.extension);
-  const currentIndex = files.findIndex((f) => f.name === file.name);
-  const hasPrev = currentIndex > 0;
-  const hasNext = currentIndex >= 0 && currentIndex < files.length - 1;
-
-  const [textContent, setTextContent] = useState("");
-  const [loadingText, setLoadingText] = useState(false);
-  const [textError, setTextError] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [wrapLines, setWrapLines] = useState(false);
-  const [viewMode, setViewMode] = useState("default");
-  const [csvFilter, setCsvFilter] = useState("");
-
-  const [zoomScale, setZoomScale] = useState(1);
-  const [imgDimensions, setImgDimensions] = useState(null);
-
-  useEffect(() => {
-    setZoomScale(1);
-    setImgDimensions(null);
-    setCopied(false);
-    setCsvFilter("");
-    setViewMode("default");
-
-    if (["text", "csv", "json", "markdown"].includes(category)) {
-      let active = true;
-      setLoadingText(true);
-      setTextError("");
-      const headers = {};
-      const token = localStorage.getItem("token");
-      if (token) headers.authorization = `Bearer ${token}`;
-      if (profileId) headers["x-noyau-profile"] = profileId;
-
-      fetch(previewUrl, { credentials: "include", headers })
-        .then((res) => {
-          if (!res.ok) throw new Error(`Erreur ${res.status}`);
-          return res.text();
-        })
-        .then((txt) => {
-          if (active) {
-            setTextContent(txt);
-            setLoadingText(false);
-          }
-        })
-        .catch((err) => {
-          if (active) {
-            setTextError(err.message || "Erreur de chargement du fichier");
-            setLoadingText(false);
-          }
-        });
-
-      return () => {
-        active = false;
-      };
-    }
-  }, [file.name, category, previewUrl, profileId]);
-
-  useEffect(() => {
-    function handleKeyDown(e) {
-      if (e.key === "Escape") {
-        onClose();
-      } else if (e.key === "ArrowLeft" && hasPrev && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
-        onSelectFile(files[currentIndex - 1]);
-      } else if (e.key === "ArrowRight" && hasNext && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
-        onSelectFile(files[currentIndex + 1]);
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [hasPrev, hasNext, currentIndex, files, onClose, onSelectFile]);
-
-  function copyText() {
-    if (!textContent) return;
-    navigator.clipboard.writeText(textContent).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }
-
-  const csvData = useMemo(() => {
-    if (category !== "csv" || !textContent) return null;
-    return parseCsvRows(textContent);
-  }, [category, textContent]);
-
-  const filteredCsvRows = useMemo(() => {
-    if (!csvData) return [];
-    if (!csvFilter.trim()) return csvData.rows;
-    const q = csvFilter.trim().toLowerCase();
-    return csvData.rows.filter((row) => row.some((cell) => String(cell).toLowerCase().includes(q)));
-  }, [csvData, csvFilter]);
-
-  const formattedJson = useMemo(() => {
-    if (category !== "json" || !textContent) return null;
-    try {
-      return JSON.stringify(JSON.parse(textContent), null, 2);
-    } catch {
-      return null;
-    }
-  }, [category, textContent]);
-
-  const displayedText = (category === "json" && viewMode === "default" && formattedJson) ? formattedJson : textContent;
-  const linesCount = displayedText ? displayedText.split("\n").length : 0;
-  const lineNumbers = useMemo(() => {
-    if (linesCount <= 0) return "";
-    return Array.from({ length: linesCount }, (_, i) => i + 1).join("\n");
-  }, [linesCount]);
-
-  const badgeClass =
-    category === "image" ? "image" :
-    category === "pdf" ? "pdf" :
-    ["csv", "json"].includes(category) ? "data" :
-    ["audio", "video"].includes(category) ? "media" : "";
-
-  return createPortal(
-    <div className="modal-backdrop project-file-preview-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <section className="modal project-file-preview-modal" role="dialog" aria-modal="true" aria-label={`Aperçu de ${file.name}`}>
-        <header className="project-file-preview-head">
-          <div className="project-file-preview-title-area">
-            <span className="project-file-preview-icon">{getFileIcon(file.extension)}</span>
-            <div className="project-file-preview-titles">
-              <div className="project-file-preview-name">
-                <h3 title={file.name}>{file.name}</h3>
-                <span className={`project-file-badge ${badgeClass}`}>
-                  {(file.extension?.replace(/^\./, "") || "fichier").toUpperCase()}
-                </span>
-              </div>
-              <div className="project-file-preview-meta">
-                <span>{formatFileBytes(file.size)}</span>
-                {imgDimensions && <span> · {imgDimensions.w} × {imgDimensions.h} px</span>}
-                {linesCount > 0 && <span> · {linesCount} ligne{linesCount > 1 ? "s" : ""}</span>}
-              </div>
-            </div>
-            {files.length > 1 && (
-              <div className="project-file-preview-nav">
-                <button
-                  type="button"
-                  className="project-file-preview-nav-btn"
-                  onClick={() => hasPrev && onSelectFile(files[currentIndex - 1])}
-                  disabled={!hasPrev}
-                  title="Fichier précédent (←)"
-                >
-                  ‹
-                </button>
-                <span>{currentIndex + 1} / {files.length}</span>
-                <button
-                  type="button"
-                  className="project-file-preview-nav-btn"
-                  onClick={() => hasNext && onSelectFile(files[currentIndex + 1])}
-                  disabled={!hasNext}
-                  title="Fichier suivant (→)"
-                >
-                  ›
-                </button>
-              </div>
-            )}
-          </div>
-          <div className="project-file-preview-actions">
-            <a
-              href={previewUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="ghost"
-              title="Ouvrir dans un nouvel onglet"
-            >
-              <UiIcon name="external" /><span>Ouvrir</span>
-            </a>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => onDownload(file.name)}
-              title="Télécharger sur l'appareil"
-            >
-              <UiIcon name="download" /><span>Télécharger</span>
-            </button>
-            <button
-              type="button"
-              className="ghost project-file-preview-close"
-              onClick={onClose}
-              title="Fermer l'aperçu (Échap)"
-              aria-label="Fermer l'aperçu"
-            >
-              <UiIcon name="close" />
-            </button>
-          </div>
-        </header>
-
-        <div className="project-file-preview-body">
-          {category === "image" && (
-            <div className="project-file-preview-image-container">
-              <img
-                src={previewUrl}
-                alt={file.name}
-                className="project-file-preview-image"
-                style={{ transform: `scale(${zoomScale})` }}
-                onLoad={(e) => {
-                  setImgDimensions({ w: e.target.naturalWidth, h: e.target.naturalHeight });
-                }}
-              />
-              <div className="project-file-preview-image-toolbar">
-                <button type="button" onClick={() => setZoomScale((s) => Math.max(0.25, s - 0.25))} title="Zoom arrière">－</button>
-                <span>{Math.round(zoomScale * 100)}%</span>
-                <button type="button" onClick={() => setZoomScale((s) => Math.min(4, s + 0.25))} title="Zoom avant">＋</button>
-                <button type="button" onClick={() => setZoomScale(1)} title="Taille réelle (100%)">100%</button>
-              </div>
-            </div>
-          )}
-
-          {category === "pdf" && (
-            <iframe
-              src={`${previewUrl}#toolbar=1`}
-              title={file.name}
-              className="project-file-preview-iframe"
-            />
-          )}
-
-          {category === "audio" && (
-            <div className="project-file-preview-media-container">
-              <div className="project-file-preview-audio-card">
-                <i>🎵</i>
-                <strong>{file.name}</strong>
-                <audio controls src={previewUrl} autoPlay={false} />
-              </div>
-            </div>
-          )}
-
-          {category === "video" && (
-            <div className="project-file-preview-media-container">
-              <video controls playsInline src={previewUrl} className="project-file-preview-video" autoPlay={false} />
-            </div>
-          )}
-
-          {["text", "csv", "json", "markdown"].includes(category) && (
-            <>
-              <div className="project-file-preview-subbar">
-                <div className="project-file-preview-subbar-left">
-                  {category === "csv" && (
-                    <>
-                      <button
-                        type="button"
-                        className={viewMode !== "raw" ? "active" : ""}
-                        onClick={() => setViewMode("default")}
-                      >
-                        Tableau ({csvData?.rows?.length || 0} lignes)
-                      </button>
-                      <button
-                        type="button"
-                        className={viewMode === "raw" ? "active" : ""}
-                        onClick={() => setViewMode("raw")}
-                      >
-                        Texte brut
-                      </button>
-                      {viewMode !== "raw" && csvData?.rows?.length > 0 && (
-                        <input
-                          type="text"
-                          className="project-file-preview-search"
-                          placeholder="Filtrer les lignes…"
-                          value={csvFilter}
-                          onChange={(e) => setCsvFilter(e.target.value)}
-                        />
-                      )}
-                    </>
-                  )}
-
-                  {category === "json" && (
-                    <>
-                      <button
-                        type="button"
-                        className={viewMode === "default" ? "active" : ""}
-                        onClick={() => setViewMode("default")}
-                      >
-                        Formaté
-                      </button>
-                      <button
-                        type="button"
-                        className={viewMode === "raw" ? "active" : ""}
-                        onClick={() => setViewMode("raw")}
-                      >
-                        Brut
-                      </button>
-                    </>
-                  )}
-
-                  {category !== "csv" || viewMode === "raw" ? (
-                    <button
-                      type="button"
-                      className={wrapLines ? "active" : ""}
-                      onClick={() => setWrapLines((w) => !w)}
-                    >
-                      Retour auto {wrapLines ? "activé" : "désactivé"}
-                    </button>
-                  ) : null}
-                </div>
-
-                <div className="project-file-preview-subbar-right">
-                  <button type="button" onClick={copyText} disabled={loadingText || !textContent}>
-                    {copied ? "✓ Copié !" : "📋 Copier tout"}
-                  </button>
-                </div>
-              </div>
-
-              {loadingText && (
-                <div className="project-file-preview-unsupported">
-                  <p>Chargement du fichier en cours…</p>
-                </div>
-              )}
-
-              {textError && (
-                <div className="project-file-preview-unsupported">
-                  <p style={{ color: "var(--c-df8087)" }}>{textError}</p>
-                </div>
-              )}
-
-              {!loadingText && !textError && category === "csv" && viewMode !== "raw" && csvData && (
-                <div className="project-file-preview-table-wrap">
-                  <table className="project-file-preview-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: 40 }}>#</th>
-                        {csvData.headers.map((h, idx) => (
-                          <th key={idx}>{h || `Col ${idx + 1}`}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredCsvRows.map((row, rIdx) => (
-                        <tr key={rIdx}>
-                          <td style={{ color: "var(--c-556157)", userSelect: "none" }}>{rIdx + 1}</td>
-                          {row.map((cell, cIdx) => (
-                            <td key={cIdx} title={cell}>{cell}</td>
-                          ))}
-                        </tr>
-                      ))}
-                      {filteredCsvRows.length === 0 && (
-                        <tr>
-                          <td colSpan={csvData.headers.length + 1} style={{ textAlign: "center", padding: 24, color: "var(--c-667269)" }}>
-                            Aucune ligne ne correspond au filtre.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {!loadingText && !textError && (category !== "csv" || viewMode === "raw") && (
-                <div className="project-file-preview-text-wrap">
-                  <div className="project-file-preview-line-numbers">
-                    <pre style={{ margin: 0, font: "inherit", color: "inherit" }}>{lineNumbers}</pre>
-                  </div>
-                  <pre className={`project-file-preview-code ${wrapLines ? "wrapped" : ""}`}>
-                    {displayedText}
-                  </pre>
-                </div>
-              )}
-            </>
-          )}
-
-          {category === "other" && (
-            <div className="project-file-preview-unsupported">
-              <span className="project-file-preview-unsupported-icon">{getFileIcon(file.extension)}</span>
-              <h4>{file.name}</h4>
-              <p>
-                L'aperçu direct de ce type de fichier (<strong>{file.extension || "binaire"}</strong>) n'est pas pris en charge dans le navigateur.
-              </p>
-              <div className="project-file-preview-unsupported-actions">
-                <button type="button" className="primary" onClick={() => onDownload(file.name)}>
-                  ↓ Télécharger ({formatFileBytes(file.size)})
-                </button>
-                <a href={previewUrl} target="_blank" rel="noreferrer" className="ghost">
-                  ↗ Tenter l'ouverture dans un nouvel onglet
-                </a>
-              </div>
-            </div>
-          )}
-        </div>
-      </section>
-    </div>,
-    document.body
-  );
-}
-
-function ProjectFilesSection({ project, agents }) {
+function ProjectFilesSection({ project, agents, onOpenAgent }) {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -3369,8 +3149,10 @@ function ProjectFilesSection({ project, agents }) {
   const [customPrompt, setCustomPrompt] = useState("");
   const [sendingAgent, setSendingAgent] = useState(false);
   const fileInputRef = React.useRef(null);
+  const [sort, loadSort] = useFileSort(project, api);
 
   const loadFiles = useCallback(async () => {
+    loadSort();
     try {
       setLoading(true);
       const res = await api(`/api/projects/${encodeURIComponent(project.id)}/files`);
@@ -3380,7 +3162,7 @@ function ProjectFilesSection({ project, agents }) {
     } finally {
       setLoading(false);
     }
-  }, [project.id]);
+  }, [project.id, loadSort]);
 
   useEffect(() => {
     loadFiles();
@@ -3397,7 +3179,7 @@ function ProjectFilesSection({ project, agents }) {
     if (!file) return;
     const maxBytes = 500 * 1024 * 1024;
     if (file.size > maxBytes) {
-      window.alert(`Fichier trop volumineux (${formatBytes(file.size)}). La taille maximale autorisée est de 500 Mo.`);
+      window.alert(`Fichier trop volumineux (${formatFileBytes(file.size)}). La taille maximale autorisée est de 500 Mo.`);
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -3480,6 +3262,7 @@ function ProjectFilesSection({ project, agents }) {
         throw new Error(`Erreur ${response.status}`);
       }
       const blob = await response.blob();
+      if (isNative) { await shareNativeProjectFile(blob, filename); return; }
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.style.display = "none";
@@ -3491,8 +3274,8 @@ function ProjectFilesSection({ project, agents }) {
         window.URL.revokeObjectURL(url);
         a.remove();
       }, 1000);
-    } catch {
-      window.location.href = `/api/projects/${encodeURIComponent(project.id)}/files/${encodeURIComponent(filename)}`;
+    } catch (error) {
+      window.alert(`Téléchargement impossible : ${error.message}`);
     }
   }
 
@@ -3524,28 +3307,11 @@ function ProjectFilesSection({ project, agents }) {
     }
   }
 
-  function formatBytes(bytes) {
-    if (!bytes || bytes === 0) return "0 o";
-    const k = 1024;
-    const sizes = ["o", "Ko", "Mo", "Go"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
-  }
-
-  function getFileIcon(ext) {
-    if ([".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif"].includes(ext)) return "🖼️";
-    if ([".pdf"].includes(ext)) return "📄";
-    if ([".zip", ".tar", ".gz", ".rar"].includes(ext)) return "📦";
-    if ([".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".json", ".html", ".css"].includes(ext)) return "💻";
-    if ([".md", ".txt", ".doc", ".docx"].includes(ext)) return "📝";
-    return "📁";
-  }
-
   return (
     <details className="project-files">
       <summary>
         <span>Fichiers partagés</span>
-        <small>{loading ? "chargement…" : `${files.length} fichier${files.length > 1 ? "s" : ""}`}</small>
+        <small>{sort?.status === "running" ? "tri en cours…" : loading ? "chargement…" : `${files.length} fichier${files.length > 1 ? "s" : ""}`}</small>
         <b>›</b>
       </summary>
       <div
@@ -3574,7 +3340,7 @@ function ProjectFilesSection({ project, agents }) {
             title={uploading ? "Upload en cours…" : "Uploader / Téléverser un fichier"}
             aria-label="Uploader un fichier"
           >
-            {uploading ? "⏳" : "📤"}
+            {uploading ? "…" : <AppIcon name="paperclip" size={16} />}
           </button>
           <button
             type="button"
@@ -3583,9 +3349,7 @@ function ProjectFilesSection({ project, agents }) {
             disabled={uploading}
             title="Coller une image ou capture d'écran du presse-papiers (Ctrl+V)"
             aria-label="Coller image du presse-papiers"
-          >
-            📋
-          </button>
+          ><AppIcon name="paperclip" size={16}/></button>
           {agents.length > 0 && (
             <button
               type="button"
@@ -3598,17 +3362,17 @@ function ProjectFilesSection({ project, agents }) {
               }}
               title="Demander à un agent de déposer un fichier"
               aria-label="Demander à un agent de déposer un fichier"
-            >
-              🤖
-            </button>
+            ><AppIcon name="people" size={16}/></button>
           )}
+          <FileSortButton project={project} api={api} sort={sort} onStarted={loadFiles} onOpenAgent={onOpenAgent} />
           <span className="project-files-upload-hint">Glisser-déposer ou coller une image (Ctrl+V)</span>
         </div>
+        <FileSortPanel project={project} api={api} sort={sort} onChanged={loadFiles} />
 
         {dialogMode && (
           <div className="project-files-dialog">
             <strong>
-              {dialogMode === "ask" ? "🤖 Demander à un agent de déposer un fichier" : `📤 Partager « ${selectedFile?.name} » avec un agent`}
+              {dialogMode === "ask" ? " Demander à un agent de déposer un fichier" : ` Partager « ${selectedFile?.name} » avec un agent`}
             </strong>
             <label>
               <small>Agent cible :</small>
@@ -3659,7 +3423,7 @@ function ProjectFilesSection({ project, agents }) {
               <span className="project-file-icon">{getFileIcon(file.extension)}</span>
               <div className="project-file-info">
                 <span className="project-file-name" title={file.name}>{file.name}</span>
-                <span className="project-file-meta">{formatBytes(file.size)}</span>
+                <span className="project-file-meta">{formatFileBytes(file.size)}</span>
               </div>
               <div className="project-file-actions" onClick={(e) => e.stopPropagation()}>
                 <button
@@ -4106,12 +3870,13 @@ function ProjectBudgetSection({ project, onRefresh }) {
   );
 }
 
-function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onModuleBuild, onModuleBuildRefresh, onOpenTodos, onReorder, onRefresh, profileId }) {
+function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, sessions, modules, moduleProposals, onModuleEnvironment, onModuleRemove, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onModuleBuild, onModuleBuildRefresh, onOpenTodos, onOpenMap, onReorder, onRefresh, profileId }) {
   // Le cache Todo porte { todos, folders } depuis la refonte par dossier: on accepte les deux formes.
   const [todos, setTodos] = useState(() => {
     const cached = cachedView("todos");
     return (Array.isArray(cached) ? cached : cached?.todos) || [];
   });
+  const [mobileProjectSections, setMobileProjectSections] = useState({});
   const [draggedProject, setDraggedProject] = useState("");
   const cardRefs = React.useRef(new Map());
   const dragRef = React.useRef(null);
@@ -4149,6 +3914,15 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
       return next;
     });
   }, []);
+
+  function openMobileProjectSection(projectId, section) {
+    setMobileProjectSections((old) => ({ ...old, [projectId]: section }));
+    if (section === "agents") toggleProjectAgents(projectId, true);
+    requestAnimationFrame(() => {
+      const node = cardRefs.current.get(projectId);
+      if (section === "modules" || section === "files") node?.querySelectorAll(`.project-mobile-section[data-section="${section}"] > details`).forEach((detail) => { detail.open = true; });
+    });
+  }
 
   const loadTodos = useCallback(async () => {
     try {
@@ -4208,10 +3982,10 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
   }
 
   return (
-    <div className="page projects-page">
-      <section className="hero-row"><div><p className="eyebrow">ORGANISATION</p><h1>Projets.</h1><p className="muted">Regroupe agents liés au même travail, sans imposer dossier.</p></div></section>
-      <div className="projects-grid">
-        {projects.map((project) => {
+    <div className={`page projects-page ${selectedProjectId ? "single-project" : ""}`}>
+      <section className="hero-row"><div><p className="eyebrow">ORGANISATION</p><h1>{selectedProjectId ? projects.find((project) => project.id === selectedProjectId)?.name || "Projet" : "Projets."}</h1><p className="muted">{selectedProjectId ? "Agents, tâches et fichiers du projet." : "Regroupe agents liés au même travail, sans imposer dossier."}</p>{selectedProjectId ? <span className="mobile-project-switch-actions"><button type="button" className="ghost" onClick={onShowAllProjects}>← Tous les projets</button><button type="button" className="ghost mobile-project-switch" onClick={() => window.dispatchEvent(new Event("noyau:choose-project"))}>Changer de projet</button></span> : <button type="button" className="ghost mobile-project-create" onClick={onNew}>+ Nouveau projet</button>}</div></section>
+      <div className={`projects-grid ${selectedProjectId ? "single-project" : ""}`}>
+        {projects.filter((project) => !selectedProjectId || project.id === selectedProjectId).map((project) => {
           const agents = sessions.filter((session) => session.projectId === project.id);
           const isProd = (module) => module.environment === "production";
           const projectModules = modules
@@ -4226,13 +4000,22 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
           const prodActive = prodModules.filter((module) => module.enabled).length;
           const prodAlerts = prodModules.filter((module) => module.state === "failed" || module.setup?.status === "required").length;
           const projectTodos = todos.filter((todo) => todo.projectId === project.id);
+          const hasPlanning = modules.some((module) => module.projectId === project.id && module.hasPlanning);
           return (
             <article
               className={`panel project-card ${draggedProject === project.id ? "dragging" : ""}`}
               key={project.id}
               ref={(node) => { if (node) cardRefs.current.set(project.id, node); else cardRefs.current.delete(project.id); }}
             >
-              <header><button className="project-drag" onPointerDown={(event) => startDrag(event, project)} onPointerMove={dragOver} onPointerUp={endDrag} onPointerCancel={endDrag} title="Glisser pour changer ordre" aria-label={`Déplacer ${project.name}`}>⠿</button><ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={`Projet partagé par ${project.owner?.name || "autre profil"}`}>⇄ {project.owner?.name || "partagé"}</b> : project.shared ? <b className="shared-chip own" title="Projet partagé avec les autres profils">⇄ partagé</b> : null}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
+              <header>{!selectedProjectId && <button className="project-drag" onPointerDown={(event) => startDrag(event, project)} onPointerMove={dragOver} onPointerUp={endDrag} onPointerCancel={endDrag} title="Glisser pour changer ordre" aria-label={`Déplacer ${project.name}`}>⠿</button>}<ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={`Projet partagé par ${project.owner?.name || "autre profil"}`}>⇄ {project.owner?.name || "partagé"}</b> : project.shared ? <b className="shared-chip own" title="Projet partagé avec les autres profils">⇄ partagé</b> : null}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
+              <nav className="project-mobile-tabs" aria-label={`Sections de ${project.name}`}>{[["overview", "Vue d’ensemble"], ["agents", "Agents"], ["modules", "Modules"], ["files", "Fichiers"]].map(([id, label]) => <button type="button" key={id} aria-pressed={(mobileProjectSections[project.id] || "overview") === id} onClick={() => openMobileProjectSection(project.id, id)}>{label}</button>)}</nav>
+              <div className="project-mobile-section" data-section="overview" data-selected={(mobileProjectSections[project.id] || "overview") === "overview"}>
+              <button className="project-map-tab" onClick={() => onOpenMap?.(project.id)}><span className="nav-icon"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="2.5" /><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="7" r="1.8" /><circle cx="6" cy="18.5" r="1.8" /><circle cx="18.5" cy="18" r="1.8" /><path d="M6.5 7.2l3.6 3.3M17.4 8l-3.5 2.6M7.4 17.4l2.8-3.6M16.9 16.8l-3-3" /></svg></span><span>Carte</span><small>agents, services, timers et échanges</small><b>›</b></button>
+              <ProjectTracking project={project} api={api} onOpenAgent={onOpenAgent} storageKey={profileCacheKey(`planification-open-${project.id}`)} publications={hasPlanning ? <ProjectPlanning project={project} nested /> : null} />
+              <ProjectReporting project={project} agents={agents} todos={projectTodos} onRefresh={onRefresh} />
+              <ProjectBudgetSection project={project} onRefresh={onRefresh} />
+              </div>
+              <div className="project-mobile-section" data-section="agents" data-selected={mobileProjectSections[project.id] === "agents"}>
               <details
                 className="project-agents-accordion"
                 open={Boolean(expandedProjectAgents[project.id])}
@@ -4248,12 +4031,16 @@ function ProjectsView({ projects, sessions, modules, moduleProposals, onOpenAgen
                   {!agents.length && <span className="project-empty">Aucun agent rattaché.</span>}
                 </div>
               </details>
-              <ProjectReporting project={project} agents={agents} todos={projectTodos} onRefresh={onRefresh} />
-              <ProjectBudgetSection project={project} onRefresh={onRefresh} />
-              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
-              {(prodModules.length > 0 || prodProposals.length > 0) && <details className="project-modules project-production"><summary><span>Production</span><small className={prodAlerts ? "warn" : ""}>{prodModules.length} service{prodModules.length > 1 ? "s" : ""} · {prodActive} actif{prodActive > 1 ? "s" : ""}{prodAlerts ? ` · ${prodAlerts} à vérifier` : ""}{prodHosts.length ? ` · ${prodHosts.join(", ")}` : ""}</small><b>›</b></summary><div className="project-module-list">{prodModules.map((module) => <ProjectModule key={module.id} module={module} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{prodProposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.executionHost ? `${module.executionHost} · ` : ""}{module.description}</small></div><b>＋</b></button>)}</div></details>}
+              </div>
+              <div className="project-mobile-section" data-section="modules" data-selected={mobileProjectSections[project.id] === "modules"}>
+              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onEnvironment={onModuleEnvironment} onRemove={onModuleRemove} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
+              {(prodModules.length > 0 || prodProposals.length > 0) && <details className="project-modules project-production"><summary><span>Production</span><small className={prodAlerts ? "warn" : ""}>{prodModules.length} service{prodModules.length > 1 ? "s" : ""} · {prodActive} actif{prodActive > 1 ? "s" : ""}{prodAlerts ? ` · ${prodAlerts} à vérifier` : ""}{prodHosts.length ? ` · ${prodHosts.join(", ")}` : ""}</small><b>›</b></summary><div className="project-module-list">{prodModules.map((module) => <ProjectModule key={module.id} module={module} onEnvironment={onModuleEnvironment} onRemove={onModuleRemove} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{prodProposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.executionHost ? `${module.executionHost} · ` : ""}{module.description}</small></div><b>＋</b></button>)}</div></details>}
 
-              <ProjectFilesSection project={project} agents={agents} />
+              {projectModules.length + proposals.length + prodModules.length + prodProposals.length === 0 && <p className="project-mobile-empty">Aucun module installé pour ce projet.</p>}
+              </div>
+              <div className="project-mobile-section" data-section="files" data-selected={mobileProjectSections[project.id] === "files"}>
+              <ProjectFilesSection project={project} agents={agents} onOpenAgent={onOpenAgent} />
+              </div>
             </article>
           );
         })}
@@ -4370,7 +4157,7 @@ function BankingPanel({ banks, month, onSynced }) {
       <div className="panel-head"><div><h3>Connexions bancaires</h3><p>Enable Banking · clé privée protégée localement par fichier 0600</p></div><span className={status?.configured ? "ready" : "pending"}>{status?.configured ? "PRÊT" : "À CONFIGURER"}</span></div>
       {error && <p className="bank-error">{error}</p>}
       <details className="bank-config" open={!status?.configured}>
-        <summary><span><i aria-hidden="true">⚙</i>Réglages Enable Banking</span><small>{status?.configured ? (status?.keyStored ? "Clé stockée" : "Clé à charger") : "À configurer"}</small><b>›</b></summary>
+        <summary><span><i aria-hidden="true"><AppIcon name="settings" size={16}/></i>Réglages Enable Banking</span><small>{status?.configured ? (status?.keyStored ? "Clé stockée" : "Clé à charger") : "À configurer"}</small><b>›</b></summary>
         <form onSubmit={saveConfig}>
           <p>URL VPN HTTPS fonctionne directement: retour bancaire arrive dans navigateur du téléphone connecté au VPN. Aucun relais public ni exposition dashboard. Enregistre URL exacte, puis charge clé privée RSA PEM.</p>
           <label><span>Application ID</span><input value={config.appId} onChange={(event) => setConfig({ ...config, appId: event.target.value })} required autoComplete="off" placeholder="ID application" /></label>
@@ -5167,34 +4954,7 @@ function isCommentByAgent(comment) {
 
 function FolderCreateModal({ parentFolder, onClose, onCreated }) {
   const [name, setName] = useState("");
-  const [emoji, setEmoji] = useState(parentFolder ? "📁" : "📁");
-  const [userPickedEmoji, setUserPickedEmoji] = useState(false);
-  const [loadingEmoji, setLoadingEmoji] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [showPicker, setShowPicker] = useState(false);
-
-  const commonEmojis = [
-    "💻", "🎨", "📣", "💡", "🐛", "🚀", "📦", "📝",
-    "🔧", "🔒", "📊", "⚡", "🎯", "🧪", "🛠️", "📱",
-    "🌐", "📚", "💬", "🎬", "✨", "💰", "🔍", "⚙️"
-  ];
-
-  useEffect(() => {
-    const trimmed = name.trim();
-    if (!trimmed || userPickedEmoji) return;
-    const timer = setTimeout(async () => {
-      setLoadingEmoji(true);
-      try {
-        const res = await fetch(`/api/todos/suggest-emoji?name=${encodeURIComponent(trimmed)}`);
-        const data = await res.json();
-        if (data.emoji && !userPickedEmoji) {
-          setEmoji(data.emoji);
-        }
-      } catch {}
-      setLoadingEmoji(false);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [name, userPickedEmoji]);
 
   async function submit(e) {
     e.preventDefault();
@@ -5202,8 +4962,7 @@ function FolderCreateModal({ parentFolder, onClose, onCreated }) {
     if (!trimmed || busy) return;
     setBusy(true);
     try {
-      const cleanName = trimmed.replace(/^[\p{Extended_Pictographic}\s]+/u, "");
-      const fullName = `${emoji} ${cleanName}`.trim();
+      const fullName = trimmed;
       await onCreated({
         name: fullName,
         parentId: parentFolder ? parentFolder.id : null,
@@ -5226,53 +4985,6 @@ function FolderCreateModal({ parentFolder, onClose, onCreated }) {
           <button type="button" className="icon-button" onClick={onClose} aria-label="Fermer">×</button>
         </div>
         <form onSubmit={submit}>
-          <label>Emoji de la zone</label>
-          <div className="todo-folder-emoji-bar">
-            <button
-              type="button"
-              className="todo-folder-emoji-btn"
-              onClick={() => setShowPicker(!showPicker)}
-              title="Cliquer pour choisir un emoji"
-            >
-              <span className="todo-folder-emoji-large">{emoji}</span>
-              <span className="todo-folder-emoji-label">{loadingEmoji ? "IA…" : "Modifier"}</span>
-            </button>
-            <div className="todo-folder-emoji-quick">
-              {commonEmojis.slice(0, 8).map((em) => (
-                <button
-                  key={em}
-                  type="button"
-                  className={`todo-emoji-chip ${emoji === em ? "selected" : ""}`}
-                  onClick={() => { setEmoji(em); setUserPickedEmoji(true); }}
-                >
-                  {em}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="todo-emoji-chip more"
-                onClick={() => setShowPicker(!showPicker)}
-                title="Plus d'emojis"
-              >
-                {showPicker ? "▲" : "▼"}
-              </button>
-            </div>
-          </div>
-          {showPicker && (
-            <div className="todo-emoji-picker-grid">
-              {commonEmojis.map((em) => (
-                <button
-                  key={em}
-                  type="button"
-                  className={`todo-emoji-pick ${emoji === em ? "selected" : ""}`}
-                  onClick={() => { setEmoji(em); setUserPickedEmoji(true); }}
-                >
-                  {em}
-                </button>
-              ))}
-            </div>
-          )}
-
           <label htmlFor="folder-name-input">Nom {parentFolder ? "du sous-dossier" : "du dossier"}</label>
           <input
             id="folder-name-input"
@@ -5370,7 +5082,7 @@ function CalendarSyncModal({ onClose, onUpdated }) {
 
         <div className="calendar-sync-body">
           <section className="calendar-sync-section">
-            <h3>📥 Synchroniser dans votre calendrier perso</h3>
+            <h3> Synchroniser dans votre calendrier perso</h3>
             <p className="muted small">Abonnez Google Calendar, Apple Calendar ou Outlook à vos tâches Noyau :</p>
             <div className="calendar-export-row">
               <input readOnly value={exportUrl} className="calendar-export-input" />
@@ -5384,7 +5096,7 @@ function CalendarSyncModal({ onClose, onUpdated }) {
           </section>
 
           <section className="calendar-sync-section">
-            <h3>➕ Ajouter un calendrier perso (iCal / Webcal)</h3>
+            <h3>+ Ajouter un calendrier perso (iCal / Webcal)</h3>
             <form onSubmit={handleAdd} className="calendar-add-form">
               {error && <p className="finance-error">{error}</p>}
               <div className="calendar-form-row">
@@ -5416,7 +5128,7 @@ function CalendarSyncModal({ onClose, onUpdated }) {
           </section>
 
           <section className="calendar-sync-section">
-            <h3>📋 Vos abonnements actifs ({subscriptions.length})</h3>
+            <h3> Vos abonnements actifs ({subscriptions.length})</h3>
             {loading ? (
               <p className="muted">Chargement…</p>
             ) : subscriptions.length === 0 ? (
@@ -5488,8 +5200,8 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [selectedDay, setSelectedDay] = useState(() => localIsoDate());
   const [projectFilter, setProjectFilter] = useState("all");
-  const [externalEvents, setExternalEvents] = useState([]);
-  const [subscriptions, setSubscriptions] = useState([]);
+  const [externalEvents, setExternalEvents] = useState(() => cachedView("calendar")?.events || []);
+  const [subscriptions, setSubscriptions] = useState(() => cachedView("calendar")?.subscriptions || []);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [widgetMode, setWidgetMode] = useState(false);
   const [newTodoText, setNewTodoText] = useState("");
@@ -5514,16 +5226,20 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
 
   const loadCalendarData = useCallback(async () => {
     try {
+      const scope = profileCacheKey("calendar");
       const data = await api("/api/calendar/events");
+      if (profileCacheKey("calendar") !== scope) return;
       if (data?.events) setExternalEvents(data.events);
       if (data?.subscriptions) setSubscriptions(data.subscriptions);
+      const snapshot = calendarSnapshot(data); if (snapshot) storeView("calendar", snapshot);
     } catch {}
   }, []);
 
   useEffect(() => {
     loadCalendarData();
     const timer = setInterval(loadCalendarData, 60_000);
-    return () => clearInterval(timer);
+    window.addEventListener("noyau:todos-refresh", loadCalendarData);
+    return () => { clearInterval(timer); window.removeEventListener("noyau:todos-refresh", loadCalendarData); };
   }, [loadCalendarData]);
 
   const year = currentDate.getFullYear();
@@ -5966,7 +5682,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
           <div className="todo-calendar-day-detail">
             <div className="day-detail-header">
               <div className="day-detail-title-wrap">
-                <span className="cal-day-detail-icon">📅</span>
+                <span className="cal-day-detail-icon"><AppIcon name="calendar" size={16}/></span>
                 <div>
                   <h3 className="day-detail-date-title">
                     {formattedSelectedDay.charAt(0).toUpperCase() + formattedSelectedDay.slice(1)}
@@ -6013,9 +5729,9 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                 title="Attribuer la tâche (Aurora, Moi, ou tout le monde)"
                 aria-label="Attribution de la tâche"
               >
-                <option value="aurora">🌸 Aurora</option>
-                <option value="main">👤 Moi</option>
-                <option value="all">👥 Tout le monde</option>
+                <option value="aurora"> Aurora</option>
+                <option value="main"> Moi</option>
+                <option value="all"> Tout le monde</option>
               </select>
               <button type="submit" className="primary mini quick-add-btn" disabled={addingTodo || !newTodoText.trim()}>
                 {addingTodo ? "…" : "Ajouter"}
@@ -6032,7 +5748,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                       <span className="event-source-badge" style={{ color: evt.color || "#38bdf8" }}>{evt.calendarName}</span>
                     </div>
                     {evt.description && <p className="event-desc">{evt.description}</p>}
-                    {evt.location && <span className="event-loc">📍 {evt.location}</span>}
+                    {evt.location && <span className="event-loc"> {evt.location}</span>}
                   </div>
                 </div>
               ))}
@@ -6060,7 +5776,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                           <span className="todo-text" onClick={() => onTodoClick?.(todo)}>{todo.text}</span>
                           {todo.shared && (
                             <span className="todo-shared-chip" title={todo.ownerName ? `Partagé par ${todo.ownerName}` : "Tâche partagée"}>
-                              👥 {todo.ownerName || "Partagée"}
+                               {todo.ownerName || "Partagée"}
                             </span>
                           )}
                           <button
@@ -6068,9 +5784,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                             className={`cal-share-btn ${todo.shared ? "is-shared" : ""}`}
                             onClick={(e) => { e.stopPropagation(); toggleTodoShared(todo); }}
                             title={todo.shared ? "Tâche partagée (cliquer pour rendre privée)" : "Tâche privée (cliquer pour partager)"}
-                          >
-                            👥
-                          </button>
+                          ><AppIcon name="share" size={16}/></button>
                           {todo._calKind === "completed" && (
                             <span className="todo-completed-tag">✓ Réalisé</span>
                           )}
@@ -6118,7 +5832,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                           <div key={todo.id} className="unscheduled-item">
                             <span className="todo-text" title={todo.text}>{todo.text}</span>
                             {todo.shared && (
-                              <span className="todo-shared-chip" title={todo.ownerName ? `Partagé par ${todo.ownerName}` : "Tâche partagée"}>👥</span>
+                              <span className="todo-shared-chip" title={todo.ownerName ? `Partagé par ${todo.ownerName}` : "Tâche partagée"}><AppIcon name="tag" size={16}/></span>
                             )}
                             <button
                               type="button"
@@ -6126,7 +5840,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                               disabled={schedulingId === todo.id}
                               onClick={() => scheduleTodo(todo.id, selectedDay)}
                             >
-                              {schedulingId === todo.id ? "…" : "📅 Planifier"}
+                              {schedulingId === todo.id ? "…" : " Planifier"}
                             </button>
                           </div>
                         ))}
@@ -6155,7 +5869,9 @@ function CalendarView({ projects = [], onView }) {
 
   const load = useCallback(async () => {
     try {
+      const scope = profileCacheKey("todos");
       const result = await api("/api/todos");
+      if (profileCacheKey("todos") !== scope) return;
       if (result) {
         setTodos(result.todos || []);
         setFolders(result.folders || []);
@@ -6222,9 +5938,9 @@ function CalendarView({ projects = [], onView }) {
 function getTodoAssignee(todo) {
   if (!todo) return "main";
   if (todo.assignee === "all" || todo.assignee === "both" || (todo.shared && !todo.assignee)) return "all";
-  if (todo.assignee === "aurora" || todo.assignee === "aurora") return "aurora";
-  if (todo.assignee === "main" || todo.assignee === "me") return "main";
-  if (todo.ownerProfileId === "aurora" || (todo.ownerName && /aurora/i.test(todo.ownerName))) return "aurora";
+  if (todo.assignee === "aurora") return "aurora";
+  if (todo.assignee === "main" || todo.assignee === "moi") return "main";
+  if (todo.ownerProfileId === "aurora" || (todo.ownerName && /bellin/i.test(todo.ownerName))) return "aurora";
   return "main";
 }
 
@@ -6271,7 +5987,10 @@ function TodosView({ projects = [], onView }) {
   });
   const [showCalendar, setShowCalendar] = useState(false);
   const [showDone, setShowDone] = useState({});
-  const [columns, setColumns] = useState(() => (Array.isArray(cached) ? null : cached?.columns) || DEFAULT_COLUMNS);
+  const [columns, setColumns] = useState(() => (!Array.isArray(cached) && cached?.columns?.length ? cached.columns : DEFAULT_COLUMNS));
+  const [mobileColumn, setMobileColumn] = useState("");
+  const [mobileBoard, setMobileBoard] = useState(() => window.matchMedia("(max-width: 800px)").matches);
+  useEffect(() => { const media = window.matchMedia("(max-width: 800px)"); const update = () => setMobileBoard(media.matches); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
   const [expandedCards, setExpandedCards] = useState({});
   const [overflowCards, setOverflowCards] = useState({});
   const [correction, setCorrection] = useState(() => (Array.isArray(cached) ? true : cached?.correction !== false));
@@ -6312,14 +6031,15 @@ function TodosView({ projects = [], onView }) {
   const load = useCallback(async () => {
     try {
       const mutation = mutationRef.current;
+      const scope = profileCacheKey("todos");
       const result = await api("/api/todos");
       // Un rafraichissement parti avant une action renverrait l'etat d'avant: on l'ignore.
-      if (mutation !== mutationRef.current) return;
+      if (mutation !== mutationRef.current || profileCacheKey("todos") !== scope) return;
       apply(result);
       setStorage(result.storage || "Obsidian");
       setError("");
     } catch (reason) {
-      setError(reason.message);
+      setError(isNative && nativeReadOnlyOffline ? cachedView("todos") ? "" : "Aucune tâche synchronisée sur cet appareil. Connectez-vous une première fois." : reason.message);
     }
   }, [apply]);
 
@@ -6357,7 +6077,9 @@ function TodosView({ projects = [], onView }) {
     mutationRef.current += 1;
     setBusy(key);
     try {
-      apply(await task());
+      const result = await task();
+      if (result?.offlineQueued) { setError("Modification en attente de synchronisation ; la liste enregistrée reste affichée."); return; }
+      apply(result);
       setError("");
     } catch (reason) {
       setError(reason.message);
@@ -6581,7 +6303,7 @@ function TodosView({ projects = [], onView }) {
           onClick={() => switchViewMode("classic")}
           title="Vue Liste classique"
         >
-          <span className="view-icon">📋</span> Classique
+          <span className="view-icon"><AppIcon name="file" size={16}/></span> Classique
         </button>
         <button
           type="button"
@@ -6589,7 +6311,7 @@ function TodosView({ projects = [], onView }) {
           onClick={() => switchViewMode("raw")}
           title="Vue Markdown brut (édition et copie)"
         >
-          <span className="view-icon">📝</span> .MD
+          <span className="view-icon"><AppIcon name="file" size={16}/></span> .MD
         </button>
       </div>
     );
@@ -6602,9 +6324,9 @@ function TodosView({ projects = [], onView }) {
           type="button"
           className={`todo-sort-btn ${sortMode === "priority" ? "active" : ""}`}
           onClick={() => switchSortMode(sortMode === "priority" ? "activity" : "priority")}
-          title="Trier par priorité (🔴 Haute, 🟡 Moyenne, 🟢 Basse)"
+          title="Trier par priorité ( Haute,  Moyenne,  Basse)"
         >
-          ⚡ Priorité
+          Priorité
         </button>
         <button
           type="button"
@@ -6612,7 +6334,7 @@ function TodosView({ projects = [], onView }) {
           onClick={() => switchSortMode("activity")}
           title="Trier par récents / activité"
         >
-          🕒 Récents
+           Récents
         </button>
       </div>
     );
@@ -6635,7 +6357,7 @@ function TodosView({ projects = [], onView }) {
               disabled={rawLoading || rawSaving}
               title="Recharger le fichier depuis le serveur"
             >
-              {rawLoading ? "…" : "🔄 Recharger"}
+              {rawLoading ? "…" : " Recharger"}
             </button>
             <button
               type="button"
@@ -6644,7 +6366,7 @@ function TodosView({ projects = [], onView }) {
               disabled={!rawContent}
               title="Copier tout le Markdown"
             >
-              {rawCopied ? "✓ Copié !" : "📋 Copier"}
+              {rawCopied ? "✓ Copié !" : " Copier"}
             </button>
             <button
               type="button"
@@ -6653,7 +6375,7 @@ function TodosView({ projects = [], onView }) {
               disabled={rawSaving || rawContent === rawOriginal}
               title="Enregistrer les modifications dans le fichier Markdown"
             >
-              {rawSaving ? "Enregistrement…" : "💾 Enregistrer"}
+              {rawSaving ? "Enregistrement…" : " Enregistrer"}
             </button>
           </div>
         </div>
@@ -6779,6 +6501,67 @@ function TodosView({ projects = [], onView }) {
       }
     } catch { /* stockage optionnel */ }
   }
+
+  const highlightTargetTodo = useCallback((targetInfo) => {
+    if (!targetInfo) return;
+    const targetId = targetInfo.id;
+    const targetRef = targetInfo.ref ? String(targetInfo.ref).toUpperCase() : null;
+    const found = todos.find((t) => t.id === targetId || (targetRef && (todoRef(t.id) === targetRef || String(t.ref || "").toUpperCase() === targetRef)));
+    if (!found) return;
+
+    if (found.folderId && found.folderId !== openFolder) {
+      selectFolder(found.folderId);
+    }
+
+    const isDone = found.status === "done" || Boolean(found.completed);
+    if (isDone) {
+      setCollapsedColumns((prev) => {
+        const next = { ...prev, done: false };
+        try { localStorage.setItem(profileCacheKey("todo-collapsed-columns"), JSON.stringify(next)); } catch {}
+        return next;
+      });
+    } else if (found.status && collapsedColumns[found.status]) {
+      setCollapsedColumns((prev) => {
+        const next = { ...prev, [found.status]: false };
+        try { localStorage.setItem(profileCacheKey("todo-collapsed-columns"), JSON.stringify(next)); } catch {}
+        return next;
+      });
+    }
+
+    setTimeout(() => {
+      const cardEl = document.querySelector(`[data-todo-id="${found.id}"]`) ||
+                     (targetRef ? document.querySelector(`[data-todo-ref="${targetRef}"]`) : null);
+      if (cardEl) {
+        cardEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        cardEl.classList.remove("highlight-targeted");
+        void cardEl.offsetWidth;
+        cardEl.classList.add("highlight-targeted");
+        setTimeout(() => {
+          cardEl.classList.remove("highlight-targeted");
+        }, 1800);
+      }
+    }, 220);
+  }, [todos, openFolder, collapsedColumns]);
+
+  useEffect(() => {
+    const handleNavigate = (event) => {
+      if (event.detail) {
+        highlightTargetTodo(event.detail);
+      }
+    };
+    window.addEventListener("noyau:navigate-todo", handleNavigate);
+
+    try {
+      const pendingRaw = sessionStorage.getItem("noyau-target-todo");
+      if (pendingRaw) {
+        sessionStorage.removeItem("noyau-target-todo");
+        const parsed = JSON.parse(pendingRaw);
+        setTimeout(() => highlightTargetTodo(parsed), 250);
+      }
+    } catch {}
+
+    return () => window.removeEventListener("noyau:navigate-todo", handleNavigate);
+  }, [highlightTargetTodo]);
 
   function changeSubFolderFilter(subId) {
     setSubFolderFilter(subId);
@@ -6954,6 +6737,8 @@ function TodosView({ projects = [], onView }) {
     return (
       <div
         key={todo.id}
+        data-todo-id={todo.id}
+        data-todo-ref={reference}
         className={`todo-board-card ${isDone ? "completed" : ""} ${isReview ? "in-review" : ""} ${expanded ? "expanded" : ""}`}
         draggable
         onDragStart={(e) => {
@@ -6961,19 +6746,6 @@ function TodosView({ projects = [], onView }) {
           e.dataTransfer.effectAllowed = "move";
         }}
       >
-        <button
-          type="button"
-          className="todo-card-quick-delete"
-          onClick={(e) => {
-            e.stopPropagation();
-            removeTodo(todo);
-          }}
-          disabled={busy === `del:${todo.id}`}
-          title="Supprimer la tâche"
-          aria-label="Supprimer la tâche"
-        >
-          🗑
-        </button>
         <div
           className="todo-card-top"
           onClick={() => { if (overflows || expanded) setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}
@@ -6983,7 +6755,8 @@ function TodosView({ projects = [], onView }) {
             className={`todo-tri-box status-${column?.kind || "custom"}`}
             onClick={(event) => { event.stopPropagation(); update(todo, { status: nextCycleColumn.id }); }}
             disabled={busy === todo.id}
-            title={`${column?.name || "Zone"} — cliquer pour : ${nextCycleColumn?.name || "Suivant"}`}
+            title={`${column?.name || "Zone"} — cliquer pour passer à : ${nextCycleColumn?.name || "Suivant"}`}
+            aria-label={`${column?.name || "Zone"} — changer d'état`}
           >
             {isDone && <span className="todo-tri-icon done-check">✓</span>}
             {isReview && <span className="todo-tri-icon review-bar" />}
@@ -7007,6 +6780,110 @@ function TodosView({ projects = [], onView }) {
               aria-label={expanded ? "Replier le texte" : "Déplier le texte"}
             >{expanded ? "⌃" : "⌄"}</button>
           )}
+          <details className="todo-card-menu">
+            <summary title="Actions sur la tâche" aria-label="Actions sur la tâche"><AppIcon name="more" size={15} /></summary>
+            <div className="todo-card-menu-panel">
+              {previousColumn && (
+                <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); update(todo, { status: previousColumn.id }); }}>
+                  Déplacer vers : {previousColumn.name}
+                </button>
+              )}
+              {nextColumn && (
+                <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); update(todo, { status: nextColumn.id }); }}>
+                  Déplacer vers : {nextColumn.name}
+                </button>
+              )}
+              {(overflows || expanded) && (
+                <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}>
+                  {expanded ? "Replier le texte" : "Déplier le texte"}
+                </button>
+              )}
+              <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setDatePanel((c) => (c === todo.id ? null : todo.id)); }}>
+                {todo.dueDate ? "Modifier la date limite" : "Ajouter une date limite"}
+              </button>
+              <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}>
+                Commentaires ({commentsCount})
+              </button>
+              <label className="todo-card-menu-move">
+                <span>Attribuée à</span>
+                <select
+                  value={getTodoAssignee(todo)}
+                  onChange={(event) => {
+                    const nextVal = event.target.value;
+                    event.target.closest("details")?.removeAttribute("open");
+                    update(todo, {
+                      assignee: nextVal,
+                      shared: nextVal === "all" || nextVal === "both",
+                    });
+                  }}
+                  disabled={busy === todo.id}
+                  aria-label="Changer l'attribution"
+                >
+                  <option value="aurora">Aurora</option>
+                  <option value="main">Moi</option>
+                  <option value="all">Tout le monde</option>
+                </select>
+              </label>
+              <label className="todo-card-menu-move">
+                <span>Priorité</span>
+                <select
+                  value={todo.priority || "medium"}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    event.target.closest("details")?.removeAttribute("open");
+                    update(todo, { priority: next });
+                  }}
+                  disabled={busy === todo.id}
+                  aria-label="Priorité de la tâche"
+                >
+                  <option value="high">Haute</option>
+                  <option value="medium">Moyenne</option>
+                  <option value="low">Basse</option>
+                </select>
+              </label>
+              <label className="todo-card-menu-move">
+                <span>Zone</span>
+                <select
+                  value={statusOf(todo)}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    event.target.closest("details")?.removeAttribute("open");
+                    update(todo, { status: next });
+                  }}
+                  disabled={busy === todo.id}
+                  aria-label="Déplacer vers une autre zone"
+                >
+                  {columns.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}
+                </select>
+              </label>
+              <label className="todo-card-menu-move">
+                <span>Déplacer vers</span>
+                <select
+                  value={todo.folderId || ROOT_FOLDER}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    event.target.closest("details")?.removeAttribute("open");
+                    update(todo, { folderId: next });
+                  }}
+                  disabled={busy === todo.id}
+                  aria-label="Déplacer la tâche vers un autre projet ou dossier"
+                >
+                  {hierarchicalFolders.map((item) => <option value={item.id} key={item.id}>{item.parentId ? `  ↳ ${item.name}` : item.name}</option>)}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="danger"
+                onClick={(e) => {
+                  e.currentTarget.closest("details")?.removeAttribute("open");
+                  removeTodo(todo);
+                }}
+                disabled={busy === `del:${todo.id}`}
+              >
+                Supprimer la tâche
+              </button>
+            </div>
+          </details>
         </div>
 
         <div className="todo-card-meta">
@@ -7015,182 +6892,63 @@ function TodosView({ projects = [], onView }) {
               type="button"
               className="todo-ref-pill"
               onClick={() => writeClipboard(reference)}
-              title={`Référence ${reference} — cliquer pour copier (utilisable dans un prompt d'agent)`}
+              title={`Référence ${reference} — cliquer pour copier`}
             >{reference}</button>
-            <select
-              className={`todo-priority-select prio-${todo.priority || "medium"}`}
-              value={todo.priority || "medium"}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation();
-                update(todo, { priority: e.target.value });
-              }}
-              disabled={busy === todo.id}
-              title="Sélectionner la priorité"
-              aria-label="Priorité de la tâche"
-            >
-              <option value="high">🔴 Haute</option>
-              <option value="medium">🟡 Moyenne</option>
-              <option value="low">🟢 Basse</option>
-            </select>
+            {todo.priority === "high" && (
+              <span className="todo-pill-badge prio-high" title="Priorité haute — cliquer pour modifier" onClick={() => cyclePriority(todo)}>
+                Haute
+              </span>
+            )}
+            {todo.priority === "low" && (
+              <span className="todo-pill-badge prio-low" title="Priorité basse — cliquer pour modifier" onClick={() => cyclePriority(todo)}>
+                Basse
+              </span>
+            )}
+            {todo.assignee && todo.assignee !== "all" && (
+              <span className={`todo-pill-badge assignee-pill assignee-${getTodoAssignee(todo)}`} title={`Attribuée à ${getTodoAssignee(todo) === "aurora" ? "Aurora" : "Moi"}`}>
+                {getTodoAssignee(todo) === "aurora" ? "Aurora" : "Moi"}
+              </span>
+            )}
             {todo.unread > 0 && (
               <button
                 type="button"
                 className="todo-unread-pill"
                 onClick={() => markSeen(todo.id)}
-                title={`${todo.unread} nouveauté${todo.unread > 1 ? "s" : ""} depuis ta dernière lecture — cliquer pour marquer comme lu`}
+                title={`${todo.unread} non lu(s)`}
               >● {todo.unread}</button>
             )}
             {openFolder === "all" && folderObj && (
               <span className="todo-folder-pill" title={`Dossier : ${folderObj.name}`}>{folderObj.name}</span>
             )}
-            <select
-              className={`todo-assignee-select todo-card-assignee assignee-${getTodoAssignee(todo)}`}
-              value={getTodoAssignee(todo)}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation();
-                const nextVal = e.target.value;
-                const isBoth = nextVal === "all" || nextVal === "both";
-                update(todo, {
-                  assignee: nextVal,
-                  shared: isBoth,
-                });
-              }}
-              disabled={busy === todo.id}
-              title={`Attribuée à : ${getTodoAssignee(todo) === "aurora" ? "Aurora" : getTodoAssignee(todo) === "main" ? "Moi" : "Tout le monde"} — cliquer pour changer`}
-              aria-label="Attribution de la tâche"
-            >
-              <option value="aurora">🌸 Aurora</option>
-              <option value="main">👤 Moi</option>
-              <option value="all">👥 Tout le monde</option>
-            </select>
           </div>
 
-          <div className="todo-card-shift-actions">
-            <button
-              className={`todo-date-pill ${overdue ? "overdue" : ""} ${todo.dueDate ? "has-date" : "empty"} ${datePanel === todo.id ? "active" : ""}`}
-              onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}
-              disabled={busy === todo.id}
-              title={todo.dueDate ? `Date limite : ${todo.dueDate}` : "Ajouter une date limite"}
-            >
-              {todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "📅"}
-            </button>
-            <button
-              className={`todo-comments-trigger ${commentsCount > 0 ? "has-comments" : ""} ${commentsOpen ? "active" : ""}`}
-              onClick={() => {
-                setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }));
-                if (todo.unread) markSeen(todo.id);
-              }}
-              title={`Commentaires (${commentsCount})`}
-            >
-              💬{commentsCount > 0 ? ` ${commentsCount}` : ""}
-            </button>
-            <button
-              type="button"
-              className="todo-shift-btn"
-              onClick={() => previousColumn && update(todo, { status: previousColumn.id })}
-              disabled={!previousColumn || busy === todo.id}
-              title={previousColumn ? `Déplacer vers : ${previousColumn.name}` : "Première zone"}
-            >‹</button>
-            <button
-              type="button"
-              className="todo-shift-btn"
-              onClick={() => nextColumn && update(todo, { status: nextColumn.id })}
-              disabled={!nextColumn || busy === todo.id}
-              title={nextColumn ? `Déplacer vers : ${nextColumn.name}` : "Dernière zone"}
-            >›</button>
-            <details className="todo-card-menu">
-              <summary title="Actions sur la tâche">⋯</summary>
-              <div className="todo-card-menu-panel">
-                {(overflows || expanded) && (
-                  <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}>
-                    {expanded ? "Replier le texte" : "Déplier le texte"}
-                  </button>
-                )}
-                <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setDatePanel((c) => (c === todo.id ? null : todo.id)); }}>
-                  {todo.dueDate ? "Modifier la date" : "Ajouter une date"}
-                </button>
-                <label className="todo-card-menu-move">
-                  <span>Attribuée à</span>
-                  <select
-                    value={getTodoAssignee(todo)}
-                    onChange={(event) => {
-                      const nextVal = event.target.value;
-                      event.target.closest("details")?.removeAttribute("open");
-                      update(todo, {
-                        assignee: nextVal,
-                        shared: nextVal === "all" || nextVal === "both",
-                      });
-                    }}
-                    disabled={busy === todo.id}
-                    aria-label="Changer l'attribution"
-                  >
-                    <option value="aurora">🌸 Aurora</option>
-                    <option value="main">👤 Moi</option>
-                    <option value="all">👥 Tout le monde</option>
-                  </select>
-                </label>
-                <label className="todo-card-menu-move">
-                  <span>Priorité</span>
-                  <select
-                    value={todo.priority || ""}
-                    onChange={(event) => {
-                      const next = event.target.value || null;
-                      event.target.closest("details")?.removeAttribute("open");
-                      update(todo, { priority: next });
-                    }}
-                    disabled={busy === todo.id}
-                    aria-label="Priorité de la tâche"
-                  >
-                    <option value="">Normale</option>
-                    <option value="high">🔴 Haute</option>
-                    <option value="medium">🟡 Moyenne</option>
-                    <option value="low">🟢 Basse</option>
-                  </select>
-                </label>
-                <label className="todo-card-menu-move">
-                  <span>Zone</span>
-                  <select
-                    value={statusOf(todo)}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      event.target.closest("details")?.removeAttribute("open");
-                      update(todo, { status: next });
-                    }}
-                    disabled={busy === todo.id}
-                    aria-label="Déplacer vers une autre zone"
-                  >
-                    {columns.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}
-                  </select>
-                </label>
-                <label className="todo-card-menu-move">
-                  <span>Déplacer vers</span>
-                  <select
-                    value={todo.folderId || ROOT_FOLDER}
-                    onChange={(event) => {
-                      const next = event.target.value;
-                      event.target.closest("details")?.removeAttribute("open");
-                      update(todo, { folderId: next });
-                    }}
-                    disabled={busy === todo.id}
-                    aria-label="Déplacer la tâche vers un autre projet ou dossier"
-                  >
-                    {hierarchicalFolders.map((item) => <option value={item.id} key={item.id}>{item.parentId ? `  ↳ ${item.name}` : item.name}</option>)}
-                  </select>
-                </label>
-                <button
-                  className="danger"
-                  onClick={(e) => {
-                    e.currentTarget.closest("details")?.removeAttribute("open");
-                    removeTodo(todo);
-                  }}
-                  disabled={busy === `del:${todo.id}`}
-                >
-                  Supprimer la tâche
-                </button>
-              </div>
-            </details>
+          <div className="todo-card-badges">
+            {todo.dueDate && (
+              <button
+                type="button"
+                className={`todo-date-pill ${overdue ? "overdue" : "has-date"} ${datePanel === todo.id ? "active" : ""}`}
+                onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}
+                disabled={busy === todo.id}
+                title={`Date limite : ${todo.dueDate}`}
+              >
+                <AppIcon name="calendar" size={13}/>
+                <span>{todo.dueDate.slice(5).split("-").reverse().join("/")}</span>
+              </button>
+            )}
+            {commentsCount > 0 && (
+              <button
+                type="button"
+                className={`todo-comments-trigger ${commentsOpen ? "active" : ""}`}
+                onClick={() => {
+                  setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }));
+                  if (todo.unread) markSeen(todo.id);
+                }}
+                title={`Commentaires (${commentsCount})`}
+              >
+                <AppIcon name="chat" size={13}/>
+                <span>{commentsCount}</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -7232,7 +6990,7 @@ function TodosView({ projects = [], onView }) {
                   <div className={`todo-comment-item ${isAgent ? "comment-agent" : "comment-user"}`} key={comment.id}>
                     <div className="todo-comment-meta">
                       <span className={`todo-comment-avatar ${isAgent ? "agent" : "user"}`}>
-                        {isAgent ? "🤖" : "👤"}
+                        {isAgent ? "Agent" : "Profil"}
                       </span>
                       <strong className={`todo-comment-author ${isAgent ? "agent" : "user"}`}>
                         {authorText}
@@ -7291,6 +7049,8 @@ function TodosView({ projects = [], onView }) {
     return (
       <React.Fragment key={todo.id}>
         <article
+          data-todo-id={todo.id}
+          data-todo-ref={todoRef(todo.id)}
           className={`todo-item ${isDone ? "completed" : ""} ${isReview ? "in-review" : ""} ${dragging === todo.id ? "dragging" : ""}`}
           ref={(node) => { if (node) rowRefs.current.set(todo.id, node); else rowRefs.current.delete(todo.id); }}
         >
@@ -7322,81 +7082,135 @@ function TodosView({ projects = [], onView }) {
                 disabled={busy === todo.id}
               />
               <small className={overdue ? "overdue" : isReview ? "status-review-label" : isCustom ? "status-custom-label" : ""}>
-                {isDone ? completedLabel(todo.completedAt) || "Terminée" : isReview ? "◐ À vérifier / tester" : isCustom ? `💡 ${currentColumn?.name || "Zone"}` : todoDueLabel(todo.dueDate)}
+                {isDone ? completedLabel(todo.completedAt) || "Terminée" : isReview ? "◐ À vérifier / tester" : isCustom ? ` ${currentColumn?.name || "Zone"}` : todoDueLabel(todo.dueDate)}
               </small>
             </div>
           </div>
           <div className="todo-actions">
-            <select
-              className={`todo-priority-select prio-${todo.priority || "medium"}`}
-              value={todo.priority || "medium"}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation();
-                update(todo, { priority: e.target.value });
-              }}
-              disabled={busy === todo.id}
-              title="Sélectionner la priorité"
-              aria-label="Priorité de la tâche"
-            >
-              <option value="high">🔴 Haute</option>
-              <option value="medium">🟡 Moyenne</option>
-              <option value="low">🟢 Basse</option>
-            </select>
-            <select
-              className={`todo-assignee-select todo-card-assignee assignee-${getTodoAssignee(todo)}`}
-              value={getTodoAssignee(todo)}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                e.stopPropagation();
-                const nextVal = e.target.value;
-                const isBoth = nextVal === "all" || nextVal === "both";
-                update(todo, {
-                  assignee: nextVal,
-                  shared: isBoth,
-                });
-              }}
-              disabled={busy === todo.id}
-              title={`Attribuée à : ${getTodoAssignee(todo) === "aurora" ? "Aurora" : getTodoAssignee(todo) === "main" ? "Moi" : "Tout le monde"} — cliquer pour changer`}
-              aria-label="Attribution de la tâche"
-            >
-              <option value="aurora">🌸 Aurora</option>
-              <option value="main">👤 Moi</option>
-              <option value="all">👥 Tout le monde</option>
-            </select>
-            <select
-              value={status}
-              onChange={(event) => update(todo, { status: event.target.value })}
-              disabled={busy === todo.id}
-              title="Changer de zone"
-              aria-label="Zone de la tâche"
-              className="todo-zone-select"
-            >
-              {columns.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}
-            </select>
-            <button
-              className={`todo-date-trigger ${todo.dueDate ? "dated" : ""} ${overdue ? "overdue" : ""} ${datePanel === todo.id ? "active" : ""}`}
-              onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)}
-              disabled={busy === todo.id}
-              aria-label="Modifier date limite"
-              title={todo.dueDate ? `Date limite : ${todo.dueDate}` : "Ajouter une date limite"}
-            >
-              <span aria-hidden="true">📅</span>{todo.dueDate ? todo.dueDate.slice(5).split("-").reverse().join("/") : "Date"}
-            </button>
-            <button
-              className={`todo-comments-trigger ${commentsCount > 0 ? "has-comments" : ""} ${commentsOpen ? "active" : ""}`}
-              onClick={() => {
-                setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }));
-                if (todo.unread) markSeen(todo.id);
-              }}
-              title={`Commentaires (${commentsCount})`}
-            >
-              💬{commentsCount > 0 ? ` ${commentsCount}` : ""}
-            </button>
-            {todo.unread > 0 && <button type="button" className="todo-unread-pill" onClick={() => markSeen(todo.id)} title="Marquer comme lu">● {todo.unread}</button>}
-            <select value={todo.folderId || ROOT_FOLDER} onChange={(event) => update(todo, { folderId: event.target.value })} disabled={busy === todo.id} aria-label="Dossier">{hierarchicalFolders.map((item) => <option value={item.id} key={item.id}>{item.parentId ? `  ↳ ${item.name}` : item.name}</option>)}</select>
             <button className="todo-ref-pill" onClick={() => writeClipboard(todoRef(todo.id))} title={`Référence ${todoRef(todo.id)} — cliquer pour copier`}>{todoRef(todo.id)}</button>
-            <button className="todo-card-delete" onClick={() => removeTodo(todo)} disabled={busy === `del:${todo.id}`} title="Supprimer la tâche" aria-label="Supprimer la tâche">🗑</button>
+            {todo.priority === "high" && <span className="todo-pill-badge prio-high" title="Priorité haute — cliquer pour modifier" onClick={() => cyclePriority(todo)}>Haute</span>}
+            {todo.priority === "low" && <span className="todo-pill-badge prio-low" title="Priorité basse — cliquer pour modifier" onClick={() => cyclePriority(todo)}>Basse</span>}
+            {todo.assignee && todo.assignee !== "all" && (
+              <span className={`todo-pill-badge assignee-pill assignee-${getTodoAssignee(todo)}`} title={`Attribuée à ${getTodoAssignee(todo) === "aurora" ? "Aurora" : "Moi"}`}>
+                {getTodoAssignee(todo) === "aurora" ? "Aurora" : "Moi"}
+              </span>
+            )}
+            {todo.dueDate && (
+              <button
+                type="button"
+                className={`todo-date-trigger dated ${overdue ? "overdue" : ""} ${datePanel === todo.id ? "active" : ""}`}
+                onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)}
+                disabled={busy === todo.id}
+                title={`Date limite : ${todo.dueDate}`}
+              >
+                <AppIcon name="calendar" size={13}/>
+                <span>{todo.dueDate.slice(5).split("-").reverse().join("/")}</span>
+              </button>
+            )}
+            {commentsCount > 0 && (
+              <button
+                type="button"
+                className={`todo-comments-trigger ${commentsOpen ? "active" : ""}`}
+                onClick={() => {
+                  setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] }));
+                  if (todo.unread) markSeen(todo.id);
+                }}
+                title={`Commentaires (${commentsCount})`}
+              >
+                <AppIcon name="chat" size={13}/>
+                <span>{commentsCount}</span>
+              </button>
+            )}
+            {todo.unread > 0 && <button type="button" className="todo-unread-pill" onClick={() => markSeen(todo.id)} title="Marquer comme lu">● {todo.unread}</button>}
+            <details className="todo-card-menu">
+              <summary title="Actions sur la tâche" aria-label="Actions sur la tâche"><AppIcon name="more" size={15} /></summary>
+              <div className="todo-card-menu-panel">
+                <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setDatePanel((c) => (c === todo.id ? null : todo.id)); }}>
+                  {todo.dueDate ? "Modifier la date limite" : "Ajouter une date limite"}
+                </button>
+                <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}>
+                  Commentaires ({commentsCount})
+                </button>
+                <label className="todo-card-menu-move">
+                  <span>Zone</span>
+                  <select
+                    value={status}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      event.target.closest("details")?.removeAttribute("open");
+                      update(todo, { status: next });
+                    }}
+                    disabled={busy === todo.id}
+                    aria-label="Zone de la tâche"
+                  >
+                    {columns.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}
+                  </select>
+                </label>
+                <label className="todo-card-menu-move">
+                  <span>Attribuée à</span>
+                  <select
+                    value={getTodoAssignee(todo)}
+                    onChange={(event) => {
+                      const nextVal = event.target.value;
+                      event.target.closest("details")?.removeAttribute("open");
+                      update(todo, {
+                        assignee: nextVal,
+                        shared: nextVal === "all" || nextVal === "both",
+                      });
+                    }}
+                    disabled={busy === todo.id}
+                    aria-label="Attribution de la tâche"
+                  >
+                    <option value="aurora">Aurora</option>
+                    <option value="main">Moi</option>
+                    <option value="all">Tout le monde</option>
+                  </select>
+                </label>
+                <label className="todo-card-menu-move">
+                  <span>Priorité</span>
+                  <select
+                    value={todo.priority || "medium"}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      event.target.closest("details")?.removeAttribute("open");
+                      update(todo, { priority: next });
+                    }}
+                    disabled={busy === todo.id}
+                    aria-label="Priorité de la tâche"
+                  >
+                    <option value="high">Haute</option>
+                    <option value="medium">Moyenne</option>
+                    <option value="low">Basse</option>
+                  </select>
+                </label>
+                <label className="todo-card-menu-move">
+                  <span>Déplacer vers</span>
+                  <select
+                    value={todo.folderId || ROOT_FOLDER}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      event.target.closest("details")?.removeAttribute("open");
+                      update(todo, { folderId: next });
+                    }}
+                    disabled={busy === todo.id}
+                    aria-label="Dossier"
+                  >
+                    {hierarchicalFolders.map((item) => <option value={item.id} key={item.id}>{item.parentId ? `  ↳ ${item.name}` : item.name}</option>)}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={(e) => {
+                    e.currentTarget.closest("details")?.removeAttribute("open");
+                    removeTodo(todo);
+                  }}
+                  disabled={busy === `del:${todo.id}`}
+                >
+                  Supprimer la tâche
+                </button>
+              </div>
+            </details>
           </div>
           {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
         </article>
@@ -7416,7 +7230,7 @@ function TodosView({ projects = [], onView }) {
                   <div className={`todo-comment-item ${isAgent ? "comment-agent" : "comment-user"}`} key={comment.id}>
                     <div className="todo-comment-meta">
                       <span className={`todo-comment-avatar ${isAgent ? "agent" : "user"}`}>
-                        {isAgent ? "🤖" : "👤"}
+                        {isAgent ? "Agent" : "Profil"}
                       </span>
                       <strong className={`todo-comment-author ${isAgent ? "agent" : "user"}`}>
                         {authorText}
@@ -7534,15 +7348,17 @@ function TodosView({ projects = [], onView }) {
               onClick={() => setShowCalendar(!showCalendar)}
               title="Afficher/masquer le calendrier"
             >
-              📅 {showCalendar ? "Masquer agenda" : "Agenda"}
+               {showCalendar ? "Masquer agenda" : "Agenda"}
             </button>
             <button
               type="button"
               className={`todo-correction-toggle ${correction ? "active" : ""}`}
               onClick={toggleCorrection}
-              title={correction ? "Correction automatique active" : "Correction automatique désactivée"}
+              disabled={busy === "correction"}
+              title={correction ? "Correction IA active — cliquer pour désactiver" : "Correction IA désactivée — cliquer pour activer"}
             >
-              {correction ? "✨ Correction" : "Correction off"}
+              <AppIcon name="settings" size={13}/>
+              <span>IA</span>
             </button>
             <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
           </div>
@@ -7553,7 +7369,7 @@ function TodosView({ projects = [], onView }) {
         ) : (
           <section className="todo-folder-grid">
           <button className="panel todo-folder-card all-tasks" onClick={() => selectFolder("all")}>
-            <span className="todo-folder-name">📁 Toutes les tâches{globalUnread > 0 && <b className="todo-unread-badge" title={`${globalUnread} changement${globalUnread > 1 ? "s" : ""} non lu${globalUnread > 1 ? "s" : ""}`}>{globalUnread}</b>}</span>
+            <span className="todo-folder-name"> Toutes les tâches{globalUnread > 0 && <b className="todo-unread-badge" title={`${globalUnread} changement${globalUnread > 1 ? "s" : ""} non lu${globalUnread > 1 ? "s" : ""}`}>{globalUnread}</b>}</span>
             <span className="todo-folder-meta">
               {openCount} à faire{reviewCount > 0 ? ` · ${reviewCount} à vérifier` : ""}{doneCount > 0 ? ` · ${doneCount} terminée${doneCount > 1 ? "s" : ""}` : ""}
             </span>
@@ -7574,11 +7390,11 @@ function TodosView({ projects = [], onView }) {
                     disabled={busy === folder.id}
                     title={`Supprimer la liste « ${folder.name} »`}
                     aria-label={`Supprimer la liste ${folder.name}`}
-                  >🗑</button>
+                  ><AppIcon name="trash" size={16}/></button>
                 )}
                 <span className="todo-folder-name">
                   {folder.projectId && projects.find((p) => p.id === folder.projectId)?.logoUrl && (
-                    <img src={projects.find((p) => p.id === folder.projectId).logoUrl} alt="" className="todo-card-project-logo" />
+                    <ProjectImage src={projects.find((p) => p.id === folder.projectId).logoUrl} alt="" className="todo-card-project-logo" />
                   )}
                   {folder.name || "Dossier"}{folderUnread > 0 && <b className="todo-unread-badge" title={`${folderUnread} changement${folderUnread > 1 ? "s" : ""} non lu${folderUnread > 1 ? "s" : ""}`}>{folderUnread}</b>}
                 </span>
@@ -7606,7 +7422,7 @@ function TodosView({ projects = [], onView }) {
                           onClick={() => selectFolder(folder.id, sub.id)}
                           title={`Ouvrir le sous-dossier ${sub.name}`}
                         >
-                          {/^\p{Extended_Pictographic}/u.test(sub.name) ? "" : "📂 "}{sub.name} ({count})
+                          {/^\p{Extended_Pictographic}/u.test(sub.name) ? "" : " "}{sub.name} ({count})
                         </button>
                       );
                     })}
@@ -7631,6 +7447,7 @@ function TodosView({ projects = [], onView }) {
 }
 
   const { folder, items } = active;
+  const selectedMobileColumn = columns.some((column) => column.id === mobileColumn) ? mobileColumn : (columns.find((column) => column.enabled !== false)?.id || columns[0]?.id);
   const boardUnread = items.reduce((total, todo) => total + (todo.unread || 0), 0);
   const todoItems = inColumn(items, "todo");
   const reviewItems = items.filter((todo) => statusOf(todo) === "review");
@@ -7686,7 +7503,7 @@ function TodosView({ projects = [], onView }) {
           <button className="todo-back" onClick={() => selectFolder(null)}>‹ Tous les dossiers</button>
           <div className="todo-header-title-row">
             {projects.find((p) => p.id === folder.projectId)?.logoUrl && (
-              <img
+              <ProjectImage
                 src={projects.find((p) => p.id === folder.projectId).logoUrl}
                 alt=""
                 className="todo-header-project-logo"
@@ -7709,16 +7526,17 @@ function TodosView({ projects = [], onView }) {
             onClick={() => setShowCalendar(!showCalendar)}
             title="Afficher/masquer le calendrier"
           >
-            📅 {showCalendar ? "Masquer agenda" : "Agenda"}
+             {showCalendar ? "Masquer agenda" : "Agenda"}
           </button>
           <button
             type="button"
             className={`todo-correction-toggle ${correction ? "active" : ""}`}
             onClick={toggleCorrection}
             disabled={busy === "correction"}
-            title={correction ? "Reformulation LLM active à la création d'un to-do ou d'un commentaire — cliquer pour désactiver" : "Reformulation LLM désactivée — cliquer pour activer"}
+            title={correction ? "Correction IA active — cliquer pour désactiver" : "Correction IA désactivée — cliquer pour activer"}
           >
-            <span className="view-icon">✨</span> {correction ? "LLM on" : "LLM off"}
+            <AppIcon name="settings" size={13}/>
+            <span>IA</span>
           </button>
           {!folder.projectId && folder.id !== ROOT_FOLDER && folder.id !== "all" && (
             <div className="todo-folder-actions">
@@ -7736,7 +7554,7 @@ function TodosView({ projects = [], onView }) {
             className={`todo-subfolder-tab ${subFolderFilter === "all" ? "active" : ""}`}
             onClick={() => changeSubFolderFilter("all")}
           >
-            📁 Tout {active.folder.name} ({countOpenTodos(active.rawItems || active.items)})
+             Tout {active.folder.name} ({countOpenTodos(active.rawItems || active.items)})
           </button>
           {active.subFolders.map((sub) => {
             const count = countOpenTodos((active.rawItems || active.items).filter((t) => t.folderId === sub.id));
@@ -7747,7 +7565,7 @@ function TodosView({ projects = [], onView }) {
                   className="todo-subfolder-tab"
                   onClick={() => changeSubFolderFilter(sub.id)}
                 >
-                  {/^\p{Extended_Pictographic}/u.test(sub.name) ? "" : "📂 "}{sub.name} ({count})
+                  {/^\p{Extended_Pictographic}/u.test(sub.name) ? "" : " "}{sub.name} ({count})
                 </button>
                 <button
                   type="button"
@@ -7790,9 +7608,9 @@ function TodosView({ projects = [], onView }) {
           title="Attribuer à Aurora, Moi, ou tout le monde (enregistré par défaut)"
           aria-label="Attribution de la tâche"
         >
-          <option value="aurora">🌸 Aurora</option>
-          <option value="main">👤 Moi</option>
-          <option value="all">👥 Tout le monde</option>
+          <option value="aurora"> Aurora</option>
+          <option value="main"> Moi</option>
+          <option value="all"> Tout le monde</option>
         </select>
         <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : "Ajouter"}</button>
       </form>
@@ -7811,16 +7629,18 @@ function TodosView({ projects = [], onView }) {
             {boardUnread > 0 && <button className="todo-mark-seen-btn" onClick={() => markSeen(items.filter((todo) => todo.unread).map((todo) => todo.id))} title="Marquer toutes les nouveautés comme lues">Tout lu</button>}
             <button className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title="Ajouter une zone" aria-label="Ajouter une zone">＋ Zone</button>
           </div>
+          <nav className="todo-mobile-zones" aria-label="Zones des tâches">{columns.map((column) => <button type="button" key={column.id} aria-pressed={selectedMobileColumn === column.id} onClick={() => { setMobileColumn(column.id); if (collapsedColumns[column.id]) toggleColumn(column); }}><span>{column.name}</span><b>{inColumn(items, column.id).length}</b></button>)}</nav>
           <div className="todo-board">
             {columns.map((column, index) => {
               const columnItems = inColumn(items, column.id);
               const renaming = renamingColumn === column.id;
-              const collapsed = !!collapsedColumns[column.id];
+              const collapsed = !!collapsedColumns[column.id] && !(mobileBoard && selectedMobileColumn === column.id);
               const isColDisabled = column.enabled === false;
               if (collapsed) {
                 return (
                   <button
                     key={column.id}
+                    data-mobile-selected={selectedMobileColumn === column.id}
                     className={`todo-board-column collapsed column-${column.kind} ${isColDisabled ? "disabled-zone" : ""}`}
                     onClick={() => toggleColumn(column)}
                     onDragOver={handleBoardDragOver}
@@ -7837,6 +7657,7 @@ function TodosView({ projects = [], onView }) {
               return (
                 <div
                   className={`todo-board-column column-${column.kind} ${column.kind === "done" ? "muted" : ""} ${isColDisabled ? "disabled-zone" : ""}`}
+                  data-mobile-selected={selectedMobileColumn === column.id}
                   key={column.id}
                   onDragOver={handleBoardDragOver}
                   onDrop={(e) => handleBoardDrop(e, column.id)}
@@ -7863,29 +7684,11 @@ function TodosView({ projects = [], onView }) {
                       <span className="todo-column-count">{columnItems.length}</span>
                     </div>
                     <div className="todo-column-tools">
-                      <button
-                        type="button"
-                        className="todo-column-btn"
-                        onClick={() => setRenamingColumn(column.id)}
-                        title="Renommer la zone"
-                        aria-label={`Renommer la zone ${column.name}`}
-                      >✎</button>
-                      {column.id !== "todo" && column.id !== "done" && (
-                        <button
-                          type="button"
-                          className={`todo-column-toggle ${isColDisabled ? "off" : "on"}`}
-                          onClick={() => toggleColumnEnabled(column)}
-                          title={isColDisabled ? "Zone désactivée — cliquer pour activer" : "Zone active — cliquer pour désactiver"}
-                          aria-label={isColDisabled ? `Activer la zone ${column.name}` : `Désactiver la zone ${column.name}`}
-                        >
-                          {isColDisabled ? "OFF" : "ON"}
-                        </button>
-                      )}
                       {column.kind !== "done" && (
-                        <button className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === column.id ? null : column.id))} title={`Ajouter une tâche dans ${column.name}`}>+</button>
+                        <button type="button" className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === column.id ? null : column.id))} title={`Ajouter une tâche dans ${column.name}`} aria-label={`Ajouter dans ${column.name}`}>+</button>
                       )}
                       <details className="todo-column-menu">
-                        <summary title="Options de la zone">⋯</summary>
+                        <summary title="Options de la zone" aria-label="Options de la zone">⋯</summary>
                         <div className="todo-column-menu-panel">
                           <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setRenamingColumn(column.id); }}>Renommer</button>
                           {column.id !== "todo" && column.id !== "done" && (
@@ -7936,7 +7739,7 @@ function TodosView({ projects = [], onView }) {
                   className={filterTab === col.id ? "active" : ""}
                   onClick={() => setFilterTab(col.id)}
                 >
-                  {col.kind === "custom" ? `💡 ${col.name}` : col.name} ({count})
+                  {col.kind === "custom" ? ` ${col.name}` : col.name} ({count})
                 </button>
               );
             })}
@@ -8178,6 +7981,7 @@ function ClearHistoryModal({ profile, onClose, onCleared }) {
         <form onSubmit={submit}>
           <p className="todo-delete-modal__body">
             Efface le scrollback tmux et réinitialise les conversations pour tous les agents et terminaux CLI du profil <strong>{profile?.name || "actif"}</strong> ainsi que les agents partagés.
+            Les passations et points de reprise automatiques de la mémoire commune sont aussi effacés ; les notes durables et mémoires de projet Claude restent conservées.
           </p>
           <label htmlFor="clear-history-pwd">Mot de passe de confirmation ({profile?.name || "Profil"})</label>
           <input
@@ -8203,7 +8007,7 @@ function ClearHistoryModal({ profile, onClose, onCleared }) {
   );
 }
 
-function SettingsView({ permission, onNotifications, onRefresh, onView, profiles, profileId, onSwitchProfile, onProfilesChanged, voice, onVoice, muted, onMuted }) {
+function SettingsView({ permission, notificationInfo, onNotifications, onRefresh, onView, profiles, profileId, onSwitchProfile, onProfilesChanged, voice, onVoice, muted, onMuted }) {
   const [refreshing, setRefreshing] = useState(false);
   const [versionInfo, setVersionInfo] = useState(null);
   const [osk, setOsk] = useState(oskMode);
@@ -8273,7 +8077,7 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
       if (value === "always") localStorage.removeItem(PHYSICAL_KEY);
     } catch { /* stockage optionnel */ }
   }
-  const notificationLabel = { active: "Tester notification", insecure: "HTTPS requis", denied: "Alertes bloquées" }[permission] || "Activer alertes";
+  const notificationLabel = { active: "Tester notification", local: "Alertes locales actives", insecure: "HTTPS requis", denied: "Alertes bloquées" }[permission] || "Activer alertes";
   useEffect(() => {
     fetch("/version.json", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then(setVersionInfo).catch(() => {});
   }, []);
@@ -8286,9 +8090,9 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
     <div className="page settings-page">
       <section className="hero-row"><div><p className="eyebrow">APPLICATION</p><h1>Réglages.</h1><p className="muted">Alertes et accès appareil.</p></div></section>
       <section className="panel settings-list">
-        <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>Fin réponse, attente validation, migration terminée.</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
+        <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>{notificationInfo || (permission === "local" ? "Alertes locales quand l’app fonctionne ; alertes en arrière-plan indisponibles sans configuration serveur." : "Fin réponse, attente validation, migration terminée.")}</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
         <article>
-          <span className="setting-symbol">⚡</span>
+          <span className="setting-symbol"></span>
           <div>
             <strong>Alertes reset quotas</strong>
             <small>Notification push dès qu'un quota se réinitialise.</small>
@@ -8321,7 +8125,7 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
           </div>
         </article>
         <article className="setting-select-row">
-          <span className="setting-symbol">🌙</span>
+          <span className="setting-symbol"><AppIcon name="settings"/></span>
           <div>
             <strong>Mode basse consommation & veille</strong>
             <small>
@@ -8337,11 +8141,11 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
             onClick={toggleSleep}
             disabled={powerBusy || (!power?.sleeping && !power?.canSleep)}
           >
-            {powerBusy ? "Action en cours…" : power?.sleeping ? "⚡ Sortir de veille" : "🌙 Mettre en veille"}
+            {powerBusy ? "Action en cours…" : power?.sleeping ? "Sortir de veille" : " Mettre en veille"}
           </button>
         </article>
         <article className="setting-select-row">
-          <span className="setting-symbol">⏰</span>
+          <span className="setting-symbol"><AppIcon name="calendar"/></span>
           <div>
             <strong>Veille nocturne automatique</strong>
             <small>
@@ -8357,28 +8161,15 @@ function SettingsView({ permission, onNotifications, onRefresh, onView, profiles
           </button>
         </article>
         <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
-        <article className="setting-select-row">
-          <span className="setting-symbol">📱</span>
-          <div>
-            <strong>Application mobile (APK & PWA)</strong>
-            <small>Installer l'app mobile sur votre téléphone pour le mode hors-ligne et WireGuard.</small>
-          </div>
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <a href="/api/mobile/noyau.apk" download="noyau.apk" className="button ghost">
-              🤖 Télécharger APK
-            </a>
-            <button className="primary" onClick={() => window.dispatchEvent(new CustomEvent("noyau:open-install"))}>
-              📲 Installer l’app
-            </button>
-          </div>
-        </article>
+        <MobileApplicationSettings api={api} />
+        <BiometricSettings profileId={profileId} api={api} />
         <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
         <article className="setting-select-row"><span className="setting-symbol">✓</span><div><strong>Confirmations</strong><small>{confirmMode === "off" ? "Redémarrage et changement de fournisseur immédiats" : "Demandées avant redémarrage et changement de fournisseur"} · suppressions toujours confirmées</small></div><select className="setting-select" value={confirmMode} onChange={(event) => chooseConfirm(event.target.value)} aria-label="Confirmations"><option value="on">Demander</option><option value="off">Sans confirmation</option></select></article>
-        <article className="setting-select-row"><span className="setting-symbol">🎙</span><div><strong>Mode micro</strong><small>{voice?.installed === false ? "Moteurs vocaux absents · lancer scripts/voice-install.sh" : voice?.error ? voice.error : voice?.listening ? "À l'écoute · dis « Noyau, ouvre l'agent … »" : "Éteint · rien n'est capté"}</small></div><button className={`setting-toggle ${voice?.listening ? "on" : ""}`} onClick={() => onVoice(!voice?.listening)} disabled={voice?.installed === false} aria-pressed={Boolean(voice?.listening)}>{voice?.listening ? "Activé" : "Éteint"}</button></article>
-        <article className="setting-select-row"><span className="setting-symbol">🔔</span><div><strong>Sons de notification</strong><small>{muted ? "Coupés" : "Bip quand un agent attend une réponse ou rend la main"}</small></div><button className={`setting-toggle ${muted ? "" : "on"}`} onClick={() => onMuted(!muted)} aria-pressed={!muted}>{muted ? "Coupés" : "Activés"}</button></article>
+        <article className="setting-select-row"><span className="setting-symbol"><AppIcon name="settings"/></span><div><strong>Mode micro</strong><small>{voice?.installed === false ? "Moteurs vocaux absents · lancer scripts/voice-install.sh" : voice?.error ? voice.error : voice?.listening ? "À l'écoute · dis « Noyau, ouvre l'agent … »" : "Éteint · rien n'est capté"}</small></div><button className={`setting-toggle ${voice?.listening ? "on" : ""}`} onClick={() => onVoice(!voice?.listening)} disabled={voice?.installed === false} aria-pressed={Boolean(voice?.listening)}>{voice?.listening ? "Activé" : "Éteint"}</button></article>
+        <article className="setting-select-row"><span className="setting-symbol"><AppIcon name="settings"/></span><div><strong>Sons de notification</strong><small>{muted ? "Coupés" : "Bip quand un agent attend une réponse ou rend la main"}</small></div><button className={`setting-toggle ${muted ? "" : "on"}`} onClick={() => onMuted(!muted)} aria-pressed={!muted}>{muted ? "Coupés" : "Activés"}</button></article>
         <article className="setting-select-row"><span className="setting-symbol">⌨</span><div><strong>Clavier virtuel</strong><small>Réglage propre à cet appareil · {osk === "auto" ? (wantsOnScreenKeyboard() ? "ouvert au toucher ici" : "désactivé ici (clavier physique ou PC)") : osk === "always" ? "toujours ouvert au toucher" : "jamais ouvert"}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label="Clavier virtuel"><option value="auto">Automatique</option><option value="always">Toujours</option><option value="never">Jamais</option></select></article>
         <article>
-          <span className="setting-symbol">🗑</span>
+          <span className="setting-symbol"><AppIcon name="settings"/></span>
           <div>
             <strong>Historique des agents et CLI</strong>
             <small>Efface le scrollback tmux et réinitialise les conversations ({activeProfile?.name || "profil actif"} et partagés).</small>
@@ -8523,7 +8314,7 @@ function VsCodeModal({ session, onClose }) {
           {/* Summary Target & Folder Card */}
           <div className="vscode-summary-card">
             <div className="vscode-summary-row">
-              <span className="vscode-summary-label">📁 Dossier</span>
+              <span className="vscode-summary-label"> Dossier</span>
               <span className="vscode-summary-pill" title={cleanCwd}>
                 <strong>{folderName}</strong>
                 <span className="vscode-path-hint">{cleanCwd}</span>
@@ -8531,7 +8322,7 @@ function VsCodeModal({ session, onClose }) {
             </div>
 
             <div className="vscode-summary-row">
-              <span className="vscode-summary-label">🖥️ Cible SSH</span>
+              <span className="vscode-summary-label"> Cible SSH</span>
               {editingTarget ? (
                 <div className="vscode-inline-edit">
                   <input
@@ -8579,7 +8370,7 @@ function VsCodeModal({ session, onClose }) {
               onClick={copyCli}
               title={cliCommand}
             >
-              {copied ? "✓ Commande copiée !" : "📋 Copier commande CLI"}
+              {copied ? "✓ Commande copiée !" : " Copier commande CLI"}
             </button>
 
             {isLocal && (
@@ -8589,7 +8380,7 @@ function VsCodeModal({ session, onClose }) {
                 onClick={openLocal}
                 title="Ouvrir sans tunnel SSH (accès local direct)"
               >
-                💻 Ouvrir en local
+                 Ouvrir en local
               </button>
             )}
           </div>
@@ -8601,7 +8392,7 @@ function VsCodeModal({ session, onClose }) {
               className={`vscode-accordion-trigger ${showKeySetup ? "open" : ""}`}
               onClick={() => setShowKeySetup(!showKeySetup)}
             >
-              <span className="vscode-trigger-icon">🔑</span>
+              <span className="vscode-trigger-icon"><AppIcon name="lock"/></span>
               <span className="vscode-trigger-text">
                 {showKeySetup ? "Masquer la configuration de clé SSH" : "Première connexion ou refus de clé (PermissionDenied) ?"}
               </span>
@@ -8623,7 +8414,7 @@ function VsCodeModal({ session, onClose }) {
                       onClick={() => copyCommand('ssh-keygen -t ed25519 -C "pc-fixe"', "gen")}
                       title="Copier la commande pour générer une clé ed25519"
                     >
-                      {copiedCmd === "gen" ? "✓ Copié !" : "✨ ssh-keygen -t ed25519"}
+                      {copiedCmd === "gen" ? "✓ Copié !" : " ssh-keygen -t ed25519"}
                     </button>
                   </div>
 
@@ -8636,7 +8427,7 @@ function VsCodeModal({ session, onClose }) {
                         onClick={() => copyCommand("cat ~/.ssh/id_ed25519.pub", "cat-linux")}
                         title="Afficher la clé sur Linux / macOS"
                       >
-                        {copiedCmd === "cat-linux" ? "✓ Copié !" : "🐧 Linux/Mac (cat)"}
+                        {copiedCmd === "cat-linux" ? "✓ Copié !" : " Linux/Mac (cat)"}
                       </button>
                       <button
                         type="button"
@@ -8644,7 +8435,7 @@ function VsCodeModal({ session, onClose }) {
                         onClick={() => copyCommand("Get-Content ~\\.ssh\\id_ed25519.pub | Set-Clipboard", "cat-win")}
                         title="Copier la clé directement dans le presse-papier Windows"
                       >
-                        {copiedCmd === "cat-win" ? "✓ Copié !" : "🪟 Windows (clip)"}
+                        {copiedCmd === "cat-win" ? "✓ Copié !" : " Windows (clip)"}
                       </button>
                     </div>
                   </div>
@@ -8660,7 +8451,7 @@ function VsCodeModal({ session, onClose }) {
                       onClick={handlePasteKey}
                       title="Coller depuis le presse-papier"
                     >
-                      📋 Coller
+                       Coller
                     </button>
                   </div>
                   <textarea
@@ -8677,7 +8468,7 @@ function VsCodeModal({ session, onClose }) {
                       disabled={addingKey || !pubKey.trim()}
                       onClick={handleAddKey}
                     >
-                      {addingKey ? "Autorisation…" : "🔐 Autoriser la clé sur le laptop"}
+                      {addingKey ? "Autorisation…" : " Autoriser la clé sur le laptop"}
                     </button>
                     {keyStatus && (
                       <span className={`vscode-status-badge ${keyStatus.success ? "success" : "error"}`}>
@@ -8769,7 +8560,7 @@ function CreateFileModal({ session, onClose, onSend }) {
       <section className="modal create-file-modal" role="dialog" aria-modal="true" aria-labelledby="create-file-title">
         <div className="create-file-header">
           <div className="create-file-header-left">
-            <span className="create-file-glyph">📝</span>
+            <span className="create-file-glyph"><AppIcon name="file" size={24} /></span>
             <div>
               <h2 id="create-file-title" className="create-file-title">Créer un ou plusieurs fichiers</h2>
               <span className="create-file-subtitle">Évite de polluer le prompt avec des tokens, configs ou longs textes</span>
@@ -8798,17 +8589,15 @@ function CreateFileModal({ session, onClose, onSend }) {
                   onClick={() => handlePasteClipboard(file.id)}
                   title="Coller le presse-papiers ici"
                 >
-                  📋 Coller
+                   Coller
                 </button>
                 {files.length > 1 && (
                   <button
                     type="button"
                     className="danger-link mini"
                     onClick={() => removeFile(file.id)}
-                    title="Supprimer ce fichier"
-                  >
-                    🗑
-                  </button>
+                    title="Supprimer ce fichier" aria-label="Supprimer ce fichier"
+                  ><AppIcon name="trash" size={16}/></button>
                 )}
               </div>
               <textarea
@@ -8846,7 +8635,12 @@ function CreateFileModal({ session, onClose, onSend }) {
   );
 }
 
-function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit, quotas, assistants, voice, onVoice, onInteract }) {
+function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMigrated, onRefresh, onEdit, quotas, assistants, voice, onVoice, onInteract, draftStore }) {
+  const showAgentSwitcher = agentsInSameProject(session, sessions).length > 1;
+  const [conversationMode, setConversationMode] = useState(session.assistant !== "shell");
+  // Chaque agent (nouveau ou bascule) s'ouvre en conversation, pas dans le mode du precedent.
+  useEffect(() => { setConversationMode(session.assistant !== "shell"); }, [session.id, session.assistant]);
+  useEffect(() => { setConversationMode(session.assistant !== "shell"); }, [session.id, session.assistant]);
   const terminalNode = React.useRef(null);
   const terminalRef = React.useRef(null);
   const socketRef = React.useRef(null);
@@ -8859,23 +8653,32 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
   const altRef = React.useRef(false);
   const viewportRefreshRef = React.useRef(() => {});
   const tapRef = React.useRef(null);
-  const tapDoneRef = React.useRef(0);
+  const tapGuardRef = React.useRef(null); if (!tapGuardRef.current) tapGuardRef.current = createTapGuard();
+  const clipboardBusyRef = React.useRef(false);
+  const outboxRef = React.useRef(null);
+  const sendQueuedRef = React.useRef(() => {});
+  const fieldSentRef = React.useRef("");
   const [connected, setConnected] = useState(false);
+  const [queued, setQueued] = useState(0);
+  const [held, setHeld] = useState(0);
   const [restarting, setRestarting] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
   const [todoPicker, setTodoPicker] = useState(false);
   const [todoDetail, setTodoDetail] = useState(null);
   const [vscodeModal, setVscodeModal] = useState(false);
   const [createFileModal, setCreateFileModal] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [conversationInsert, setConversationInsert] = useState(null);
+  const insertConversation = (text) => setConversationInsert({ id: globalThis.crypto?.randomUUID?.() || Math.random(), sessionId: session.id, text });
   const todoLinkRef = React.useRef(null);
   const [copiedLink, setCopiedLink] = useState(null);
   const snapshotRef = React.useRef(null);
 
   const handleInsertRawFiles = (createdFiles) => {
-    if (!createdFiles?.length || socketRef.current?.readyState !== WebSocket.OPEN) return;
+    if (!createdFiles?.length) return;
     const pathsStr = createdFiles.map((f) => (f.path.includes(" ") ? `"${f.path}"` : f.path)).join(" ") + " ";
-    socketRef.current.send(JSON.stringify({ type: "input", data: pathsStr }));
-    focusKeyboard();
+    if (conversationMode) insertConversation(pathsStr);
+    else { transmit({ type: "input", data: pathsStr }); focusKeyboard(); }
   };
 
   const openVsCode = (e) => {
@@ -8912,9 +8715,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
   useEffect(() => {
     if (session.migrationState === "summarizing") migrationRef.current = true;
     setMigrating(session.migrationState === "summarizing");
-    if (session.migrationState === "complete" && session.migratedTo && migrationRef.current) {
+    if (session.migrationState === "complete" && migrationRef.current) {
       migrationRef.current = false;
-      onMigrated(session.migratedTo);
+      if (session.migratedTo) onMigrated(session.migratedTo);
     }
     // Bascule en echec: le selecteur redevient utilisable au lieu de rester bloque.
     if (session.migrationState === "failed" && migrationRef.current) {
@@ -9013,6 +8816,18 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     terminal.open(terminalNode.current);
     fit.fit();
     terminalRef.current = terminal;
+    terminal.attachCustomKeyEventHandler?.((event) => {
+      const copyKey = String(event?.key || "").toLowerCase() === "c";
+      const modifier = Boolean(event?.metaKey || event?.ctrlKey);
+      if (copyKey && modifier && !event?.altKey && session.assistant !== "shell") {
+        if (event.type === "keydown") {
+          const selection = terminal.getSelection();
+          if (selection) void copyTerminal();
+        }
+        return false;
+      }
+      return true;
+    });
     // Une reference *XXXX ecrite par l'agent s'ouvre comme un lien vers la tache.
     terminal.registerLinkProvider({
       provideLinks(lineNumber, callback) {
@@ -9041,6 +8856,13 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     let socket = null;
     let reconnectTimer = null;
+    if (outboxRef.current?.session !== session.id) {
+      outboxRef.current = { session: session.id, client: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`, seq: 0, items: [] };
+      setQueued(0);
+      fieldSentRef.current = "";
+      if (keyboardRef.current) keyboardRef.current.value = "";
+    }
+    const outbox = outboxRef.current;
     let resizeTimer = null;
     let disposed = false;
 
@@ -9067,14 +8889,12 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
       onInteract?.();
     });
     const inputDisposable = terminal.onData((data) => {
-      const activeSocket = socketRef.current;
-      if (activeSocket?.readyState !== WebSocket.OPEN) return;
       if (data === "\r") {
-        activeSocket.send(JSON.stringify({ type: "key", key: "Enter" }));
+        transmit({ type: "key", key: "Enter" });
         return;
       }
       if (data === "\x7f") {
-        activeSocket.send(JSON.stringify({ type: "key", key: "Backspace" }));
+        transmit({ type: "key", key: "Backspace" });
         return;
       }
       let output = data;
@@ -9084,7 +8904,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
       altRef.current = false;
       setCtrl(false);
       setAlt(false);
-      activeSocket.send(JSON.stringify({ type: "input", data: output }));
+      transmit({ type: "input", data: output });
     });
     const scrollQueue = { up: 0, down: 0 };
     let scrollFlushTimer = null;
@@ -9311,10 +9131,12 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     const inField = (node) => node instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName) || node.isContentEditable);
     const copyShortcut = (event) => {
       const selection = terminalRef.current?.getSelection?.() || "";
-      if (!shouldCopyTerminal({ event, targetInField: inField(event.target), browserSelectionCollapsed: window.getSelection()?.isCollapsed !== false, terminalSelection: selection })) return;
+      if (!shouldCopyTerminal({ event, targetInField: inField(event.target), browserSelectionCollapsed: window.getSelection()?.isCollapsed !== false, terminalSelection: selection, assistant: session.assistant })) return;
       event.preventDefault();
       event.stopPropagation();
-      void copyTerminal();
+      if (selection) {
+        void copyTerminal();
+      }
     };
     const nativeCopy = (event) => {
       // Une copie faite dans un champ ou dans le panneau texte appartient au navigateur.
@@ -9329,6 +9151,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     // on ne l'ignore que dans les champs de l'application (modales, formulaires).
     const inTerminal = (node) => node instanceof HTMLElement && (node.closest(".terminal-frame, .terminal-controls, .terminal-page") || !node.closest(".modal, .modal-backdrop"));
     const pasteFile = (event) => {
+      if (event.target instanceof HTMLElement && event.target.closest(".agent-conversation")) return false;
       if (editableTarget(event.target) && !inTerminal(event.target)) return false;
       const items = Array.from(event.clipboardData?.items || []);
       const imageItem = items.find((it) => it.type && it.type.startsWith("image/"));
@@ -9381,6 +9204,15 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     };
     const handleMessage = (event) => {
       const message = JSON.parse(event.data);
+      if (message.type === "held") {
+        setHeld(Number(message.pending) || 0);
+        return;
+      }
+      if (message.type === "ack" && message.client === outbox.client) {
+        outbox.items = outbox.items.filter((item) => item.seq > message.seq);
+        setQueued((count) => (count ? outbox.items.length : 0));
+        return;
+      }
       if (message.type === "output") {
         terminal.write(withoutMouseTracking(message.data), () => {
           if (snapBottomRef.current) {
@@ -9390,30 +9222,74 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
         });
       }
     };
-    const connect = () => {
+    let nativeConnecting = false;
+    const connect = async () => {
       if (disposed || socketRef.current?.readyState === WebSocket.OPEN || socketRef.current?.readyState === WebSocket.CONNECTING) return;
+      if (nativeConnecting) return;
+      nativeConnecting = true;
+      clearTimeout(reconnectTimer);
       const terminalSize = new URLSearchParams({ cols: String(terminal.cols), rows: String(terminal.rows) });
-      socket = new WebSocket(`${protocol}//${location.host}/ws/terminal/${session.id}?${terminalSize}`);
-      socketRef.current = socket;
-      socket.addEventListener("open", () => {
+      let socketUrl;
+      try { socketUrl = await nativeSocketUrl(`/ws/terminal/${session.id}`, String(terminalSize)); }
+      catch { nativeConnecting = false; if (!disposed) reconnectTimer = setTimeout(connect, 3000); return; }
+      nativeConnecting = false;
+      if (disposed) return;
+      const ws = openTerminalSocket(socketUrl);
+      socket = ws;
+      socketRef.current = ws;
+      ws.addEventListener("open", () => {
+        if (socketRef.current !== ws) return;
         snapBottomRef.current = true;
         setConnected(true);
         resize();
-        socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
-        if (!captureMode) terminal.focus();
-      });
-      socket.addEventListener("message", handleMessage);
-      socket.addEventListener("close", () => {
-        setConnected(false);
-        if (!disposed) {
-          reconnectTimer = setTimeout(connect, 1000);
+        ws.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
+        // Les frappes tapees pendant la coupure repartent dans l'ordre; le serveur ignore les doublons.
+        const now = Date.now();
+        for (const item of outbox.items) {
+          item.sentAt = now;
+          ws.send(item.raw);
         }
+        if (!captureMode && !coarsePointer && document.activeElement !== keyboardRef.current) terminal.focus();
       });
-      socket.addEventListener("error", () => socket.close());
+      ws.addEventListener("message", (event) => {
+        if (socketRef.current === ws) handleMessage(event);
+      });
+      ws.addEventListener("close", () => {
+        if (socketRef.current !== ws) return;
+        setConnected(false);
+        setQueued(outbox.items.length);
+        if (!disposed) reconnectTimer = setTimeout(connect, outbox.items.length ? 300 : 1000);
+      });
+      ws.addEventListener("error", () => ws.close());
+    };
+    // Un reseau mobile peut laisser une socket "ouverte" mais muette: on l'abandonne sans attendre sa fermeture.
+    const reconnectNow = () => {
+      const stale = socketRef.current;
+      socketRef.current = null;
+      setConnected(false);
+      setQueued(outbox.items.length);
+      try { stale?.close(); } catch {}
+      connect();
+    };
+    const watchdog = setInterval(() => {
+      const first = outbox.items[0];
+      if (first?.sentAt && socketRef.current?.readyState === WebSocket.OPEN && Date.now() - first.sentAt > 6000) reconnectNow();
+    }, 2000);
+    sendQueuedRef.current = (raw, item) => {
+      if (socketRef.current?.readyState !== WebSocket.OPEN) {
+        setQueued(outbox.items.length);
+        if (!socketRef.current || socketRef.current.readyState === WebSocket.CLOSED) {
+          clearTimeout(reconnectTimer);
+          connect();
+        }
+        return;
+      }
+      item.sentAt = Date.now();
+      socketRef.current.send(raw);
     };
     const resumeConnection = () => {
       if (document.visibilityState !== "visible" || disposed) return;
-      if ([WebSocket.OPEN, WebSocket.CONNECTING].includes(socketRef.current?.readyState)) socketRef.current.close();
+      if ([WebSocket.OPEN, WebSocket.CONNECTING].includes(socketRef.current?.readyState)) reconnectNow();
       else connect();
     };
     document.addEventListener("visibilitychange", resumeConnection);
@@ -9422,6 +9298,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     return () => {
       disposed = true;
       clearTimeout(reconnectTimer);
+      clearInterval(watchdog);
+      sendQueuedRef.current = () => {};
       clearTimeout(scrollFlushTimer);
       stopMomentum();
       document.removeEventListener("visibilitychange", resumeConnection);
@@ -9453,14 +9331,25 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     };
   }, [session.id, session.name, oskEnabled]);
 
+  // Saisie fiable: chaque frappe reste en file jusqu'a l'accuse du serveur, meme si la connexion tombe.
+  function transmit(message) {
+    const box = outboxRef.current;
+    if (!box) return;
+    const seq = ++box.seq;
+    const item = { seq, raw: JSON.stringify({ ...message, client: box.client, seq }), sentAt: 0 };
+    box.items.push(item);
+    if (box.items.length > 5000) box.items.shift();
+    sendQueuedRef.current(item.raw, item);
+  }
+
   function send(data) {
     onInteract?.();
-    if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({ type: "input", data }));
+    transmit({ type: "input", data });
   }
 
   function sendSpecial(key) {
     onInteract?.();
-    if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({ type: "key", key }));
+    transmit({ type: "key", key });
     ctrlRef.current = false;
     altRef.current = false;
     setCtrl(false);
@@ -9481,7 +9370,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
       } catch {
         input?.focus();
       }
-      input?.setSelectionRange(0, 0);
+      const end = input?.value.length || 0;
+      input?.setSelectionRange(end, end);
       setKeyboardActive(true);
       return;
     }
@@ -9521,13 +9411,12 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
         tapRef.current = null;
         if (!tap || tap.id !== event.pointerId) return;
         if (Math.abs(event.clientX - tap.x) > 12 || Math.abs(event.clientY - tap.y) > 12) return;
-        tapDoneRef.current = Date.now();
-        action();
+        tapGuardRef.current.run(event.currentTarget, action);
       },
       onPointerCancel: () => { tapRef.current = null; },
-      onClick: () => {
-        if (Date.now() - tapDoneRef.current < 700) return;
-        action();
+      onClick: (event) => {
+        if (!tapGuardRef.current.allowClick(event.currentTarget)) return;
+        tapGuardRef.current.run(event.currentTarget, action);
       },
     };
   }
@@ -9547,11 +9436,10 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
       form.append("file", file);
       form.append("sessionId", session.id);
       const uploaded = await api("/api/uploads/file", { method: "POST", body: form });
-      if (socketRef.current?.readyState !== WebSocket.OPEN) throw new Error("Terminal déconnecté. Réessaie après reconnexion.");
       const insertedPath = uploaded.path.includes(" ") ? `"${uploaded.path}" ` : `${uploaded.path} `;
-      socketRef.current.send(JSON.stringify(submit
+      transmit(submit
         ? { type: "submit", data: `${uploaded.image ? "Image" : "Fichier"} joint à examiner : ${uploaded.path}` }
-        : { type: "input", data: insertedPath }));
+        : { type: "input", data: insertedPath });
     } catch (error) {
       window.alert(error.message);
     } finally {
@@ -9579,15 +9467,34 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     setAlt(false);
   }
 
+  // Le champ cache garde ce qui est tape et on n'envoie que la difference: le vider a chaque
+  // lettre faisait perdre des touches au clavier iOS quand on tape vite.
+  function syncKeyboardField(field) {
+    if (!field) return;
+    const value = Array.from(field.value);
+    const previous = Array.from(fieldSentRef.current);
+    let common = 0;
+    while (common < value.length && common < previous.length && value[common] === previous[common]) common += 1;
+    for (let index = common; index < previous.length; index += 1) sendSpecial("Backspace");
+    const added = value.slice(common).join("");
+    if (added) sendKeyboardData(added);
+    fieldSentRef.current = field.value;
+    // Vidage rare, entre deux mots: le champ ne grossit pas sans fin.
+    if (value.length > 60 && field.value.endsWith(" ")) resetKeyboardField(field);
+  }
+
+  function resetKeyboardField(field) {
+    if (field) field.value = "";
+    fieldSentRef.current = "";
+  }
+
   function nativeInput(event) {
     if (event.nativeEvent.isComposing) return;
-    if (event.nativeEvent.inputType === "deleteContentBackward") {
+    if (event.nativeEvent.inputType === "deleteContentBackward" && !fieldSentRef.current && !event.currentTarget.value) {
       sendSpecial("Backspace");
       return;
     }
-    const data = event.currentTarget.value;
-    if (data) sendKeyboardData(data);
-    event.currentTarget.value = "";
+    syncKeyboardField(event.currentTarget);
   }
 
   function nativePaste(event) {
@@ -9600,17 +9507,27 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
     if (file) {
       event.preventDefault();
       sendFile(file, { submit: false });
-      event.currentTarget.value = "";
       return;
     }
     const data = event.clipboardData?.getData("text");
     if (!data) return;
     event.preventDefault();
     sendKeyboardData(data);
-    event.currentTarget.value = "";
+  }
+
+  async function pasteNativeClipboard(imageOnly = false) {
+    if (clipboardBusyRef.current) return;
+    clipboardBusyRef.current = true;
+    try {
+      const result = await readNativeClipboard(Clipboard, { imageOnly });
+      if (result.kind === "image") await sendFile(new File([result.blob], `capture-${Date.now()}.${result.ext}`, { type: result.type }), { submit: false });
+      else sendKeyboardData(result.value);
+    } catch (error) { window.alert(error.message || "Accès au presse-papiers refusé par le téléphone."); }
+    finally { clipboardBusyRef.current = false; }
   }
 
   async function pasteImageOnly() {
+    if (isNative) return pasteNativeClipboard(true);
     try {
       if (!window.isSecureContext || !navigator.clipboard?.read) {
         window.alert("Presse-papiers inaccessible. Utilise Ctrl+V / Cmd+V pour coller.");
@@ -9635,6 +9552,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
   }
 
   async function pasteClipboard() {
+    if (isNative) return pasteNativeClipboard();
     try {
       if (!window.isSecureContext) throw new Error("insecure");
 
@@ -9709,8 +9627,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
       .join(" · ");
     const block = `${todoRef(todo.id)} « ${todo.text} » [${todo.status || "todo"}]${todo.dueDate ? ` échéance ${todo.dueDate}` : ""}${comments ? ` — derniers commentaires: ${comments}` : ""} `;
     setTodoPicker(false);
-    sendKeyboardData(block);
-    focusKeyboard();
+    if (conversationMode) insertConversation(block);
+    else { sendKeyboardData(block); focusKeyboard(); }
   }
 
   function openSnapshot() {
@@ -9750,10 +9668,13 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
   }
 
   function nativeKeyDown(event) {
+    // Entree pendant une composition: le mot en cours part d'abord, sinon il arrive apres le retour.
     if (event.key === "Enter") {
       event.preventDefault();
+      syncKeyboardField(event.currentTarget);
+      resetKeyboardField(event.currentTarget);
       sendSpecial("Enter");
-    } else if (event.key === "Backspace") {
+    } else if (event.key === "Backspace" && !event.nativeEvent.isComposing && !event.currentTarget.value) {
       event.preventDefault();
       sendSpecial("Backspace");
     }
@@ -9805,9 +9726,9 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
   }
 
   return (
-    <div className="terminal-page">
+    <div className={`terminal-page ${showAgentSwitcher ? "has-agent-switcher" : ""} ${conversationMode ? "conversation-mode" : ""}`}>
       <div className="terminal-toolbar">
-        <button className="icon-button" onClick={onBack} aria-label="Retour">‹</button>
+        <button className="icon-button terminal-back" onClick={onBack} aria-label="Retour">‹</button>
         <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small />
         <div className="terminal-identity">
           <strong>
@@ -9822,7 +9743,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
               tabIndex={0}
               aria-label="Description de l'agent"
             >
-              ℹ
+              <AppIcon name="info" size={15} />
             </span>
             {session.managed && session.canEdit !== false && onEdit && (
               <button
@@ -9831,8 +9752,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
                 title="Réglages de l'agent"
                 onClick={onEdit}
                 aria-label={`Réglages de ${session.name}`}
-              >
-                ⚙
+              ><AppIcon name="settings" size={15}/>
               </button>
             )}
           </strong>
@@ -9851,10 +9771,16 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
           <small>{session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small>
         </div>
         <div className="terminal-actions">
+          {sessions.length > 1 && <button type="button" className="agent-chat-choose" aria-label="Choisir un autre agent" onClick={() => window.dispatchEvent(new Event("noyau:choose-agent"))}><AppIcon name="swap"/></button>}
+          {session.assistant !== "shell" && <button type="button" className="ghost agent-chat-toggle" onClick={() => setConversationMode((value) => !value)}><AppIcon name={conversationMode ? "terminal" : "chat"} size={17}/><span>{conversationMode ? "Terminal" : "Conversation"}</span></button>}
           <ContextControl session={session} onRefresh={onRefresh} />
+          <details className="terminal-extra-actions"><summary aria-label="Actions de l’agent">•••</summary><div className="terminal-extra-panel">
+          {session.assistant !== "shell" && <button type="button" className="ghost" title="Mémoire commune de cet agent entre moteurs" aria-label="Ouvrir la mémoire commune" onClick={() => setMemoryOpen(true)}><AppIcon name="memory"/> <span>Mémoire de l’agent</span></button>}
+          {held > 0 && <span className="terminal-held-pill" title="Message d'un autre agent en attente : il partira dès que tu auras envoyé ton prompt"> {held}</span>}
+          {!connected && <span className="terminal-link-pill" title="Connexion perdue: la saisie est gardée et partira à la reconnexion">{queued ? `${queued} en attente` : "⟳"}</span>}
           {["codex", "claude", "antigravity"].includes(session.assistant) && (
             <label className="provider-switch" title={migrating ? "Bascule en cours… (choisir pour forcer immédiatement)" : "Changer de fournisseur en gardant le contexte"}>
-              <select value={session.assistant} onChange={(event) => migrate(event.target.value)} aria-label="Fournisseur">
+              <span className="terminal-provider-label">Moteur</span><select value={session.assistant} onChange={(event) => migrate(event.target.value)} aria-label="Fournisseur">
                 {["codex", "claude", "antigravity"].filter((id) => id === session.assistant || assistants?.[id] !== false).map((id) => {
                   const quota = providerQuota(quotas, id);
                   return <option value={id} key={id}>{assistantMeta[id].label}{quota ? ` · ${quota.percent}%` : ""}</option>;
@@ -9863,10 +9789,16 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
               {migrating && <em title="Passation en cours…">…</em>}
             </label>
           )}
-          {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Archiver agent" title="Archiver: ferme l'agent en gardant son fil">⏻</button>}
+          {session.managed && <button type="button" className="ghost" disabled={restarting} onClick={restart}><AppIcon name="refresh"/><span>{restarting ? "Redémarrage…" : "Redémarrer l’agent"}</span></button>}
+          {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Archiver agent" title="Archiver: ferme l'agent en gardant son fil">Archiver l’agent</button>}
+          </div></details>
         </div>
       </div>
-      <div className="terminal-frame" ref={terminalNode} />
+      {showAgentSwitcher && <TerminalAgentSwitcher session={session} sessions={sessions} onOpen={onSwitchAgent} />}
+      <div className="agent-workspace">
+        <div className="terminal-frame" ref={terminalNode} />
+        {conversationMode && <AgentConversation session={session} connected={connected} api={api} onSubmit={(text) => { onInteract?.(); transmit({ type: "submit", data: text }); }} onForceSubmit={() => { onInteract?.(); sendSpecial("Enter"); sendSpecial("C-m"); }} onStop={() => sendSpecial("Escape")} onRestart={restart} onTerminal={() => setConversationMode(false)} agents={sessions} restarting={restarting} onTagTodo={() => setTodoPicker(true)} onCreateNote={() => setCreateFileModal(true)} insertRequest={conversationInsert} onInsertConsumed={() => setConversationInsert(null)} draftStore={draftStore} held={held} queued={queued} onDictation={async () => { setConversationMode(false); try { if (!voiceCapture.active) await voiceCapture.start(); const state = await api("/api/voice/dictation", { method: "POST", body: JSON.stringify({ sessionId: session.id, enabled: true }) }); onVoice?.(state); if (!state.listening) window.alert(state.error || "Micro indisponible."); } catch (error) { window.alert(error.message); } }} />}
+      </div>
       {snapshot !== null && (
         <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSnapshot(null)}>
           <section className="modal terminal-snapshot">
@@ -9904,7 +9836,8 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
       {todoDetail && <TodoDetailOverlay todo={todoDetail} onClose={() => setTodoDetail(null)} onTag={tagTodo} />}
       {vscodeModal && <VsCodeModal session={session} onClose={() => setVscodeModal(false)} />}
       {createFileModal && <CreateFileModal session={session} onClose={() => setCreateFileModal(false)} onSend={handleInsertRawFiles} />}
-      <div className={`terminal-controls ${keyboardActive ? "keyboard-active" : ""}`}>
+      {memoryOpen && <AgentMemory session={session} api={api} onClose={() => setMemoryOpen(false)} />}
+      <div className={`terminal-controls ${keyboardActive ? "keyboard-active" : ""}`} hidden={conversationMode}>
         <input
           ref={keyboardRef}
           className="terminal-keyboard-capture"
@@ -9912,6 +9845,7 @@ function TerminalView({ session, onBack, onKilled, onMigrated, onRefresh, onEdit
           onInput={nativeInput}
           onPaste={nativePaste}
           onKeyDown={nativeKeyDown}
+          onCompositionEnd={(event) => syncKeyboardField(event.currentTarget)}
           onFocus={() => { setKeyboardActive(true); viewportRefreshRef.current(true); }}
           onBlur={() => { setKeyboardActive(false); viewportRefreshRef.current(true); }}
           aria-label="Clavier terminal"
@@ -10099,7 +10033,7 @@ function NewSessionModal({ projects, sessions, assistants, onClose, onCreated })
               }}
               disabled={suggesting}
             >
-              {suggesting ? "Génération…" : "✨ Suggérer"}
+              {suggesting ? "Génération…" : " Suggérer"}
             </button>
           </div>
           <textarea
@@ -10201,7 +10135,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
               }}
               disabled={suggesting}
             >
-              {suggesting ? "Génération…" : "✨ Suggérer"}
+              {suggesting ? "Génération…" : " Suggérer"}
             </button>
           </div>
           <textarea
@@ -10319,12 +10253,12 @@ function ProjectModal({ project, onClose, onSaved }) {
               <div className="project-logo-preview-row">
                 <div className="project-logo-preview-box">
                   {logoPath ? (
-                    <img
+                    <ProjectImage
                       src={`/api/projects/${project.id}/image-file?path=${encodeURIComponent(logoPath)}`}
                       alt="Logo sélectionné"
                     />
                   ) : (
-                    <img
+                    <ProjectImage
                       src={project.logoUrl}
                       alt="Logo projet"
                       onError={(e) => { e.currentTarget.style.display = "none"; }}
@@ -10376,7 +10310,7 @@ function ProjectModal({ project, onClose, onSaved }) {
                           onClick={() => setLogoPath(img.path)}
                           title={`${img.relativePath} (${img.name})`}
                         >
-                          <img
+                          <ProjectImage
                             src={`/api/projects/${project.id}/image-file?path=${encodeURIComponent(img.path)}`}
                             alt={img.name}
                             loading="lazy"
@@ -10474,7 +10408,7 @@ const voiceCapture = (() => {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
       context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       await context.resume();
-      socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws/voice`);
+      socket = new WebSocket(await nativeSocketUrl("/ws/voice"));
       socket.binaryType = "arraybuffer";
       await new Promise((resolve, reject) => {
         socket.addEventListener("open", resolve, { once: true });
@@ -10578,89 +10512,8 @@ function VoiceOverlay({ voice, feed, sessions, onVoice, onOpenAgent }) {
   );
 }
 
-function MobileInstallPopup() {
-  const [visible, setVisible] = useState(false);
-  const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [showIosTip, setShowIosTip] = useState(false);
-  const isApple = typeof navigator !== "undefined" && /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-  useEffect(() => {
-    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
-    if (isStandalone) return;
-
-    const dismissed = sessionStorage.getItem("noyau-mobile-banner-dismissed");
-    const isMobile = window.innerWidth <= 840 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || TOUCH_MODE;
-    if (isMobile && !dismissed) {
-      setVisible(true);
-    }
-
-    const handler = (e) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-      if (!dismissed) setVisible(true);
-    };
-    const openHandler = () => setVisible(true);
-    window.addEventListener("beforeinstallprompt", handler);
-    window.addEventListener("noyau:open-install", openHandler);
-    return () => {
-      window.removeEventListener("beforeinstallprompt", handler);
-      window.removeEventListener("noyau:open-install", openHandler);
-    };
-  }, []);
-
-  const dismiss = () => {
-    setVisible(false);
-    sessionStorage.setItem("noyau-mobile-banner-dismissed", "1");
-  };
-
-  const handleInstall = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const res = await deferredPrompt.userChoice;
-      if (res.outcome === "accepted") setVisible(false);
-      setDeferredPrompt(null);
-    } else if (isApple) {
-      setShowIosTip(true);
-    } else {
-      window.location.href = "/api/mobile/noyau.apk";
-    }
-  };
-
-  if (!visible) return null;
-
-  return (
-    <aside className="mobile-install-banner" role="banner">
-      <div className="mobile-install-banner-inner">
-        <span className="mobile-install-glyph">📱</span>
-        <div className="mobile-install-info">
-          <strong>Installer l'application Noyau</strong>
-          <small>Mode hors-ligne, tunnel WireGuard direct et accès instantané.</small>
-        </div>
-        <div className="mobile-install-actions">
-          <button type="button" className="primary mini" onClick={handleInstall}>
-            {isApple ? "📲 Installer" : "📲 Installer App"}
-          </button>
-          {!isApple && (
-            <a href="/api/mobile/noyau.apk" download="noyau.apk" className="button ghost mini">
-              🤖 APK Android
-            </a>
-          )}
-          <button type="button" className="icon-button mini close-install" onClick={dismiss} aria-label="Fermer">
-            ✕
-          </button>
-        </div>
-      </div>
-      {showIosTip && (
-        <div className="ios-install-hint">
-          <span>Sur Safari iOS : appuyez sur Partager <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> puis sur <strong>« Sur l'écran d'accueil » ➕</strong></span>
-          <button type="button" className="ghost mini" onClick={() => setShowIosTip(false)}>Compris</button>
-        </div>
-      )}
-    </aside>
-  );
-}
-
 function App() {
+  const [vpnError, setVpnError] = useState("");
   const [auth, setAuth] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -10670,23 +10523,62 @@ function App() {
   const [assistants, setAssistants] = useState(null);
   // Le flux vocal vit hors du rendu: il lui faut l'agent regarde a l'instant, pas celui du montage.
   const activeIdRef = React.useRef(null);
-  const [activeId, setActiveId] = useState(() => new URLSearchParams(location.search).get("session"));
+  const initialNativeNavigation = useState(() => isNative ? readNativeNavigation(sessionStorage, activeProfileId()) : null)[0];
+  const [activeId, setActiveId] = useState(() => { const query = new URLSearchParams(location.search); return query.has("session") || query.has("view") ? query.get("session") : initialNativeNavigation?.session || null; });
   activeIdRef.current = activeId;
-  const [view, setView] = useState(() => ["projects", "calendar", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "finance-banking", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "dashboard");
+  const [view, setView] = useState(() => ["projects", "map", "groceries", "calendar", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "finance-banking", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : (!new URLSearchParams(location.search).has("session") && isNative && ["projects", "map", "groceries", "calendar", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "finance-banking", "settings", "dashboard"].includes(initialNativeNavigation?.view) ? initialNativeNavigation.view : "dashboard"));
+  useEffect(() => { if (isNative && auth) saveNativeNavigation(sessionStorage, activeProfileId(), activeId, view); }, [auth, activeId, view]);
+  const startupInteracted = React.useRef(false);
+  useEffect(() => { if (!isNative) return; const mark = () => { startupInteracted.current = true; }; window.addEventListener("pointerdown", mark, { once: true }); window.addEventListener("keydown", mark, { once: true }); return () => { window.removeEventListener("pointerdown", mark); window.removeEventListener("keydown", mark); }; }, []);
+  const [nativeSetupSkipped, setNativeSetupSkipped] = useState(() => Boolean(isNative && activeProfileId()));
+  const [nativeSetupOpen, setNativeSetupOpen] = useState(false);
+  const nativeOfflineExplicit = React.useRef(false);
+  useEffect(() => { const configure = () => setNativeSetupOpen(true); window.addEventListener("noyau:configure-native", configure); return () => window.removeEventListener("noyau:configure-native", configure); }, []);
+  useEffect(() => { const navigate = (event) => { const { view: target, session } = event.detail || {}; setActiveId(session || null); if (target) setView(target); }; window.addEventListener("noyau:native-navigation", navigate); return () => window.removeEventListener("noyau:native-navigation", navigate); }, []);
+  useEffect(() => {
+    const onNavigateTodo = (event) => {
+      const detail = event.detail || {};
+      setActiveId(null);
+      setView("todos");
+      if (detail.id || detail.ref) {
+        try {
+          sessionStorage.setItem("noyau-target-todo", JSON.stringify(detail));
+        } catch {}
+      }
+    };
+    window.addEventListener("noyau:navigate-todo", onNavigateTodo);
+    return () => window.removeEventListener("noyau:navigate-todo", onNavigateTodo);
+  }, []);
   const [modal, setModal] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [projectModalId, setProjectModalId] = useState(null);
   const [menu, setMenu] = useState(false);
+  // Tiroir ouvert: la page dessous ne defile plus avec le doigt.
+  useEffect(() => {
+    document.documentElement.classList.toggle("menu-open", menu);
+    return () => document.documentElement.classList.remove("menu-open");
+  }, [menu]);
   const [bootOffline, setBootOffline] = useState(false);
   const [offlineMode, setOfflineMode] = useState(false);
+  const [nativeNetwork, setNativeNetwork] = useState(null);
+  useEffect(() => { nativeReadOnlyOffline = Boolean(isNative && offlineMode); return () => { nativeReadOnlyOffline = false; }; }, [offlineMode]);
+  useEffect(() => { if (!isNative) return; let disposed = false; const update = () => nativeNetworkStatus().then((value) => { if (!disposed) setNativeNetwork(value); }).catch(() => {}); update(); window.addEventListener("noyau:network-return", update); window.addEventListener("online", update); window.addEventListener("offline", update); return () => { disposed = true; window.removeEventListener("noyau:network-return", update); window.removeEventListener("online", update); window.removeEventListener("offline", update); }; }, []);
   const [bootAttempts, setBootAttempts] = useState(0);
   const [bootNonce, setBootNonce] = useState(0);
   const [bootPercent, setBootPercent] = useState(8);
   const [bootStep, setBootStep] = useState("Démarrage…");
   const [bootDetail, setBootDetail] = useState("");
-  const [permission, setPermission] = useState(!window.isSecureContext ? "insecure" : (typeof Notification === "undefined" ? "denied" : Notification.permission));
+  const [permission, setPermission] = useState(() => isNative ? (nativeLocalAlertsEnabled(activeProfileId()) ? "local" : "default") : !window.isSecureContext ? "insecure" : (typeof Notification === "undefined" ? "denied" : Notification.permission));
+  const [notificationInfo, setNotificationInfo] = useState("");
   const [profiles, setProfiles] = useState([]);
   const [profileId, setProfileId] = useState(() => activeProfileId());
+  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const [lastAgentId, setLastAgentId] = useState(() => { try { return sessionStorage.getItem(`noyau:last-agent:${activeProfileId()}`) || ""; } catch { return ""; } });
+  useEffect(() => { try { setLastAgentId(sessionStorage.getItem(`noyau:last-agent:${profileId}`) || ""); } catch { setLastAgentId(""); } setSelectedProjectId(null); }, [profileId]);
+  useEffect(() => { if (!activeId || !profileId) return; setLastAgentId(activeId); try { sessionStorage.setItem(`noyau:last-agent:${profileId}`, activeId); } catch {} }, [activeId, profileId]);
+  const draftServer = isNative ? nativeServer() : location.origin;
+  const conversationDrafts = useMemo(() => createConversationDraftStore({ storage: localStorage, server: draftServer, profile: profileId }), [profileId, draftServer]);
+  useEffect(() => { if (!isNative) return; setPermission(nativeLocalAlertsEnabled(profileId) ? "local" : localStorage.getItem(`noyau:push-active:${nativeServer()}:${profileId}`) ? "active" : "default"); setNotificationInfo(""); }, [profileId]);
   const [todoUnread, setTodoUnread] = useState(0);
   const [power, setPower] = useState(null);
   const [powerBusy, setPowerBusy] = useState(false);
@@ -10723,9 +10615,20 @@ function App() {
     return () => window.removeEventListener("noyau:agent-interact", handler);
   }, [registerAgentInteraction]);
 
+  const [mapProjectId, setMapProjectId] = useState(null);
+  const openProjectMap = useCallback((projectId) => {
+    setMapProjectId(projectId);
+    setActiveId(null);
+    setView("map");
+  }, []);
   const openAgentSession = useCallback((id) => {
     setActiveId(id || null);
   }, []);
+
+  // Quitter un agent ramene a l'Accueil, pas a la derniere vue ouverte avant lui (souvent Budget).
+  useEffect(() => {
+    if (activeId) setView("dashboard");
+  }, [activeId]);
 
   const changeAgentSortMode = useCallback((next) => {
     setAgentSortMode(next);
@@ -10859,20 +10762,23 @@ function App() {
       for (const session of nextSessions) {
         const previous = agentStatesRef.current.get(session.id);
         const current = session.agentStatus?.state || "available";
-        if (previous && previous !== current) {
-          if (current === "waiting") sounds.agentWaiting();
-          else if (previous === "working" && current === "available") sounds.agentDone();
-        }
-        agentStatesRef.current.set(session.id, current);
+        const transition = advanceAgentAlert(previous, current, Date.now());
+        if (transition.alert === "waiting") { sounds.agentWaiting(); }
+        else if (transition.alert === "done") { sounds.agentDone(); if (isNative) scheduleNativeAgentAlert(activeProfileId(), session.id, "done", session.name, session.project?.name || nextProjects.find((project) => project.id === session.projectId)?.name).catch(() => {}); }
+        agentStatesRef.current.set(session.id, transition);
       }
       setSessions(nextSessions);
       setAssistants(nextAssistants || null);
       setQuotas(nextQuotas || { codex: null, claude: null });
       setProjects(nextProjects);
+      if (isNative) {
+        for (const p of nextProjects || []) { if (p?.logoUrl) preloadProjectImage(p.logoUrl); }
+        for (const s of nextSessions || []) { if (s?.logoUrl) preloadProjectImage(s.logoUrl); }
+      }
       setModules(nextModules.modules || []);
       setModuleProposals(nextModules.proposals || []);
     } catch (error) {
-      if (/autorisé|401/i.test(error.message)) setAuth(false);
+      if (/autorisé|401/i.test(error.message)) { if (isNative && activeProfileId()) setOfflineMode(true); else setAuth(false); }
     }
   }, []);
 
@@ -10915,11 +10821,16 @@ function App() {
         if (disposed) return;
         clearInterval(creepTimer);
         advance(80, "Session validée…");
+        setOfflineMode(false);
+        if (isNative && !startupInteracted.current && !new URLSearchParams(location.search).has("view") && !new URLSearchParams(location.search).has("session")) setView((current) => current === "groceries" ? "dashboard" : current);
         setBootOffline(false);
         setBootDetail("");
         if (session?.profile?.id) {
           setProfileId(session.profile.id);
           try { localStorage.setItem(PROFILE_KEY, session.profile.id); } catch { /* ignore */ }
+          if (session?.token) {
+            try { localStorage.setItem("noyau:token", session.token); localStorage.setItem("token", session.token); } catch {}
+          }
           applyTheme(session.profile.theme);
           applyInstallIdentity(session.profile);
         }
@@ -10928,11 +10839,14 @@ function App() {
         if (disposed) return;
         clearInterval(creepTimer);
         if (error.status === 401) {
+          if (isNative && nativeOfflineExplicit.current) { setAuth(true); setOfflineMode(true); return; }
+          if (isNative) setOfflineMode(false);
           advance(100, "Authentification requise");
           setBootOffline(false);
           setAuth(false);
           return;
         }
+        if (isNative && activeProfileId()) { setOfflineMode(true); setAuth(true); }
         attempt += 1;
         setBootAttempts(attempt);
         setBootDetail(error.name === "AbortError"
@@ -11007,11 +10921,23 @@ function App() {
   }, [auth, activeId]);
 
   useEffect(() => {
-    if (!auth) return;
+    if (!auth || offlineMode) return;
     refresh();
     const timer = setInterval(refresh, 5000);
     return () => clearInterval(timer);
-  }, [auth, refresh]);
+  }, [auth, refresh, offlineMode]);
+
+  // Warm the last authenticated profile's offline snapshots even if its tabs were
+  // never opened. Never write a late response into another profile/server scope.
+  useEffect(() => {
+    if (!isNative || !auth || offlineMode || !profileId) return;
+    const expected = { profile: activeProfileId(), server: nativeServer() }; let disposed = false;
+    if (!expected.profile) return;
+    const save = (key, value) => { if (!disposed && sameSnapshotScope(expected, { profile: activeProfileId(), server: nativeServer() }) && value) storeView(key, value); };
+    api("/api/todos").then((value) => save("todos", value)).catch(() => {});
+    api("/api/calendar/events").then((value) => save("calendar", calendarSnapshot(value))).catch(() => {});
+    return () => { disposed = true; };
+  }, [auth, offlineMode, profileId]);
 
   // Le profil pilote le theme et le cloisonnement des donnees: on l'aligne des l'ouverture de session.
   const refreshProfiles = useCallback(async () => {
@@ -11020,7 +10946,7 @@ function App() {
     setProfileId(current);
     try { localStorage.setItem(PROFILE_KEY, current); } catch { /* stockage optionnel */ }
     const active = list.find((item) => item.id === current);
-    const resolvedTheme = (current && current.toLowerCase().includes("aurora")) || active?.name?.toLowerCase().includes("aurora")
+    const resolvedTheme = (current && current.toLowerCase().includes("bellin")) || active?.name?.toLowerCase().includes("bellin")
       ? "moving-castle"
       : (active?.theme || "noyau");
     applyTheme(resolvedTheme);
@@ -11033,8 +10959,9 @@ function App() {
     refreshProfiles().catch(() => { /* profils indisponibles: on garde le theme courant */ });
   }, [auth, refreshProfiles]);
 
-  // Version du build: tout changement purge les caches et recharge, sans action manuelle.
+  // Bundled native assets are frozen; a server version change must not reload when offline.
   useEffect(() => {
+    if (isNative && (location.protocol === "capacitor:" || location.protocol === "file:")) return undefined;
     let disposed = false;
     let timer = null;
     async function check() {
@@ -11048,7 +10975,12 @@ function App() {
         if (known && known !== version) {
           if (document.fullscreenElement) return;
           localStorage.setItem(VERSION_KEY, version);
-          await purgeClient();
+          if (window.caches?.keys) {
+            try {
+              const keys = await caches.keys();
+              await Promise.all(keys.map((k) => caches.delete(k)));
+            } catch {}
+          }
           // Une mise a jour ne doit pas fermer la conversation ouverte: on garde la destination courante.
           const current = new URLSearchParams(location.search);
           const keep = Object.fromEntries(["session", "view", "reply"].filter((key) => current.get(key)).map((key) => [key, current.get(key)]));
@@ -11079,7 +11011,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!("serviceWorker" in navigator)) return;
+    if (isNative || !("serviceWorker" in navigator)) return;
     // Notification ouverte alors que l'app tourne deja: iOS ne navigue pas, on route en interne.
     const receiveNavigation = (url) => {
       const target = new URL(url, location.origin);
@@ -11111,24 +11043,22 @@ function App() {
         const known = localStorage.getItem(VERSION_KEY);
         if (known && known !== event.data.version) {
           localStorage.setItem(VERSION_KEY, event.data.version);
-          purgeClient().then(() => {
-            window.location.reload();
-          });
+          if (window.caches?.keys) {
+            caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
+          }
+          window.location.reload();
+        } else if (!known) {
+          localStorage.setItem(VERSION_KEY, event.data.version);
         }
       }
     };
-    const onControllerChange = () => {
-      window.location.reload();
-    };
-    // Le controle de version gere seul le rechargement pour eviter les boucles a l'activation du worker.
-    navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+    // Le controle de version ci-dessus et dans check() gere seul le rechargement sans rebond a l'activation.
     navigator.serviceWorker.addEventListener("message", receiveUpdate);
     navigator.serviceWorker.register("/sw.js").then((registration) => registration.update()).catch(() => {});
     consumePending();
     const wake = () => document.visibilityState === "visible" && consumePending();
     document.addEventListener("visibilitychange", wake);
     return () => {
-      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
       navigator.serviceWorker.removeEventListener("message", receiveUpdate);
       document.removeEventListener("visibilitychange", wake);
     };
@@ -11143,11 +11073,11 @@ function App() {
   }, [auth]);
 
   const active = sessions.find((session) => session.id === activeId);
-  // Bascule de fournisseur: l'agent repart sous un nouvel identifiant, on suit le fil sans rien faire.
+  // Public identities and historical links resolve to the current terminal, never a name match.
   useEffect(() => {
     if (!activeId || active) return;
-    const replacement = sessions.find((session) => session.migratedFrom === activeId);
-    if (replacement) setActiveId(replacement.id);
+    const replacements = sessions.filter((session) => session.agentId === activeId || session.agentAliases?.includes(activeId) || session.migratedFrom === activeId);
+    if (replacements.length === 1) setActiveId(replacements[0].id);
   }, [activeId, active, sessions]);
   const editingSession = sessions.find((session) => session.id === editingId);
   const editingProject = projects.find((project) => project.id === projectModalId);
@@ -11156,6 +11086,9 @@ function App() {
     try {
       const res = await api("/api/auth/session");
       if (res?.authenticated) {
+        if (res?.token) {
+          try { localStorage.setItem("noyau:token", res.token); localStorage.setItem("token", res.token); } catch {}
+        }
         setOfflineMode(false);
         await flushOfflineQueue();
         await refresh();
@@ -11163,40 +11096,35 @@ function App() {
       } else {
         window.alert("Session expirée. Veuillez vous reconnecter.");
       }
-    } catch {
-      window.alert("Connexion impossible : serveur / VPN toujours injoignable.");
+    } catch (error) {
+      window.alert(error.status === 401 ? "Le serveur répond, mais la session a expiré : reconnectez-vous." : "Connexion impossible : serveur / VPN toujours injoignable.");
     }
   }, [refresh]);
 
   useEffect(() => {
-    const handleOnline = () => tryReconnect();
+    let pending = false; const syncIfPossible = async () => {
+      if (!offlineMode || pending) return; pending = true;
+      try { const res = await api("/api/auth/session"); if (res?.authenticated) { if (res?.token) { try { localStorage.setItem("noyau:token", res.token); localStorage.setItem("token", res.token); } catch {} } nativeOfflineExplicit.current = false; setOfflineMode(false); await flushOfflineQueue(); await refresh(); window.dispatchEvent(new Event("noyau:todos-refresh")); } } catch { /* no alerts on automatic reconnect */ } finally { pending = false; }
+    };
+    const handleOnline = () => syncIfPossible();
     window.addEventListener("online", handleOnline);
-    const interval = setInterval(() => {
-      if (offlineMode) {
-        api("/api/auth/session")
-          .then((res) => {
-            if (res?.authenticated) {
-              setOfflineMode(false);
-              flushOfflineQueue();
-              refresh();
-              window.dispatchEvent(new Event("noyau:todos-refresh"));
-            }
-          })
-          .catch(() => {});
-      }
-    }, 8_000);
+    window.addEventListener("noyau:network-return", handleOnline);
+    const interval = setInterval(syncIfPossible, 8_000);
     return () => {
       window.removeEventListener("online", handleOnline);
+      window.removeEventListener("noyau:network-return", handleOnline);
       clearInterval(interval);
     };
   }, [offlineMode, refresh, tryReconnect]);
 
   useEffect(() => {
-    if (offlineMode && !["calendar", "todos", "settings"].includes(view)) {
-      setView("calendar");
+    if (offlineMode && !["groceries", "calendar", "todos", "settings"].includes(view)) {
+      setView("groceries");
     }
   }, [offlineMode, view]);
 
+  const enterOffline = () => { nativeOfflineExplicit.current = true; setNativeSetupOpen(false); setNativeSetupSkipped(true); setAuth(true); setOfflineMode(true); setView("groceries"); };
+  if (isNative && (nativeSetupOpen || !nativeSetupSkipped)) return <NativeServerSetup onOffline={enterOffline} onClose={nativeSetupOpen && activeProfileId() ? () => setNativeSetupOpen(false) : undefined} onOnline={(session) => { nativeOfflineExplicit.current = false; setNativeSetupOpen(false); setNativeSetupSkipped(true); setOfflineMode(false); setView("dashboard"); setAuth(Boolean(session.authenticated)); setBootNonce((value) => value + 1); }} />;
   if (auth === null) {
     return (
       <Boot
@@ -11211,15 +11139,18 @@ function App() {
           setBootOffline(false);
           setAuth(true);
           setOfflineMode(true);
-          setView("calendar");
+          setView("groceries");
         }}
       />
     );
   }
-  if (!auth) return <Login onLogin={() => setAuth(true)} />;
+  if (!auth) return <Login onLogin={() => { const destination = loginNavigation(location.search); if (!destination.explicit) { setActiveId(null); setView("dashboard"); history.replaceState({}, "", `${location.pathname}${destination.search ? `?${destination.search}` : ""}${location.hash}`); } nativeOfflineExplicit.current = false; setOfflineMode(false); setAuth(true); }} onOffline={isNative ? enterOffline : undefined} />;
 
   async function logout() {
-    await api("/api/logout", { method: "POST" });
+    if (isNative) clearNativeNavigation(sessionStorage, profileId);
+    if (isNative) { await forgetNativeSession(profileId, deviceId(), { beforeClear: () => disableBiometric(profileId) }); setProfileId(""); setOfflineMode(false); }
+    else await api("/api/logout", { method: "POST" });
+    setActiveId(null); setView("dashboard"); history.replaceState({}, "", appPath());
     setAuth(false);
   }
 
@@ -11235,8 +11166,21 @@ function App() {
       method: "POST",
       body: JSON.stringify({ profileId: target.id, password }),
     });
+    if (res?.token) {
+      try { localStorage.setItem("noyau:token", res.token); localStorage.setItem("token", res.token); } catch {}
+    }
     setSwitchTarget(null);
     await applyProfileSwitch(res.profile.id);
+    if (isNative) {
+      try { const status = await biometricStatus(res.profile.id); if (status.available && !status.enabled && window.confirm(`Activer ${status.label} pour le profil ${target.name} sur cet appareil ?`)) await enableBiometric(res.profile.id, password); }
+      catch (error) { window.alert(error.message || "Activation biométrique impossible."); }
+    }
+  }
+
+  async function biometricSwitchProfile(target) {
+    const result = await biometricClient(target.id).unlock();
+    if (result.offline) throw new Error("Connexion nécessaire pour changer de profil.");
+    setSwitchTarget(null); await applyProfileSwitch(target.id);
   }
 
   async function applyProfileSwitch(id) {
@@ -11245,6 +11189,7 @@ function App() {
     if (!nextProfile) return;
     try { localStorage.setItem(PROFILE_KEY, id); } catch { /* stockage optionnel */ }
     setProfileId(id);
+    if (isNative) window.dispatchEvent(new Event("noyau:biometric-changed"));
     setAgentSortMode(() => {
       try { return localStorage.getItem(`${id}:agents-sort-mode`) || "recent"; } catch { return "recent"; }
     });
@@ -11257,7 +11202,7 @@ function App() {
         return {};
       }
     });
-    const resolvedTheme = (id && id.toLowerCase().includes("aurora")) || nextProfile.name?.toLowerCase().includes("aurora")
+    const resolvedTheme = (id && id.toLowerCase().includes("bellin")) || nextProfile.name?.toLowerCase().includes("bellin")
       ? "moving-castle"
       : (nextProfile.theme || "noyau");
     applyTheme(resolvedTheme);
@@ -11273,6 +11218,11 @@ function App() {
   }
 
   async function enableNotifications() {
+    if (isNative) { try {
+      const status = await api("/api/mobile/push-status");
+      if (status.configured?.[window.Capacitor?.getPlatform?.()]) { if (await enableNativePush(api, deviceId())) { setPermission("active"); setNotificationInfo("Alertes serveur activées sur cet appareil."); } }
+      else { await enableNativeLocalAlerts(activeProfileId()); setPermission("local"); setNotificationInfo("Alertes locales activées quand l’app fonctionne ; alertes serveur en arrière-plan non configurées."); }
+    } catch (error) { window.alert(error.message); } return; }
     try {
       if (!window.isSecureContext) throw new Error("HTTPS requis pour notifications iPhone.");
       if (typeof Notification === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) throw new Error("Notifications push non prises en charge.");
@@ -11362,6 +11312,8 @@ function App() {
   }
 
   const installModule = (id) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/install`, { method: "POST" });
+  const setModuleEnvironment = (id, environment) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/environment`, { method: "PATCH", body: JSON.stringify({ environment }) });
+  const removeModule = (id) => moduleRequest(`/api/modules/${encodeURIComponent(id)}`, { method: "DELETE" });
   const toggleModule = (id, enabled) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/toggle`, { method: "PATCH", body: JSON.stringify({ enabled }) });
   const runModuleAction = (id, actionId, body = {}) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}${body.stop ? "/stop" : ""}`, { method: "POST", body: JSON.stringify(body) });
   const saveModuleSchedule = (id, scheduleId, time) => moduleRequest(`/api/modules/${encodeURIComponent(id)}/schedules/${encodeURIComponent(scheduleId)}`, { method: "PATCH", body: JSON.stringify({ time }) });
@@ -11382,10 +11334,10 @@ function App() {
 
 
   return (
-    <div className={`app-shell ${TOUCH_MODE ? "touch-shell" : ""} ${offlineMode ? "offline-mode" : ""}`}>
-      <MobileInstallPopup />
+    <div className={`app-shell ${isNative ? "native-app" : ""} ${TOUCH_MODE ? "touch-shell" : ""} ${offlineMode ? "offline-mode" : ""}`}>
+      <NativeDownloads api={api} />
       {TOUCH_MODE && !offlineMode && <TouchSystemBar sessions={orderedSessions} onHome={() => { setActiveId(null); setView("dashboard"); }} onNew={() => setModal(true)} />}
-      {!offlineMode && <Sidebar sessions={orderedSessions} projects={projects} activeId={activeId} view={view} onOpen={openAgentSession} onView={setView} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} profiles={profiles} profileId={profileId} onSwitchProfile={requestSwitchProfile} todoUnread={todoUnread} sortMode={agentSortMode} onCycleSort={cycleAgentSort} lastInteractedMap={lastInteractedMap} />}
+      {!offlineMode && <Sidebar sessions={orderedSessions} projects={projects} activeId={activeId} view={view} onOpen={openAgentSession} onView={setView} onOpenMap={openProjectMap} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} profiles={profiles} profileId={profileId} onSwitchProfile={requestSwitchProfile} todoUnread={todoUnread} sortMode={agentSortMode} onCycleSort={cycleAgentSort} lastInteractedMap={lastInteractedMap} />}
       {menu && !offlineMode && <button className="menu-backdrop" onClick={() => setMenu(false)} aria-label="Fermer menu" />}
       <main className="content">
         {offlineMode && (
@@ -11400,72 +11352,69 @@ function App() {
                   <button
                     type="button"
                     className="ghost mini offline-btn"
-                    onClick={() => {
-                      const isApple = /iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent) && !window.MSStream;
-                      if (isApple) {
-                        window.alert("Sur iOS, active WireGuard depuis ton écran d'accueil ou configure « Sur demande » dans WireGuard.");
-                      } else {
-                        try {
-                          window.location.href = "intent://#Intent;package=com.wireguard.android;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;end";
-                        } catch {
-                          try { window.location.href = "wireguard://"; } catch {}
-                        }
-                      }
-                    }}
+                    onClick={() => { setVpnError(""); openWireGuard().catch((error) => setVpnError(error.message)); }}
                   >
-                    🛡️ WireGuard
+                     WireGuard
                   </button>
-                  <button type="button" className="primary mini offline-btn" onClick={tryReconnect}>🔄 Reconnecter</button>
+                  <button type="button" className="primary mini offline-btn" onClick={tryReconnect}> Reconnecter</button>
                 </div>
               </div>
+              {isNative && Capacitor.getPlatform() === "ios" && <p className="offline-native-hint">Une seule fois : crée dans Raccourcis « Noyau WireGuard » avec l’action « Ouvrir l’app » → WireGuard.</p>}
+              {vpnError && <p className="offline-native-hint" role="status">{vpnError}</p>}
+              {isNative && <p className="offline-native-hint">{nativeNetwork ? networkLabel(nativeNetwork) : "Réseau à vérifier"} · VPN : état non vérifiable. Tâches et calendrier en lecture seule ; Courses reste modifiable{!cachedView("todos") ? " · première synchronisation nécessaire" : ""}.</p>}
               <div className="offline-top-banner-tabs">
                 <button
                   type="button"
                   className={`offline-tab-btn ${view === "calendar" ? "active" : ""}`}
                   onClick={() => setView("calendar")}
                 >
-                  📅 Calendrier
+                   Calendrier
                 </button>
                 <button
                   type="button"
                   className={`offline-tab-btn ${view === "todos" ? "active" : ""}`}
                   onClick={() => setView("todos")}
                 >
-                  📋 Tâches
+                   Tâches
                 </button>
+                <button type="button" className={`offline-tab-btn ${view === "groceries" ? "active" : ""}`} onClick={() => setView("groceries")}> Courses</button>
+                {isNative && <button type="button" className="offline-tab-btn" onClick={() => setAuth(false)}>Connexion complète</button>}
               </div>
             </div>
           </aside>
         )}
         {power?.sleeping && (
           <aside className="power-sleeping-banner" role="alert">
-            <span>🌙 <strong>Mode basse consommation actif</strong> ({power.pausedContainers?.length || 0} conteneurs Docker gelés pour rafraîchir le PC)</span>
-            <button onClick={togglePower} className="power-wake-btn">⚡ Sortir de veille</button>
+            <span> <strong>Mode basse consommation actif</strong> ({power.pausedContainers?.length || 0} conteneurs Docker gelés pour rafraîchir le PC)</span>
+            <button onClick={togglePower} className="power-wake-btn">Sortir de veille</button>
           </aside>
         )}
         <ViewBoundary viewKey={`${view}:${activeId || ""}`}>
         {!active ? (
           <>
-            {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} quotas={quotas} onSessionsChanged={refresh} onRefreshQuotas={refreshQuotas} onOpen={openAgentSession} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onArchive={archiveAgent} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} onProjects={() => setView("projects")} onFinances={() => setView("finances")} power={power} onTogglePower={togglePower} powerBusy={powerBusy} sortMode={agentSortMode} onSetSortMode={changeAgentSortMode} profileId={profileId} lastInteractedMap={lastInteractedMap} /></>}
-            {view === "projects" && <><Header title="Projets" subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onOpenAgent={openAgentSession} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onModuleBuild={buildModule} onModuleBuildRefresh={refreshModuleBuilds} onOpenTodos={() => setView("todos")} onReorder={reorderProjects} onRefresh={refresh} profileId={profileId} /></>}
+            {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} profileName={profiles.find((profile) => profile.id === profileId)?.name} onProject={(id) => { setSelectedProjectId(id); setView("projects"); }} onView={setView} quotas={quotas} onSessionsChanged={refresh} onRefreshQuotas={refreshQuotas} onOpen={openAgentSession} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onArchive={archiveAgent} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} onProjects={() => setView("projects")} onFinances={() => setView("finances")} power={power} onTogglePower={togglePower} powerBusy={powerBusy} sortMode={agentSortMode} onSetSortMode={changeAgentSortMode} profileId={profileId} lastInteractedMap={lastInteractedMap} /></>}
+            {view === "projects" && <><Header title={selectedProjectId ? projects.find((item) => item.id === selectedProjectId)?.name || "Projet" : "Projets"} subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} selectedProjectId={selectedProjectId} onShowAllProjects={() => setSelectedProjectId(null)} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onModuleEnvironment={setModuleEnvironment} onModuleRemove={removeModule} onOpenAgent={openAgentSession} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onModuleBuild={buildModule} onModuleBuildRefresh={refreshModuleBuilds} onOpenTodos={() => setView("todos")} onOpenMap={openProjectMap} onReorder={reorderProjects} onRefresh={refresh} profileId={profileId} /></>}
+            {view === "map" && <><Header title="Carte" subtitle={`${projects.find((project) => project.id === mapProjectId)?.name || "Projet"} · qui tourne, qui parle à qui`} onMenu={() => setMenu(true)} /><AgentMapView projects={projects} projectId={mapProjectId} onProjectChange={setMapProjectId} api={api} onOpenAgent={openAgentSession} /></>}
             {view === "calendar" && <>{!offlineMode && <Header title="Calendrier" subtitle="Agenda et échéances" onMenu={() => setMenu(true)} />}<CalendarView projects={projects} onView={setView} /></>}
+            {view === "groceries" && <>{!offlineMode && <Header title="Courses" subtitle="À cuisiner, à aimer, à économiser" onMenu={() => setMenu(true)} />}<GroceriesView profileId={profileId || activeProfileId() || "local"} /></>}
             {view === "todos" && <>{!offlineMode && <Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} />}<TodosView projects={projects} onView={setView} /></>}
             {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
             {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
             {view === "finance-agent" && <><Header title="Budget · Agent" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}
             {view === "finance-modules" && <><Header title="Budget · Modules" subtitle="Actifs et règles" onMenu={() => setMenu(true)} /><FinanceModulesView onView={setView} /></>}
             {view === "finance-banking" && <><Header title="Budget · Banques" subtitle="Connexions et synchronisation" onMenu={() => setMenu(true)} /><FinanceBankingView onView={setView} /></>}
-            {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} profiles={profiles} profileId={profileId} onSwitchProfile={requestSwitchProfile} onProfilesChanged={refreshProfiles} /></>}
+            {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView notificationInfo={notificationInfo} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} profiles={profiles} profileId={profileId} onSwitchProfile={requestSwitchProfile} onProfilesChanged={refreshProfiles} /></>}
           </>
         ) : (
-          <TerminalView session={active} quotas={quotas} assistants={assistants} voice={voice} onVoice={(next) => setVoice((current) => ({ ...current, ...next }))} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { registerAgentInteraction(id); openAgentSession(id); refresh(); }} onRefresh={refresh} onEdit={() => setEditingId(active.id)} onInteract={() => registerAgentInteraction(active.id)} />
+          <TerminalView session={active} sessions={orderedSessions} draftStore={conversationDrafts} onSwitchAgent={(id) => { registerAgentInteraction(id); openAgentSession(id); }} quotas={quotas} assistants={assistants} voice={voice} onVoice={(next) => setVoice((current) => ({ ...current, ...next }))} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { registerAgentInteraction(id); openAgentSession(id); refresh(); }} onRefresh={refresh} onEdit={() => setEditingId(active.id)} onInteract={() => registerAgentInteraction(active.id)} />
         )}
         </ViewBoundary>
       </main>
       {modal && <NewSessionModal projects={projects} sessions={orderedSessions} assistants={assistants} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); registerAgentInteraction(session.id); openAgentSession(session.id); refresh(); }} />}
       {editingSession && <EditSessionModal session={editingSession} projects={projects} onClose={() => setEditingId(null)} onSaved={(next, meta) => { setEditingId(null); if (meta?.switched && next?.id) { if (activeId === editingSession.id) openAgentSession(next.id); } refresh(); }} />}
+      {!offlineMode && <WorkspaceNavigation projects={projects} sessions={orderedSessions} activeId={activeId} lastAgentId={lastAgentId} view={view} onNewAgent={() => setModal(true)} onLogout={logout} onProject={(id) => { setActiveId(null); setSelectedProjectId(id); setView("projects"); setMenu(false); }} projectIcon={(project) => <ProjectIcon project={project} small />} agentIcon={(agent) => <AgentIcon assistant={agent.assistant} logoUrl={projects.find((project) => project.id === agent.projectId)?.logoUrl || agent.logoUrl} small />} onAgent={(id) => { registerAgentInteraction(id); openAgentSession(id); }} onView={(next) => { setActiveId(null); if (next === "projects") setSelectedProjectId(null); setView(next); setMenu(false); }} />}
       <CloseAgentHost />
-      {switchTarget && <SwitchProfileModal target={switchTarget} onClose={() => setSwitchTarget(null)} onConfirm={(password) => confirmSwitchProfile(switchTarget, password)} />}
+      {switchTarget && <SwitchProfileModal target={switchTarget} onClose={() => setSwitchTarget(null)} onConfirm={(password) => confirmSwitchProfile(switchTarget, password)} onBiometric={() => biometricSwitchProfile(switchTarget)} />}
       <VoiceOverlay voice={voice} feed={voiceFeed} sessions={orderedSessions} onVoice={toggleVoice} onOpenAgent={(id) => { openAgentSession(id); setMenu(false); }} />
       {projectModalId && <ProjectModal project={editingProject} onClose={() => setProjectModalId(null)} onSaved={() => { setProjectModalId(null); refresh(); }} />}
     </div>
@@ -11473,4 +11422,4 @@ function App() {
 }
 
 window.__noyauMounted = true;
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(<BiometricBoundary><App /></BiometricBoundary>);

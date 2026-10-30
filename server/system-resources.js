@@ -471,7 +471,7 @@ export function swapPrompt(snapshot) {
   const mb = (v) => (v >= 1024 ? `${(v / 1024).toFixed(1)} Go` : `${v} Mo`);
   const { memory } = snapshot;
   return [
-    "Mission : expliquer et optimiser l'usage du SWAP de ce PC (laptop Noyau), sans rien casser.",
+    "Mission : optimiser l'usage du swap de ce PC (laptop Noyau), sans rien casser. Je suis informaticien : pas d'explication de base sur le swap, va droit au diagnostic.",
     "",
     "RÈGLES STRICTES :",
     "- N'arrête, ne tue, ne redémarre AUCUN processus, agent, conteneur ou service sans ma confirmation explicite dans ce chat.",
@@ -484,11 +484,10 @@ export function swapPrompt(snapshot) {
     ...(snapshot.topSwap || []).map((p) => `- ${mb(p.swapMb)} swap · ${mb(p.rssMb)} RAM · pid ${p.pid} ${p.agentName ? `[agent ${p.agentName}] ` : ""}${p.command}`),
     "",
     "À FAIRE :",
-    "1. Explique-moi simplement ce que ce swap veut dire ici (swap ≠ problème tant que la RAM dispo reste correcte; c'est surtout les processus inactifs qui y dorment).",
-    "2. Vérifie avec /proc/swaps, vmstat 1 5 (colonnes si/so) si le PC swappe activement (lent) ou si c'est du swap dormant (inoffensif).",
-    "3. Tableau : processus · swap · actif ou dormant · action proposée (redémarrer un serveur de dev oublié, fermer un onglet, rien) · gain · risque.",
-    "4. Réglages système possibles (swappiness, zram, taille du swapfile) avec la commande sudo exacte pour moi, avantages et risques.",
-    "5. Demande-moi ce que j'applique.",
+    "1. Vérifie avec /proc/swaps et vmstat 1 5 (si/so) : swap actif ou dormant.",
+    "2. Tableau : processus · swap · actif ou dormant · action proposée (redémarrer un serveur de dev oublié, fermer un onglet, rien) · gain · risque.",
+    "3. Réglages système possibles (swappiness, zram, taille du swapfile) avec la commande sudo exacte pour moi, avantages et risques.",
+    "4. Demande-moi ce que j'applique.",
   ].join("\n");
 }
 

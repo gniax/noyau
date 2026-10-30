@@ -253,7 +253,7 @@ function categoryForDescription(description) {
   const value = normalized(description);
   if (/loyer|vilogia|credit immobilier|electricite|\bedf\b|engie|\bgaz\b|\beau\b|assurance habitation/.test(value)) return "housing";
   if (/carrefour|auchan|monoprix|intermarch|\blidl\b|\baldi\b|franprix|leclerc|costco|tang freres|picard|souss market|pottier distribut|tgtg|too good to go|restaurant|rest |repas|boulanger|deliveroo|uber eats|mcdonald|five guys|\bkfc\b|aim thai|hao hao|palmito|pistacho|delice|coffee|brunch|bistro|relay daily|nous anti gaspi|studenac|tommy\d|slasticarnica|ajme ajme|selecta|courses|alimentation|u etab paiement/.test(value)) return "food";
-  if (/transport|\btrain\b|sncf|ratp|metro|navigo|essence|parking|peage|autoroute|cofiroute|atlandes|bidegi|certas esso|plenergy|easyjet|lmnext|lastminute|\buber\b|ubr pending|\bbolt\b|levaparc|dac uep|zracna luka|pbp versailles/.test(value)) return "transport";
+  if (/transport|\btrain\b|sncf|ratp|metro|navigo|essence|parking|peage|autoroute|cofiroute|atlandes|bidegi|certas esso|plenergy|easyjet|lmnext|lastminute|\buber\b|ubr pending|\bbolt\b|levaparc|dac uep|zracna luka|pbp paris/.test(value)) return "transport";
   if (/abonnement|offre confort|netflix|spotify|canva|adobe|telephone|internet|\borange\b|apple com bill|google storage/.test(value)) return "subscriptions";
   if (/assurance|assura|\bmaif\b|\bgmf\b|l olivier/.test(value)) return "insurance";
   if (/direction generale des fina|dgfip|finances publiques|tresor public|\bimpot/.test(value)) return "taxes";

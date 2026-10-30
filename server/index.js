@@ -15,16 +15,21 @@ import pty from "node-pty";
 import sharp from "sharp";
 import { WebSocketServer } from "ws";
 import { SessionStore } from "./session-store.js";
-import { TmuxController, validSessionId } from "./tmux.js";
+import { InputGate, draftAfterInput } from "./input-gate.js";
+import { TmuxController, chainCommands, literalKeyCommands, validSessionId } from "./tmux.js";
 import { PushService } from "./push-service.js";
 import { UsageService, lastClaudeMessage, parseClaudeRateLimits, refreshExpiredQuota } from "./usage.js";
 import { ProjectLogoService, IMAGE_EXTENSIONS } from "./project-logo.js";
+import { sendMobileRelease } from "./mobile-releases.js";
 import { ProjectFilesService } from "./project-files-service.js";
+import { FileSortService, TRASH_DAYS, PROTECTED_HOURS } from "./file-sort-service.js";
 import { agentNotificationTitle, PromptWatcher } from "./prompt-watcher.js";
+import { agentAlertTitle, agentAlertBody } from "../shared/agent-alerts.js";
 import { HandoverService } from "./handover.js";
 import { SessionReaper } from "./session-reaper.js";
 import { AgentArchiveService } from "./agent-archive-service.js";
 import { BoardService } from "./board-service.js";
+import { TrackingService, MAX_REPORT_BYTES } from "./tracking-service.js";
 import { TodoSeenService } from "./todo-seen-service.js";
 import { VoiceService } from "./voice-service.js";
 import { LocalLlm } from "./local-llm.js";
@@ -51,6 +56,17 @@ import { QuotaNotifier } from "./quota-notifier.js";
 import { CodexCapacityRetry } from "./codex-capacity-retry.js";
 import { ClaudeDesignTool } from "./claude-design-tool.js";
 import { AgentCommunicationService } from "./agent-tools.js";
+import { initializeAgentIdentities } from "./agent-identity.js";
+import { AgentMemoryService } from "./agent-memory.js";
+import { GroceriesService } from "./groceries-service.js";
+import { groceryRoutes, publicGroceryRoutes } from "./groceries-routes.js";
+import { NATIVE_ORIGINS, NativeWebSocketTickets } from "./native-websocket.js";
+import { NativePushService, NotificationGateway } from "./native-push-service.js";
+import { BiometricAuthService, biometricSessionRoutes } from "./biometric-auth.js";
+import { AgentMapService } from "./agent-map.js";
+import { readAgentConversation, liveActivity } from "./agent-conversation.js";
+import { MapScanStore } from "./map-scanner.js";
+import { summarizeRequestPrompt } from "./prompt-recap.js";
 import { PowerService } from "./power-service.js";
 import { HardwareService } from "./hardware-service.js";
 import { SystemResourcesService, optimizationPrompt, swapPrompt, processTable, descendants, ancestors, sessionProcesses, AGENT_BINARY } from "./system-resources.js";
@@ -115,6 +131,9 @@ if (accessTokenState.rotated) console.warn("Clé d’accès Noyau faible remplac
 const buildGrantSecret = crypto.randomBytes(32);
 const store = new SessionStore(path.join(dataDir, "sessions.json"));
 await store.load();
+await initializeAgentIdentities(store);
+const groceries = new GroceriesService({ file: path.join(dataDir, "groceries.json"), automaticScans: true });
+await groceries.load();
 const projects = new SessionStore(path.join(dataDir, "projects.json"));
 await projects.load();
 const moduleStore = new SessionStore(path.join(dataDir, "modules.json"));
@@ -139,6 +158,8 @@ const profileService = new ProfileService({
   primaryName: os.userInfo().username,
 });
 await profileService.initialize();
+const biometricAuth = new BiometricAuthService({ file: path.join(dataDir, "biometric-devices.json"), profiles: profileService, secret: accessToken });
+await biometricAuth.load();
 const primaryProfileId = profileService.primaryId();
 const legacySessions = Object.entries(store.all()).filter(([, session]) => !session.profileId).map(([id, session]) => [id, { ...session, profileId: primaryProfileId, shared: false }]);
 if (legacySessions.length) await store.setMany(legacySessions);
@@ -152,14 +173,18 @@ if (!Object.values(store.all()).some((session) => session.core)) {
   if (coreId) await store.set(coreId, { ...coreSession, core: true, autoRestore: true });
 }
 const claudeQuota = new ClaudeQuotaService({ store: providerState });
-const push = new PushService({ dataDir, defaultProfileId: primaryProfileId });
-await push.load();
+const webPush = new PushService({ dataDir, defaultProfileId: primaryProfileId });
+await webPush.load();
+const nativePush = new NativePushService({ file: path.join(dataDir, "native-push-devices.json") });
+await nativePush.load();
+const push = new NotificationGateway(webPush, nativePush);
 const todoService = new TodoService({
   file: process.env.NOYAU_TODO_FILE || path.join(dataDir, "TO DO.md"),
   mountUri: process.env.NOYAU_TODO_MOUNT_URI || null,
 });
 const agentArchiveService = new AgentArchiveService({ file: path.join(dataDir, "agent-archives.json") });
 const boardService = new BoardService({ file: path.join(dataDir, "todo-boards.json") });
+const trackingService = new TrackingService({ dir: path.join(dataDir, "tracking") });
 const todoSeenService = new TodoSeenService({ file: path.join(dataDir, "todo-seen.json") });
 const calendarService = new CalendarService({ storagePath: path.join(dataDir, "calendar-subscriptions.json") });
 const voiceClients = new Set();
@@ -198,7 +223,7 @@ const voiceService = new VoiceService({
     // Noyau orchestre: la demande part dans l'agent vise sans que l'utilisateur ouvre sa vue.
     else if (action.action === "send-agent") {
       try {
-        await tmux.submit(action.id, action.text);
+        await tmux.submit(action.id, action.text, { force: true });
         trackComposerPrompt(action.id, store.get(action.id)?.profileId || null, action.text);
         await voiceService.say(`C'est passé à ${action.name}.`);
       } catch {
@@ -206,7 +231,7 @@ const voiceService = new VoiceService({
       }
     } else if (action.action === "optimize") {
       try {
-        await tmux.submit(action.id, optimizeCommand(store.get(action.id)?.assistant, action.mode));
+        await tmux.submit(action.id, optimizeCommand(store.get(action.id)?.assistant, action.mode), { force: true });
         await voiceService.say(action.mode === "clear" ? `${action.name} repart propre.` : `Je compacte ${action.name}.`);
       } catch {
         await voiceService.say(`Je n'ai pas pu alléger ${action.name}.`);
@@ -324,6 +349,8 @@ financeService.setAggregatorConfigured(enableBanking.configured());
 const codexBinary = process.env.CODEX_BIN || (await commandPath("codex"));
 const claudeBinary = process.env.CLAUDE_BIN || (await commandPath("claude"));
 const antigravityBinary = process.env.ANTIGRAVITY_BIN || (await firstCommandPath(["antigravity", "agy"]));
+const handover = new HandoverService();
+const agentMemory = new AgentMemoryService({ root: path.join(dataDir, "agent-memory"), store, handover, script: path.join(root, "scripts/noyau-agent.mjs") });
 const tmux = new TmuxController({
   store,
   workspaceRoot,
@@ -332,7 +359,19 @@ const tmux = new TmuxController({
   antigravityBinary,
   antigravityArgs: (process.env.NOYAU_ANTIGRAVITY_ARGS || "").split(" ").filter(Boolean),
   agentSettingsRoot,
+  launchRoot: dataDir,
+  memory: agentMemory,
 });
+// Clients terminal ouverts par agent: on leur signale les messages automatiques retenus.
+const terminalClients = new Map();
+const inputGate = new InputGate({
+  onChange: (id, pending) => {
+    for (const client of terminalClients.get(id) || []) {
+      if (client.readyState === client.OPEN) client.send(JSON.stringify({ type: "held", pending }));
+    }
+  },
+});
+tmux.inputGate = inputGate;
 // `which` renvoie un chemin absolu quand l'outil est installe, sinon le nom brut.
 const installedAssistants = {
   codex: path.isAbsolute(codexBinary),
@@ -412,7 +451,6 @@ function resetProfileTodo(profileId) {
   const profile = profileService.get(profileId);
   if (runtime && profile) runtime.todoService = new TodoService({ file: profile.todoFile, mountUri: profile.todoMountUri });
 }
-const handover = new HandoverService();
 const MIGRATION_FALLBACK_MS = 90 * 1000;
 const QUOTA_EXHAUSTED_PERCENT = 5;
 const promptWatcher = new PromptWatcher({
@@ -420,7 +458,7 @@ const promptWatcher = new PromptWatcher({
   sessionDevice: (session) => activeDevice(session.profileId || primaryProfileId),
   tmux,
   push,
-  sessionLabel: (session) => (session.projectId ? projects.get(session.projectId)?.name : null) || session.name,
+  sessionLabel: (session) => agentAlertTitle(session.projectId ? projects.get(session.projectId)?.name : null, session.name),
   sessionIcon: (sessionId) => notificationIcon(sessionId),
 });
 const quotaNotifier = new QuotaNotifier({
@@ -431,7 +469,38 @@ const quotaNotifier = new QuotaNotifier({
 const codexCapacityRetry = new CodexCapacityRetry({ tmux, providerState });
 const claudeDesignTool = new ClaudeDesignTool({ claudeBinary, store, projects, workspaceRoot: root });
 const projectFilesService = new ProjectFilesService({ dataDir });
-const agentCommunication = new AgentCommunicationService({ tmux, store, projects, handover, agentStatus, workspaceRoot: root, projectFiles: projectFilesService });
+const fileSortService = new FileSortService({ dataDir });
+setInterval(() => fileSortService.purgeAll().catch(() => {}), 6 * 60 * 60 * 1000).unref();
+const agentCommunication = new AgentCommunicationService({ tmux, store, projects, handover, agentStatus, workspaceRoot: root, projectFiles: projectFilesService, memory: agentMemory });
+const mapScanStore = new MapScanStore({ file: path.join(dataDir, "map-scan.json"), overridesFile: path.join(dataDir, "map-overrides.json"), providersFile: path.join(dataDir, "map-providers.json") });
+await mapScanStore.load();
+const LLM_PROXY_URL = process.env.NOYAU_LLM_PROXY_URL || "http://127.0.0.1:3001/v1/chat/completions";
+// Fiches de la carte rédigées via llm-proxy (loopback, sans jeton): preuves = noms seulement.
+async function mapSheetLlm(prompt) {
+  const response = await fetch(LLM_PROXY_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "auto", messages: [{ role: "user", content: prompt }], response_format: { type: "json_object" } }),
+    signal: AbortSignal.timeout(240_000),
+  });
+  if (!response.ok) throw new Error(`llm-proxy ${response.status}`);
+  const text = (await response.json())?.choices?.[0]?.message?.content || "";
+  return JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+}
+const agentMap = new AgentMapService({
+  scanStore: mapScanStore,
+  llm: mapSheetLlm,
+  store,
+  projects,
+  tmux,
+  archives: agentArchiveService,
+  handover,
+  moduleService,
+  workspaceRoot,
+  noyauRoot: root,
+  run: (file, args, options = {}) => execFileAsync(file, args, { maxBuffer: 4 * 1024 * 1024, ...options }),
+  agentState: async (session, metadata) => agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), await tmux.capture(session.id))?.state || null,
+});
 const powerService = new PowerService({
   file: path.join(dataDir, "power-state.json"),
   agentWorkingChecker: async () => {
@@ -965,11 +1034,13 @@ function authenticated(request) {
     if (tokenMatches(bearer)) {
       request.sessionProfileId = primaryProfileId;
       request.masterAuthenticated = true;
+      request.rawSessionToken = bearer;
       return true;
     }
     const verified = verifySessionToken(bearer, accessToken, SESSION_MAX_AGE_MS);
-    if (verified) {
+    if (verified && (!verified.biometricDeviceId || biometricAuth.active(verified.biometricDeviceId, verified.profileId))) {
       request.sessionProfileId = verified.profileId;
+      request.rawSessionToken = bearer;
       return true;
     }
   }
@@ -984,8 +1055,9 @@ function authenticated(request) {
   const cookie = parseCookies(request.headers.cookie).noyau_session;
   if (cookie) {
     const verified = verifySessionToken(cookie, accessToken, SESSION_MAX_AGE_MS);
-    if (verified) {
+    if (verified && (!verified.biometricDeviceId || biometricAuth.active(verified.biometricDeviceId, verified.profileId))) {
       request.sessionProfileId = verified.profileId;
+      request.rawSessionToken = cookie;
       return true;
     }
   }
@@ -1023,6 +1095,7 @@ function loopbackRequest(request) {
 
 const app = express();
 const loginThrottle = createLoginThrottle();
+const nativeWebSocketTickets = new NativeWebSocketTickets();
 app.disable("x-powered-by");
 app.use((request, response, next) => {
   response.setHeader("X-Content-Type-Options", "nosniff");
@@ -1053,6 +1126,7 @@ const BACKGROUND_AUTOMATED_PATHS = new Set([
   "/api/system/activity",
   "/api/quotas",
   "/api/sessions",
+  "/api/map",
   "/api/todos",
   "/api/weather",
   "/api/voice/status",
@@ -1089,7 +1163,13 @@ app.use((request, response, next) => {
 // Le Markdown brut des todos depasse largement 32 Ko: seule cette route accepte un gros corps.
 const jsonBody = express.json({ limit: "32kb" });
 const rawTodoBody = express.json({ limit: "4mb" });
-app.use((request, response, next) => (request.path === "/api/todos/raw" ? rawTodoBody : jsonBody)(request, response, next));
+const groceryBody = express.json({ limit: "512kb" });
+// Rapports de suivi: fichier encode en base64 dans le JSON (10 Mo max une fois decode).
+const trackingReportBody = express.json({ limit: `${Math.ceil(MAX_REPORT_BYTES * 1.4 / 1024 / 1024)}mb` });
+app.use((request, response, next) => (/^\/api\/(?:mobile\/)?groceries(?:\/|$)/.test(request.path) ? groceryBody : request.path === "/api/todos/raw" ? rawTodoBody : /^\/api\/projects\/[^/]+\/tracking\/[^/]+\/reports$/.test(request.path) && request.method === "POST" ? trackingReportBody : jsonBody)(request, response, next));
+// The only remotely exposable mobile surface: a revocable, profile-bound grocery capability.
+app.use("/api/mobile/groceries", publicGroceryRoutes(groceries));
+app.use("/api/auth/biometric", biometricSessionRoutes({ service: biometricAuth, profiles: profileService, secret: accessToken, throttle: createLoginThrottle() }));
 
 app.get("/api/auth/profiles", (_request, response) => {
   response.setHeader("Cache-Control", "no-store");
@@ -1130,7 +1210,7 @@ app.post("/api/auth", (request, response) => {
     "Set-Cookie",
     `noyau_session=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/; ${cookieMaxAge}Secure`,
   );
-  response.json({ ok: true, profile: authenticatedProfile, expiresAt: Date.now() + SESSION_MAX_AGE_MS });
+  response.json({ ok: true, profile: authenticatedProfile, token: sessionToken, expiresAt: Date.now() + SESSION_MAX_AGE_MS });
 });
 
 app.post("/api/auth/switch", (request, response) => {
@@ -1159,7 +1239,7 @@ app.post("/api/auth/switch", (request, response) => {
     "Set-Cookie",
     `noyau_session=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}; Secure`,
   );
-  response.json({ ok: true, profile: authenticatedProfile, expiresAt: Date.now() + SESSION_MAX_AGE_MS });
+  response.json({ ok: true, profile: authenticatedProfile, token: sessionToken, expiresAt: Date.now() + SESSION_MAX_AGE_MS });
 });
 
 app.post("/api/logout", (_request, response) => {
@@ -1170,7 +1250,8 @@ app.post("/api/logout", (_request, response) => {
 app.get("/api/auth/session", (request, response) => {
   const ok = authenticated(request);
   const profile = ok ? profileService.getPublic(request.sessionProfileId || primaryProfileId) : null;
-  response.status(ok ? 200 : 401).json({ authenticated: ok, profile });
+  const token = ok && profile ? (request.rawSessionToken || createSessionToken({ profileId: profile.id, issuedAt: Date.now() }, accessToken)) : null;
+  response.status(ok ? 200 : 401).json({ authenticated: ok, profile, token });
 });
 
 app.get("/noyau-ca.cer", async (_request, response, next) => {
@@ -1335,6 +1416,34 @@ app.use("/api", async (request, response, next) => {
   }
 });
 
+app.use("/api/groceries", groceryRoutes({ service: groceries, profile: (request) => request.profile.id }));
+const biometricEnrollThrottle = createLoginThrottle();
+app.get("/api/auth/biometric/devices", (request, response) => response.set("Cache-Control", "no-store").json({ devices: biometricAuth.list(request.profile.id) }));
+app.post("/api/auth/biometric/devices", async (request, response, next) => {
+  const remote = request.socket.remoteAddress || "unknown"; const retry = biometricEnrollThrottle.retryAfter(remote);
+  if (retry) return response.status(429).set("Retry-After", String(retry)).json({ error: "Trop de tentatives. Réessayez plus tard." });
+  try { const device = await biometricAuth.enroll(request.profile.id, request.body); biometricEnrollThrottle.clear(remote); response.set("Cache-Control", "no-store").status(201).json(device); }
+  catch (error) { if (error.statusCode === 401) biometricEnrollThrottle.fail(remote); next(error); }
+});
+app.delete("/api/auth/biometric/devices/:id", async (request, response, next) => { try { await biometricAuth.revoke(request.profile.id, request.params.id); response.sendStatus(204); } catch (error) { next(error); } });
+app.get("/api/mobile/releases", async (_request, response, next) => { try { response.json(await fs.readFile(path.join(dataDir, "mobile-releases.json"), "utf8").then(JSON.parse).catch((error) => { if (error.code === "ENOENT") return { android: null, ios: null }; throw error; })); } catch (error) { next(error); } });
+app.get("/api/mobile/releases/:platform/file", (request, response, next) => sendMobileRelease(dataDir, request.params.platform, response, next));
+app.post("/api/mobile/ws-ticket", async (request, response, next) => {
+  try {
+    const target = String(request.body?.path || ""); const match = target.match(/^\/ws\/terminal\/([a-zA-Z0-9_-]{1,80})$/);
+    if (target !== "/ws/voice" && (!match || !sessionVisible(request.profile.id, match[1]))) throw new Error("Session mobile inaccessible.");
+    response.set("Cache-Control", "no-store").json(nativeWebSocketTickets.issue(request.profile.id, target));
+  } catch (error) { next(error); }
+});
+app.get("/api/mobile/push-status", (request, response) => response.json({ configured: nativePush.status(), devices: nativePush.devices(request.profile.id).map(({ token, ...device }) => device) }));
+app.post("/api/mobile/push", async (request, response, next) => { try { await nativePush.subscribe(request.profile.id, request.body || {}); response.sendStatus(204); } catch (error) { next(error); } });
+app.delete("/api/mobile/push", async (request, response, next) => { try { await nativePush.unsubscribe(request.profile.id, request.body?.deviceId); response.sendStatus(204); } catch (error) { next(error); } });
+app.get("/api/groceries/devices", (request, response) => response.json({ devices: groceries.devices(request.profile.id) }));
+app.post("/api/groceries/devices", async (request, response, next) => { try { response.status(201).json(await groceries.addDevice(request.profile.id, request.body?.name)); } catch (error) { next(error); } });
+app.delete("/api/groceries/devices/:id", async (request, response, next) => { try { await groceries.revokeDevice(request.profile.id, request.params.id); response.sendStatus(204); } catch (error) { next(error); } });
+app.post("/api/groceries/recipe-import", async (request, response, next) => { try { response.json(await groceries.importRecipe(request.body?.url)); } catch (error) { next(error); } });
+app.post("/api/groceries/product-page", async (request, response, next) => { try { response.json(await groceries.publicProduct(request.body?.url, request.body?.storeId)); } catch (error) { next(error); } });
+
 app.get("/api/config", (_request, response) => response.json({ workspaceRoot }));
 
 app.post("/api/presence", (request, response) => {
@@ -1460,7 +1569,10 @@ app.post("/api/system/resources/optimize", async (request, response, next) => {
       await agentCommunication.send(existing.id, { message: `Nouvel instantané à analyser.\n\n${prompt}`, callerName: "Tableau de bord", profileId: request.profile.id });
       return response.json({ agentId: existing.id, reused: true });
     }
-    const noyauProject = Object.entries(projects.all ? projects.all() : {}).find(([, project]) => path.resolve(project.rootPath || "") === root && project.profileId === request.profile.id);
+    // Sans rootPath, path.resolve("") vaut le cwd (= root): il faut l'exclure sinon le premier projet sans dossier gagne.
+    const profileProjects = Object.entries(projects.all ? projects.all() : {}).filter(([, project]) => project.profileId === request.profile.id);
+    const noyauProject = profileProjects.find(([, project]) => project.rootPath && path.resolve(project.rootPath) === root)
+      || profileProjects.find(([, project]) => project.name?.trim().toLowerCase() === "noyau");
     const result = await agentCommunication.create({
       name: OPTIMIZER_AGENT_NAME,
       assistant: "claude",
@@ -2530,6 +2642,91 @@ function moduleKnowledgePayload(payload) {
   return { ...payload, setup, enabled: status.configured, state: status.scoped ? "ready" : "setup-required", knowledge: { ...payload.knowledge, status } };
 }
 
+function mapRequest(request, project = request.query.project) {
+  const visibleProjects = scopedProjects(request.profile.id);
+  const projectId = String(project || "");
+  if (!visibleProjects[projectId]) throw Object.assign(new Error("Projet introuvable."), { statusCode: 404 });
+  return { projectId, window: request.query.window === "7d" ? "7d" : "24h", visibleProjects, sessionVisible: (id) => sessionVisible(request.profile.id, id) };
+}
+
+app.get("/api/map", async (request, response, next) => {
+  try {
+    const { chats, ...snapshot } = await agentMap.snapshot(mapRequest(request));
+    response.json(snapshot);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/map/node", async (request, response, next) => {
+  try {
+    const snapshot = await agentMap.snapshot(mapRequest(request));
+    const node = snapshot.nodes.find((item) => item.id === String(request.query.node || ""));
+    if (!node) throw Object.assign(new Error("Nœud introuvable."), { statusCode: 404 });
+    const details = await agentMap.nodeDetails(node, snapshot.window);
+    response.json({ node, chat: snapshot.chats.get(node.id) || [], ...details });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/map/scan", async (request, response, next) => {
+  try {
+    const { projectId } = mapRequest(request);
+    response.json(agentMap.scanStatus(projectId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/map/scan", async (request, response, next) => {
+  try {
+    const context = mapRequest(request, request.body?.project);
+    agentMap.startScan(context.projectId, context);
+    response.json(agentMap.scanStatus(context.projectId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/map/scan/apply", async (request, response, next) => {
+  try {
+    const { projectId } = mapRequest(request, request.body?.project);
+    response.json(await agentMap.applyScan(projectId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/map/override", async (request, response, next) => {
+  try {
+    const { projectId } = mapRequest(request, request.body?.project);
+    const node = String(request.body?.node || "");
+    if (!node || node.length > 300) throw Object.assign(new Error("Nœud requis."), { statusCode: 400 });
+    response.json({ override: await agentMap.setOverride(projectId, node, request.body?.fields || {}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/map/agents/:id/message", async (request, response, next) => {
+  try {
+    const id = String(request.params.id);
+    const text = String(request.body?.message || "").trim().slice(0, 20_000);
+    if (!text) throw Object.assign(new Error("Message requis."), { statusCode: 400 });
+    if (!sessionVisible(request.profile.id, id)) throw Object.assign(new Error("Agent introuvable."), { statusCode: 404 });
+    if (!(await tmux.list()).some((session) => session.id === id)) throw Object.assign(new Error("Agent arrêté."), { statusCode: 409 });
+    const held = Boolean(tmux.inputGate?.busy(id));
+    const delivery = tmux.submit(id, text);
+    if (held) delivery.catch((error) => console.warn(`[map] message différé vers ${id} perdu: ${error.message}`));
+    else await delivery;
+    agentMap.invalidate();
+    response.json({ success: true, held });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/modules", async (request, response, next) => {
   try {
     const result = await moduleService.list(scopedProjects(request.profile.id));
@@ -2543,6 +2740,181 @@ app.post("/api/modules/:id/install", async (request, response, next) => {
   try {
     const module = await moduleService.install(request.params.id, scopedProjects(request.profile.id));
     response.status(201).json({ module: moduleKnowledgePayload(await moduleService.payload(module)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/modules/:id/environment", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    response.json({ module: moduleKnowledgePayload(await moduleService.setEnvironment(request.params.id, request.body?.environment ?? null)) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/modules/:id", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    await moduleService.remove(request.params.id);
+    response.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:id/planning", async (request, response, next) => {
+  try {
+    if (!scopedProjects(request.profile.id)[request.params.id]) throw new Error("Projet introuvable.");
+    const days = Math.min(Math.max(Number(request.query.days) || 3, 1), 14);
+    response.json(await moduleService.planning(request.params.id, { days }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Pages de suivi par agent: les agents ecrivent via scripts/noyau-board.mjs, le fondateur lit et tranche les decisions.
+function trackingProject(request) {
+  if (!scopedProjects(request.profile.id)[request.params.id]) throw new Error("Projet introuvable.");
+  return request.params.id;
+}
+
+app.get("/api/projects/:id/tracking", async (request, response, next) => {
+  try {
+    response.json(await trackingService.list(trackingProject(request)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:id/tracking/:board", async (request, response, next) => {
+  try {
+    response.json(await trackingService.get(trackingProject(request), request.params.board));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/projects/:id/tracking/:board", async (request, response, next) => {
+  try {
+    const { title, objective, kpis, agentId, agentName } = request.body || {};
+    response.json(await trackingService.set(trackingProject(request), request.params.board, { title, objective, kpis, agentId, agentName }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/projects/:id/tracking/:board", async (request, response, next) => {
+  try {
+    await trackingService.remove(trackingProject(request), request.params.board);
+    response.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/projects/:id/tracking/:board/kpis", async (request, response, next) => {
+  try {
+    response.json(await trackingService.setKpi(trackingProject(request), request.params.board, request.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/tracking/:board/items", async (request, response, next) => {
+  try {
+    const { agentId, agentName, ...item } = request.body || {};
+    response.status(201).json(await trackingService.addItem(trackingProject(request), request.params.board, item, { agentId, agentName }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/projects/:id/tracking/:board/items/:item", async (request, response, next) => {
+  try {
+    response.json(await trackingService.updateItem(trackingProject(request), request.params.board, request.params.item, request.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/projects/:id/tracking/:board/items/:item", async (request, response, next) => {
+  try {
+    response.json(await trackingService.removeItem(trackingProject(request), request.params.board, request.params.item));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/tracking/:board/items/:item/decision", async (request, response, next) => {
+  try {
+    const projectId = trackingProject(request);
+    const decision = String(request.body?.decision || "");
+    const note = String(request.body?.note || "");
+    const { item, board } = await trackingService.decide(projectId, request.params.board, request.params.item, { decision, note, by: request.profile.name });
+    let notified = false;
+    if (board.agentId) {
+      const verdict = decision === "go" ? "GO" : "NON";
+      const message = [
+        `Décision du fondateur sur ton suivi « ${board.title} » : ${verdict} pour « ${item.title} » (#${item.id}).`,
+        note.trim() ? `Note : ${note.trim()}` : null,
+        decision === "go" ? `L'élément est passé « En cours » : lance-le, puis \`node ${path.join(root, "scripts/noyau-board.mjs")} done ${board.id} ${item.id}\` une fois fait.` : "L'élément est classé « Fait » (refusé) : ne le lance pas.",
+      ].filter(Boolean).join("\n");
+      notified = await agentCommunication.send(board.agentId, { message, callerName: `Suivi · ${request.profile.name || "fondateur"}`, profileId: request.profile.id }).then(() => true, () => false);
+    }
+    response.json({ item, notified });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/tracking/:board/reports", async (request, response, next) => {
+  try {
+    const { title, url, date, fileName, content } = request.body || {};
+    response.status(201).json(await trackingService.addReport(trackingProject(request), request.params.board, { title, url, date, fileName, content }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/projects/:id/tracking/:board/reports/:report", async (request, response, next) => {
+  try {
+    response.json(await trackingService.removeReport(trackingProject(request), request.params.board, request.params.report));
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Rapport local en lecture seule: le HTML tourne en sandbox stricte (pas de script, pas d'acces a l'origine Noyau).
+app.get("/api/projects/:id/tracking/:board/files/:name", async (request, response, next) => {
+  try {
+    const report = await trackingService.reportFile(trackingProject(request), request.params.board, request.params.name);
+    // Le lecteur PDF de Chrome refuse les documents sous CSP sandbox: seul le HTML en a besoin.
+    const csp = report.type.startsWith("text/html")
+      ? "sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline' https:; font-src data: https:; media-src data: https:; frame-ancestors 'self'"
+      : "default-src 'self' blob: data:; script-src 'none'; frame-ancestors 'self'";
+    response.set({ "Content-Security-Policy": csp, "X-Frame-Options": "SAMEORIGIN", "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=60" });
+    response.type(report.type).sendFile(report.file, { dotfiles: "allow" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/projects/:id/planning/boost", async (request, response, next) => {
+  try {
+    if (!scopedProjects(request.profile.id)[request.params.id] || !moduleOwned(request.profile.id, String(request.body?.moduleId || ""))) throw new Error("Projet introuvable.");
+    await moduleService.setBoost(request.params.id, String(request.body.moduleId), String(request.body?.entryId || ""), request.body?.enabled === true, request.body?.date ? String(request.body.date) : null);
+    response.json(await moduleService.planning(request.params.id, { days: 3 }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/modules/:id/chat", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    response.json(await moduleService.chatDay(request.params.id, request.query.day));
   } catch (error) {
     next(error);
   }
@@ -2639,6 +3011,16 @@ app.get("/api/modules/:id/builds/:buildId", async (request, response, next) => {
     if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
     const artifact = await moduleService.buildFile(request.params.id, request.params.buildId);
     response.download(artifact.file, artifact.name, { dotfiles: "allow" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/modules/:id/board/media/:name", async (request, response, next) => {
+  try {
+    if (!moduleOwned(request.profile.id, request.params.id)) throw new Error("Module introuvable.");
+    const media = await moduleService.boardMedia(request.params.id, request.params.name);
+    response.type(media.type).set("Cache-Control", "private, max-age=60").sendFile(media.file, { dotfiles: "allow" });
   } catch (error) {
     next(error);
   }
@@ -2851,8 +3233,142 @@ app.get("/api/projects/:id/image-file", async (request, response, next) => {
     if (!IMAGE_EXTENSIONS.has(ext)) return response.status(403).end();
     const stat = await fs.stat(filePath);
     if (!stat.isFile()) return response.status(404).end();
-    response.setHeader("Cache-Control", "private, max-age=300");
+    response.setHeader("Cache-Control", "private, max-age=86400, stale-while-revalidate=604800");
     response.sendFile(filePath);
+  } catch (error) {
+    next(error);
+  }
+});
+
+const FILE_SORT_AGENT_NAME = "Tri fichiers partagés";
+
+function fileSortPrompt(project, dir) {
+  const cli = `node ${path.join(root, "scripts/noyau-file-sort.mjs")} --project ${project.id}`;
+  return [
+    `Mission : trier les fichiers partagés du projet « ${project.name} » (dossier ${dir}) et mettre à la corbeille ceux qui ne servent à rien.`,
+    "",
+    "Outil (seule façon autorisée de supprimer, jamais rm/mv) :",
+    `- ${cli} scan : liste nom, taille, âge, sha256, doublons exacts, founder (uploadé par le fondateur), protected (< ${PROTECTED_HOURS} h)`,
+    `- ${cli} trash <nom> --reason "raison courte" [--duplicate-of <nom gardé>]`,
+    `- ${cli} keep <nom> --reason "doute : …"  (fichiers gardés en cas de doute, visibles dans le rapport)`,
+    `- ${cli} finish --summary "bilan en une phrase"  (termine le tri ; tu seras arrêté automatiquement)`,
+    "",
+    "À supprimer : doublons exacts (même sha256 : garder le plus récent ou le mieux nommé, passer --duplicate-of), versions intermédiaires remplacées (v1/v2/draft/test/old quand une version finale existe), essais et rendus ratés, captures de debug, fichiers vides ou corrompus, exports temporaires.",
+    `À garder : livrables finaux, dernière version de chaque série, fichiers founder (sauf doublon exact), fichiers protected (< ${PROTECTED_HOURS} h).`,
+    "Ouvre les images/PDF si besoin pour juger (Read). En cas de doute : keep avec la raison, ne supprime pas.",
+    `Tout passe par la corbeille (restaurable ${TRASH_DAYS} jours). Ne crée, ne renomme et ne modifie aucun fichier. Termine toujours par finish, même si rien n'est supprimé.`,
+  ].join("\n");
+}
+
+function fileSortProject(request) {
+  if (!PROJECT_PATTERN.test(request.params.id) || !projectVisible(request.profile.id, request.params.id)) throw new Error("Projet introuvable.");
+  return projects.get(request.params.id);
+}
+
+app.get("/api/projects/:id/files/sort", async (request, response, next) => {
+  try {
+    fileSortProject(request);
+    response.json(await fileSortService.status(request.params.id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/files/sort", async (request, response, next) => {
+  try {
+    const project = fileSortProject(request);
+    const dir = await projectFilesService.ensureProjectDir(request.params.id);
+    await fileSortService.start(request.params.id);
+    try {
+      const result = await agentCommunication.create({
+        name: FILE_SORT_AGENT_NAME,
+        assistant: "claude",
+        projectId: request.params.id,
+        cwd: dir,
+        prompt: fileSortPrompt({ ...project, id: request.params.id }, dir),
+        description: "Trie les fichiers partagés du projet et met l'inutile à la corbeille (30 j).",
+        callerName: "Fichiers partagés",
+        profileId: request.profile.id,
+      });
+      await fileSortService.setAgent(request.params.id, result.agent.id);
+      response.status(201).json({ agentId: result.agent.id });
+    } catch (error) {
+      await fileSortService.finish(request.params.id, { summary: `Échec du lancement : ${error.message}` }).catch(() => {});
+      throw error;
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/projects/:id/files/sort/scan", async (request, response, next) => {
+  try {
+    fileSortProject(request);
+    response.json({ files: await fileSortService.scan(request.params.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/files/sort/trash", async (request, response, next) => {
+  try {
+    fileSortProject(request);
+    response.json(await fileSortService.trash(request.params.id, request.body?.name, { reason: request.body?.reason, duplicateOf: request.body?.duplicateOf || null }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/files/sort/keep", async (request, response, next) => {
+  try {
+    fileSortProject(request);
+    await fileSortService.keep(request.params.id, request.body?.name, { reason: request.body?.reason });
+    response.json({ kept: request.body?.name });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// L'agent appelle finish depuis son propre terminal: on repond avant de l'arreter.
+app.post("/api/projects/:id/files/sort/finish", async (request, response, next) => {
+  try {
+    fileSortProject(request);
+    const { agentId, deleted } = await fileSortService.finish(request.params.id, { summary: request.body?.summary });
+    response.json({ finished: true, deleted });
+    const session = agentId ? store.get(agentId) : null;
+    if (session && !session.core && session.name === FILE_SORT_AGENT_NAME) {
+      setTimeout(async () => {
+        await agentArchiveService.archive(agentId, store.get(agentId) || session, { reason: "closed" }).catch(() => {});
+        await tmux.kill(agentId).catch(() => {});
+      }, 3000);
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:id/files/trash/:trashId/restore", async (request, response, next) => {
+  try {
+    fileSortProject(request);
+    response.json(await fileSortService.restore(request.params.id, request.params.trashId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/projects/:id/files/trash/:trashId", async (request, response, next) => {
+  try {
+    fileSortProject(request);
+    response.json(await fileSortService.deleteForever(request.params.id, request.params.trashId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/projects/:id/files/trash", async (request, response, next) => {
+  try {
+    fileSortProject(request);
+    response.json(await fileSortService.emptyTrash(request.params.id));
   } catch (error) {
     next(error);
   }
@@ -2878,6 +3394,7 @@ app.post("/api/projects/:id/files", fileUpload.single("file"), async (request, r
       originalname: request.file.originalname,
       buffer: request.file.buffer,
     });
+    await fileSortService.markFounder(request.params.id, file.name).catch(() => {});
     response.status(201).json({ file });
   } catch (error) {
     next(error);
@@ -2994,8 +3511,9 @@ async function saveUpload(request, response, next) {
     if (!request.file) throw new Error("Fichier manquant.");
     if (!validSessionId(request.body?.sessionId) || !sessionVisible(request.profile.id, request.body.sessionId) || !(await tmux.exists(request.body.sessionId))) throw new Error("Session invalide.");
     const base = `${request.body.sessionId}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
-    const image = /^image\//.test(request.file.mimetype);
     const originalExtension = path.extname(request.file.originalname).toLowerCase();
+    // SVG = code vectoriel: le rasteriser en PNG le ferait passer pour une capture ([Image #1] dans le CLI).
+    const image = /^image\//.test(request.file.mimetype) && request.file.mimetype !== "image/svg+xml" && originalExtension !== ".svg";
     const extension = image ? ".png" : (/^\.[a-z0-9]{1,10}$/.test(originalExtension) ? originalExtension : ".bin");
     const filename = `${base}${extension}`;
     const target = path.join(uploadsDir, filename);
@@ -3102,6 +3620,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     const attention = source === "claude" && event.hook_event_name === "Notification";
     const existing = sessionId && validSessionId(sessionId) ? store.get(sessionId) : null;
     if (!existing) return response.status(202).json({ sent: false, reason: "unmanaged-session" });
+    if (source !== existing.assistant && !(source === "claude" && existing.assistant === "claude-design")) return response.status(202).json({ sent: false, reason: "previous-provider" });
     let metadata = existing;
     if (existing) {
       metadata = {
@@ -3121,19 +3640,20 @@ app.post("/api/hooks/notify", async (request, response, next) => {
     const lastMessage = source === "claude"
       ? event.last_assistant_message || await lastClaudeMessage(event.transcript_path)
       : event["last-assistant-message"] || "";
-    const notificationLabel = (metadata?.projectId ? projects.get(metadata.projectId)?.name : null) || metadata?.name || null;
+    if (completion && lastMessage) await agentMemory.checkpoint(sessionId, { assistant: source, text: lastMessage }).catch((error) => console.warn(`Mémoire agent ${sessionId}: ${error.message}`));
+    const notificationLabel = agentAlertTitle(metadata?.projectId ? projects.get(metadata.projectId)?.name : null, metadata?.name);
     let payload = null;
     if (completion) {
       payload = {
-        title: agentNotificationTitle(notificationLabel, `${source === "codex" ? "Codex" : "Claude"} a terminé`),
-        body: lastMessage || "Réponse prête.",
+        title: notificationLabel,
+        body: agentAlertBody("done", metadata?.name),
         tag: `${source}-${event["thread-id"] || event.session_id || "complete"}`,
       };
     }
     if (attention) {
       payload = {
-        title: agentNotificationTitle(notificationLabel, event.title || "Claude attend"),
-        body: event.message || "Action demandée.",
+        title: notificationLabel,
+        body: agentAlertBody("waiting", metadata?.name),
         tag: `claude-${event.session_id || "attention"}-${event.notification_type || "notification"}`,
       };
     }
@@ -3192,6 +3712,27 @@ app.post("/api/hooks/notify", async (request, response, next) => {
   }
 });
 
+// Read only the transcript explicitly bound to this agent; never guess by cwd.
+app.get("/api/sessions/:id/conversation", async (request, response, next) => {
+  try {
+    const id = request.params.id;
+    if (!validSessionId(id) || !sessionVisible(request.profile.id, id)) return response.status(404).json({ error: "Agent introuvable." });
+    let metadata = store.get(id);
+    const session = (await tmux.list()).find((item) => item.id === id);
+    if (session?.assistant === "antigravity" && session.panePid) {
+      const activeConv = await usage.discoverAntigravityConversation(session.panePid, session.cwd);
+      if (activeConv && activeConv !== metadata?.conversationId) {
+        metadata = { ...metadata, conversationId: activeConv };
+        await store.set(id, metadata);
+      }
+    }
+    const pane = await tmux.capture(id).catch(() => "");
+    const state = agentStatus(metadata, metadata, promptWatcher.isWaiting(id), Date.now(), pane).state;
+    const result = await readAgentConversation(metadata, { handover, agentMap, working: state === "working" });
+    response.set("Cache-Control", "no-store").json({ ...result, activity: state === "working" ? liveActivity(pane) : "" });
+  } catch (error) { next(error); }
+});
+
 app.get("/api/sessions", async (request, response, next) => {
   try {
     const sessions = (await tmux.list()).filter((session) => sessionVisible(request.profile.id, session.id));
@@ -3212,9 +3753,9 @@ app.get("/api/sessions", async (request, response, next) => {
           updatedMetadata = true;
         }
       }
-      if (session.assistant === "antigravity" && !metadata.conversationId) {
+      if (session.assistant === "antigravity") {
         const conversationId = await usage.discoverAntigravityConversation(session.panePid, session.cwd);
-        if (conversationId) {
+        if (conversationId && conversationId !== metadata.conversationId) {
           metadata = { ...metadata, conversationId };
           updatedMetadata = true;
         }
@@ -3310,6 +3851,15 @@ app.post("/api/sessions", async (request, response, next) => {
   }
 });
 
+app.post("/api/agent/recap-prompt", async (request, response, next) => {
+  try {
+    const text = request.body?.text ? String(request.body.text) : "";
+    response.json(await summarizeRequestPrompt({ text }));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/agent-tools/claude-design", async (request, response, next) => {
   try {
     const callerSessionId = request.body?.callerSessionId ? String(request.body.callerSessionId) : null;
@@ -3398,6 +3948,26 @@ app.post("/api/agent-tools/agents/:target/stop", async (request, response, next)
   } catch (error) {
     next(error);
   }
+});
+
+app.post("/api/agent-tools/agents/:target/aliases", async (request, response, next) => {
+  try {
+    response.json(await agentCommunication.addAlias(request.params.target, request.body?.alias, { profileId: request.profile.id }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/agent-tools/agents/:target/memory", async (request, response, next) => {
+  try {
+    response.json(await agentCommunication.readMemory(request.params.target, { profileId: request.profile.id }));
+  } catch (error) { next(error); }
+});
+
+app.put("/api/agent-tools/agents/:target/memory", async (request, response, next) => {
+  try {
+    response.json(await agentCommunication.writeMemory(request.params.target, request.body || {}, { profileId: request.profile.id }));
+  } catch (error) { next(error); }
 });
 
 
@@ -3514,7 +4084,9 @@ async function handoverPrompt({ session, metadata, target }) {
     target,
     threadId: metadata.threadId,
     agentSessionId: metadata.agentSessionId,
+    conversationId: metadata.conversationId,
     cwd: session.cwd,
+    strict: true,
   });
   if (transcript) return { prompt: transcript, history: true };
   return {
@@ -3524,11 +4096,14 @@ async function handoverPrompt({ session, metadata, target }) {
 }
 
 async function spawnHandoverSession({ sessionId, session, metadata, target, prompt, replace = false }) {
+  if (replace) await agentMemory.capture(sessionId, metadata);
   const created = await tmux.create({
     name: replace ? metadata.name || session.name : `${metadata.name || session.name} · ${assistantLabel(target)}`,
     assistant: target,
     cwd: session.cwd,
-    migratedFrom: sessionId,
+    replaceId: replace ? sessionId : null,
+    migratedFrom: replace ? metadata.migratedFrom : sessionId,
+    description: metadata.description,
     yolo: Boolean(metadata.yolo),
     projectLogo: Boolean(metadata.projectLogo),
     projectId: metadata.projectId || null,
@@ -3538,8 +4113,7 @@ async function spawnHandoverSession({ sessionId, session, metadata, target, prom
     prompt,
   });
   await store.set(created.id, { ...store.get(created.id), switchedFrom: session.assistant, switchedAt: new Date().toISOString() });
-  await store.set(sessionId, { ...store.get(sessionId), migrationState: "complete", migrationTarget: target, migratedTo: created.id });
-  if (replace) await tmux.kill(sessionId).catch(() => {});
+  if (!replace) await store.set(sessionId, { ...store.get(sessionId), migrationState: "complete", migrationTarget: target, migratedTo: created.id });
   return { ...store.get(created.id), id: created.id, managed: true };
 }
 
@@ -3554,16 +4128,20 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
     const metadata = store.get(session.id) || {};
     const mode = ["auto", "agent", "transcript"].includes(request.body?.mode) ? request.body.mode : "auto";
     const pending = migrations.get(session.id);
-    const remaining = mode === "agent" ? null : await sourceQuotaRemaining(session, metadata);
-    const paneQuotaExhausted = mode === "auto" && QUOTA_REPLY.test(await tmux.capture(session.id).catch(() => ""));
-    // Quota epuise ou recap deja demande sans reponse: on reprend la derniere conversation
-    // et l'agent change de type sur place, sans attendre l'agent source.
-    // Antigravity ne declenche pas hook de fin Noyau: son transcript local est donc toujours la voie immediate.
-    if (mode === "transcript" || pending || (mode === "auto" && (session.assistant === "antigravity" || paneQuotaExhausted || (Number.isFinite(remaining) && remaining <= QUOTA_EXHAUSTED_PERCENT)))) {
+    // Bascule directe depuis l'historique des fichiers locaux par défaut (auto / transcript)
+    // sans consommer de tokens sur un récapitulatif superflu.
+    if (mode !== "agent" || pending) {
       if (pending) {
         clearTimeout(pending.timer);
         migrations.delete(session.id);
       }
+      const { prompt, history } = await handoverPrompt({ session, metadata, target });
+      const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt, replace: true });
+      return response.status(201).json({ ok: true, state: "complete", mode: "transcript", history, target, session: { ...created, logoUrl: logoUrl(created) } });
+    }
+    const remaining = await sourceQuotaRemaining(session, metadata);
+    const paneQuotaExhausted = QUOTA_REPLY.test(await tmux.capture(session.id).catch(() => ""));
+    if (session.assistant === "antigravity" || paneQuotaExhausted || (Number.isFinite(remaining) && remaining <= QUOTA_EXHAUSTED_PERCENT)) {
       const { prompt, history } = await handoverPrompt({ session, metadata, target });
       const created = await spawnHandoverSession({ sessionId: session.id, session, metadata, target, prompt, replace: true });
       return response.status(201).json({ ok: true, state: "complete", mode: "transcript", history, target, session: { ...created, logoUrl: logoUrl(created) } });
@@ -3624,7 +4202,7 @@ app.post("/api/sessions/:id/restart", async (request, response, next) => {
     const current = store.get(request.params.id);
     if (!current) throw new Error("Session Noyau introuvable.");
     const threadId = current.assistant === "codex" ? current.threadId : current.agentSessionId;
-    await tmux.restartAgent({ id: request.params.id, assistant: current.assistant, cwd: current.cwd, threadId, yolo: Boolean(current.yolo) });
+    await tmux.restartAgent({ id: request.params.id, assistant: current.assistant, model: current.model, cwd: current.cwd, threadId, yolo: Boolean(current.yolo) });
     await store.set(request.params.id, {
       ...current,
       runningYolo: Boolean(current.yolo),
@@ -3717,9 +4295,11 @@ app.post("/api/sessions/clear-history", async (request, response, next) => {
 
     const sessions = (await tmux.list()).filter((session) => sessionVisible(request.profile.id, session.id));
     let clearedCount = 0;
+    await agentMemory.clearProfileContext(request.profile.id);
 
     for (const session of sessions) {
       const metadata = store.get(session.id) || {};
+      if (metadata.cwd) await agentMemory.clearContext(session.id, metadata);
 
       const transcriptPath = metadata.transcriptPath || await usage.discoverClaudeTranscript(session.cwd, metadata.agentSessionId);
       if (transcriptPath) {
@@ -3771,6 +4351,7 @@ app.post("/api/sessions/clear-history", async (request, response, next) => {
     for (const item of allArchives) {
       const isTarget = item.profileId === request.profile.id || item.shared === true || (item.projectId && projectVisible(request.profile.id, item.projectId));
       if (isTarget) {
+        if (item.cwd) await agentMemory.clearContext(item.id, item);
         purgedArchivesCount += 1;
         if (item.transcriptPath) {
           try { await fs.truncate(item.transcriptPath, 0); } catch {}
@@ -3838,7 +4419,7 @@ app.post("/api/sessions/:id/optimize", async (request, response, next) => {
     if (!current) throw new Error("Session Noyau introuvable.");
     const mode = request.body?.mode === "clear" ? "clear" : "compact";
     const command = optimizeCommand(current.assistant, mode);
-    await tmux.submit(request.params.id, command);
+    await tmux.submit(request.params.id, command, { force: true });
     response.json({ ok: true, mode, command });
   } catch (error) {
     next(error);
@@ -3902,6 +4483,7 @@ app.post("/api/sessions/:id/context-audit/revert", async (request, response, nex
 
 async function archiveSession(id, current) {
   if (current.core) throw new Error("Agent de base du Noyau: non archivable.");
+  await agentMemory.capture(id, current);
   // On garde le fil de discussion avant de fermer, sinon la restauration repartirait de zero.
   let threadId = current.threadId || null;
   if (!threadId && current.assistant === "codex") {
@@ -3995,12 +4577,13 @@ voiceSockets.on("connection", (websocket) => {
 async function upgradeTerminal(request, socket, head) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const secure = Boolean(request.socket.encrypted);
-  const verified = authenticated(request);
+  const nativeTicket = secure && NATIVE_ORIGINS.has(request.headers.origin) ? nativeWebSocketTickets.take(url.searchParams.get("ticket"), url.pathname) : null;
+  const verified = nativeTicket || authenticated(request);
   const requestedProfileId = url.searchParams.get("profile");
-  const profile = verified ? profileService.resolve(request.sessionProfileId) : null;
+  const profile = verified ? profileService.resolve(nativeTicket?.profileId || request.sessionProfileId) : null;
   const profileMatches = !requestedProfileId || requestedProfileId === profile?.id;
   if (url.pathname === "/ws/voice") {
-    const allowed = secure && sameWebSocketOrigin({ origin: request.headers.origin, host: request.headers.host, secure }) && verified && profileMatches;
+    const allowed = secure && (nativeTicket || sameWebSocketOrigin({ origin: request.headers.origin, host: request.headers.host, secure })) && verified && profileMatches;
     if (!allowed) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
@@ -4011,7 +4594,7 @@ async function upgradeTerminal(request, socket, head) {
     return;
   }
   const match = url.pathname.match(/^\/ws\/terminal\/([a-zA-Z0-9_-]+)$/);
-  const validOrigin = sameWebSocketOrigin({ origin: request.headers.origin, host: request.headers.host, secure });
+  const validOrigin = nativeTicket || sameWebSocketOrigin({ origin: request.headers.origin, host: request.headers.host, secure });
   if (!match || !secure || !validOrigin || !verified || !profileMatches || !sessionVisible(profile.id, match[1]) || !(await tmux.exists(match[1]))) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
@@ -4024,6 +4607,13 @@ async function upgradeTerminal(request, socket, head) {
 
 server.on("upgrade", upgradeTerminal);
 secureServer?.on("upgrade", upgradeTerminal);
+
+// Dernier numero de frappe traite par client terminal, pour dedoublonner les renvois apres coupure.
+const terminalInputSeq = new Map();
+setInterval(() => {
+  const limit = Date.now() - 6 * 60 * 60 * 1000;
+  for (const [client, entry] of terminalInputSeq) if (entry.at < limit) terminalInputSeq.delete(client);
+}, 30 * 60 * 1000).unref();
 
 sockets.on("connection", (websocket, request) => {
   const terminalUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
@@ -4058,6 +4648,78 @@ sockets.on("connection", (websocket, request) => {
     if (websocket.readyState === websocket.OPEN) websocket.send(JSON.stringify({ type: "exit", exitCode }));
     websocket.close();
   });
+  let socketClosed = false;
+  if (!terminalClients.has(request.sessionId)) terminalClients.set(request.sessionId, new Set());
+  terminalClients.get(request.sessionId).add(websocket);
+  if (inputGate.pending(request.sessionId)) websocket.send(JSON.stringify({ type: "held", pending: inputGate.pending(request.sessionId) }));
+  // Toute la saisie passe par tmux send-keys, dans un seul canal: avant, le texte allait au pty
+  // et Entree/Retour par send-keys, et sous charge Entree doublait les dernieres lettres.
+  const pendingTyping = [];
+  const reply = (payload) => websocket.readyState === websocket.OPEN && websocket.send(JSON.stringify(payload));
+  const drainTyping = async (leaveMobileCopyMode) => {
+    const batch = pendingTyping.splice(0);
+    if (socketClosed || !batch.length) return;
+    let commands = [];
+    let acks = [];
+    let working = false;
+    const flush = async () => {
+      try {
+        if (commands.length) {
+          await leaveMobileCopyMode();
+          if (working) await setAgentState(request.sessionId, "working");
+          await tmux.run(chainCommands(commands));
+        }
+      } finally {
+        for (const payload of acks) reply(payload);
+        commands = [];
+        acks = [];
+        working = false;
+      }
+    };
+    for (const message of batch) {
+      // Saisie numerotee: apres une coupure le client renvoie tout ce qui n'a pas ete accuse,
+      // on saute ce qui est deja passe pour ne jamais taper deux fois.
+      const tracked = typeof message.client === "string" && message.client.length <= 80 && Number.isSafeInteger(message.seq);
+      const seen = tracked ? terminalInputSeq.get(message.client) : null;
+      if (seen && message.seq <= seen.seq) {
+        acks.push({ type: "ack", client: message.client, seq: seen.seq });
+        continue;
+      }
+      // Marque avant d'ecrire: une vieille socket encore vivante ne retapera pas la meme frappe.
+      if (tracked) terminalInputSeq.set(message.client, { seq: message.seq, at: Date.now() });
+      const ack = tracked ? { type: "ack", client: message.client, seq: message.seq } : null;
+      if (message.type === "input" && typeof message.data === "string") {
+        let data = message.data.slice(0, 16384);
+        const sessionMeta = store.get(request.sessionId);
+        if (sessionMeta?.assistant && sessionMeta.assistant !== "shell" && data.includes("\x03")) {
+          data = data.replaceAll("\x03", "");
+          if (!data) continue;
+        }
+        commands.push(...literalKeyCommands(request.sessionId, data));
+        if (/[\r\n]/.test(data)) working = true;
+        const draft = draftAfterInput(data);
+        if (draft !== null) inputGate.typed(request.sessionId, draft);
+      } else if (message.type === "key" && specialKeys[message.key]) {
+        commands.push(["send-keys", "-t", request.sessionId, specialKeys[message.key]]);
+        if (message.key === "Enter") working = true;
+        if (message.key === "Enter") inputGate.typed(request.sessionId, false);
+        else if (message.key === "Backspace") inputGate.typed(request.sessionId, true);
+        acks.push({ type: "key-ack", key: message.key });
+      } else if (message.type === "submit" && typeof message.data === "string" && message.data.length) {
+        const data = message.data.slice(0, 16384);
+        commands.push(...literalKeyCommands(request.sessionId, data));
+        working = true;
+        inputGate.typed(request.sessionId, false);
+        await flush().catch(() => {});
+        // Meme pause que pour une passation: l'agent doit avoir fini d'absorber le texte colle.
+        await new Promise((resolve) => { setTimeout(resolve, data.length > 200 ? 600 : 350); });
+        commands.push(["send-keys", "-t", request.sessionId, "C-m"]);
+        acks.push({ type: "key-ack", key: "Enter" });
+      }
+      if (ack) acks.push(ack);
+    }
+    await flush();
+  };
   websocket.on("message", (raw) => {
     try {
       const message = JSON.parse(raw.toString());
@@ -4066,34 +4728,10 @@ sockets.on("connection", (websocket, request) => {
         mobileCopyMode = false;
         await tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]);
       };
-      if (message.type === "input" && typeof message.data === "string") {
-        const data = message.data.slice(0, 16384);
-        keyQueue = keyQueue
-          .then(leaveMobileCopyMode)
-          .then(() => terminal.write(data))
-          .then(() => /[\r\n]/.test(data) ? setAgentState(request.sessionId, "working") : null)
-          .catch(() => {});
-      }
-      if (message.type === "submit" && typeof message.data === "string" && message.data.length) {
-        const data = message.data.slice(0, 16384);
-        keyQueue = keyQueue
-          .then(leaveMobileCopyMode)
-          .then(() => setAgentState(request.sessionId, "working"))
-          .then(() => tmux.run(["send-keys", "-t", request.sessionId, "-l", data]))
-          // Meme pause que pour une passation: l'agent doit avoir fini d'absorber le texte colle.
-          .then(() => new Promise((resolve) => { setTimeout(resolve, data.length > 200 ? 600 : 350); }))
-          .then(() => tmux.run(["send-keys", "-t", request.sessionId, "C-m"]))
-          .then(() => websocket.readyState === websocket.OPEN && websocket.send(JSON.stringify({ type: "key-ack", key: "Enter" })))
-          .catch(() => {});
-        trackComposerPrompt(request.sessionId, request.profileId, data);
-      }
-      if (message.type === "key" && specialKeys[message.key]) {
-        keyQueue = keyQueue
-          .then(leaveMobileCopyMode)
-          .then(() => message.key === "Enter" ? setAgentState(request.sessionId, "working") : null)
-          .then(() => tmux.run(["send-keys", "-t", request.sessionId, specialKeys[message.key]]))
-          .then(() => websocket.readyState === websocket.OPEN && websocket.send(JSON.stringify({ type: "key-ack", key: message.key })))
-          .catch(() => {});
+      if (["input", "submit", "key"].includes(message.type)) {
+        pendingTyping.push(message);
+        if (pendingTyping.length === 1) keyQueue = keyQueue.then(() => drainTyping(leaveMobileCopyMode)).catch(() => {});
+        if (message.type === "submit" && typeof message.data === "string" && message.data.length) trackComposerPrompt(request.sessionId, request.profileId, message.data.slice(0, 16384));
       }
       if (message.type === "scroll" && ["up", "down"].includes(message.direction)) {
         const count = Math.max(1, Math.min(80, Math.trunc(Number(message.count)) || 1));
@@ -4134,6 +4772,9 @@ sockets.on("connection", (websocket, request) => {
     }
   });
   websocket.on("close", () => {
+    socketClosed = true;
+    terminalClients.get(request.sessionId)?.delete(websocket);
+    if (!terminalClients.get(request.sessionId)?.size) terminalClients.delete(request.sessionId);
     if (mobileCopyMode) tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]).catch(() => {});
     mobileCopyMode = false;
     terminal.kill();
@@ -4249,6 +4890,23 @@ async function morningBankSync() {
 const morningSyncTimer = setInterval(() => { morningBankSync().catch(() => {}); }, 5 * 60_000);
 morningSyncTimer.unref();
 setTimeout(() => { morningBankSync().catch(() => {}); }, 20_000).unref();
+
+// Scan de nuit de la carte (03:xx): le diff attend dans la carte (pastille Explorer), rien n'est appliqué seul.
+let mapNightlyDay = null;
+async function mapNightlyScan() {
+  const now = new Date();
+  const day = now.toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" });
+  const hour = Number(now.toLocaleString("en-GB", { timeZone: "Europe/Paris", hour: "2-digit", hour12: false }));
+  if (hour !== 3 || mapNightlyDay === day) return;
+  mapNightlyDay = day;
+  const all = projects.all();
+  for (const projectId of Object.keys(all)) {
+    const job = agentMap.startScan(projectId, { projectId, window: "24h", visibleProjects: all, sessionVisible: () => true });
+    await job.promise.catch(() => {});
+  }
+}
+const mapNightlyTimer = setInterval(() => { mapNightlyScan().catch((error) => console.warn(`[map] scan de nuit: ${error.message}`)); }, 10 * 60_000);
+mapNightlyTimer.unref();
 
 const todoReminderTimer = setInterval(checkTodoReminders, 5 * 60_000);
 todoReminderTimer.unref();

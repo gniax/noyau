@@ -49,6 +49,7 @@ test("Antigravity transcript drops failed handover noise", () => {
 test("handover prompt names both agents and lists history", () => {
   const prompt = formatHandover({ source: "codex", target: "claude", cwd: "/home/user/app", messages: [{ role: "user", text: "fais X" }] });
   assert.match(prompt, /Tu es Claude et tu reprends le travail d'un agent Codex dans \/home\/user\/app\./);
+  assert.match(prompt, /fichiers locaux/);
   assert.match(prompt, /\[utilisateur\] fais X/);
 });
 
@@ -90,4 +91,29 @@ test("handover service resolves Antigravity workspace history", async () => {
     { role: "assistant", text: "Travail prêt." },
   ]);
   await fs.rm(root, { recursive: true, force: true });
+});
+
+test("strict handover never reads a different agent's latest conversation in the same workspace", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-handover-strict-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const cwd = "/workspace/shared";
+  const codexRoot = path.join(root, "codex");
+  const claudeRoot = path.join(root, "claude");
+  const antigravityRoot = path.join(root, "agy");
+  await fs.mkdir(codexRoot, { recursive: true });
+  await fs.mkdir(path.join(claudeRoot, "-workspace-shared"), { recursive: true });
+  await fs.writeFile(path.join(codexRoot, "rollout-other.jsonl"), `{"payload":{"cwd":"${cwd}"}}\n${codexLines}`);
+  await fs.writeFile(path.join(claudeRoot, "-workspace-shared", "other.jsonl"), claudeLines);
+  const logs = path.join(antigravityRoot, "brain", antigravityConversationId, ".system_generated", "logs");
+  await fs.mkdir(logs, { recursive: true });
+  await fs.writeFile(path.join(antigravityRoot, "history.jsonl"), JSON.stringify({ workspace: cwd, conversationId: antigravityConversationId, timestamp: 42 }));
+  await fs.writeFile(path.join(logs, "transcript_full.jsonl"), JSON.stringify({ type: "PLANNER_RESPONSE", source: "MODEL", content: "Exact conversation selected." }));
+  const service = new HandoverService({ codexRoot, claudeRoot, antigravityRoot });
+  for (const assistant of ["codex", "claude", "antigravity"]) {
+    assert.deepEqual(await service.messages({ assistant, cwd, strict: true }), []);
+    assert.deepEqual(await service.messages({ assistant, cwd, strict: true, threadId: "missing", agentSessionId: "missing", conversationId: "00000000-0000-0000-0000-000000000000" }), []);
+  }
+  assert.deepEqual(await service.messages({ assistant: "antigravity", cwd, strict: true, conversationId: antigravityConversationId }), [{ role: "assistant", text: "Exact conversation selected." }]);
+  assert.ok((await service.messages({ assistant: "codex", cwd, strict: true, threadId: "other" })).length > 0);
+  assert.ok((await service.messages({ assistant: "claude", cwd, strict: true, agentSessionId: "other" })).length > 0);
 });
