@@ -1,22 +1,23 @@
 import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import "./telegram-growth-chat.css";
+import { tr } from "./i18n.js";
 
 const STATE_LABELS = {
-  active: "Actif",
-  running: "En cours",
-  stopping: "Arrêt en cours",
-  success: "Terminé",
-  error: "Erreur",
-  stopped: "Arrêté",
+  active: tr("Actif"),
+  running: tr("En cours"),
+  stopping: tr("Arrêt en cours"),
+  success: tr("Terminé"),
+  error: tr("Erreur"),
+  stopped: tr("Arrêté"),
 };
 
 const STATUS_LABELS = {
-  sent: "Envoyé",
-  failed: "Échec d'envoi",
-  pending: "En attente",
-  received: "Reçu",
-  skipped: "Ignoré",
-  unknown: "Statut inconnu",
+  sent: tr("Envoyé"),
+  failed: tr("Échec d'envoi"),
+  pending: tr("En attente"),
+  received: tr("Reçu"),
+  skipped: tr("Ignoré"),
+  unknown: tr("Statut inconnu"),
 };
 
 const STATUS_ICONS = { sent: "✓", failed: "!", pending: "…", received: "↓", skipped: "–", unknown: "?" };
@@ -43,8 +44,8 @@ function dayLabel(date) {
   const today = new Date();
   const yesterday = new Date(today);
   yesterday.setDate(today.getDate() - 1);
-  if (dayKey(date) === dayKey(today)) return "Aujourd'hui";
-  if (dayKey(date) === dayKey(yesterday)) return "Hier";
+  if (dayKey(date) === dayKey(today)) return tr("Aujourd'hui");
+  if (dayKey(date) === dayKey(yesterday)) return tr("Hier");
   return date.toLocaleDateString(undefined, {
     weekday: "long",
     day: "numeric",
@@ -95,7 +96,7 @@ function buildRows(messages) {
       rows.push({ type: "day", key: `day-${lastDay}`, date });
       prev = null;
     }
-    const sender = message?.sender || (direction === "outgoing" ? "Vous" : "Inconnu");
+    const sender = message?.sender || (direction === "outgoing" ? tr("Vous") : tr("Inconnu"));
     const chat = message?.chat || "";
     const continued = Boolean(
       prev && direction !== "system" && prev.direction === direction && prev.sender === sender && prev.chat === chat
@@ -127,7 +128,7 @@ function TelegramMark() {
 }
 
 function Timestamp({ date }) {
-  if (!date) return <span className="tgc-time">Heure inconnue</span>;
+  if (!date) return <span className="tgc-time">{tr("Heure inconnue")}</span>;
   return <time className="tgc-time" dateTime={date.toISOString()} title={fullLabel(date)}>{timeLabel(date)}</time>;
 }
 
@@ -135,7 +136,7 @@ function MessageRow({ row }) {
   if (row.direction === "system") {
     return (
       <li className="tgc-system">
-        <span className="tgc-system-text">{row.text || "Événement système"}</span>
+        <span className="tgc-system-text">{row.text || tr("Événement système")}</span>
         <Timestamp date={row.date} />
       </li>
     );
@@ -148,7 +149,7 @@ function MessageRow({ row }) {
       ) : (
         <span className={`tgc-avatar tgc-tone-${toneFor(row.sender)}`} aria-hidden="true">{initials(row.sender)}</span>
       )}
-      <article className={`tgc-bubble tgc-status-${row.status}`} aria-label={`Message de ${row.sender}${row.chat ? ` · ${row.chat}` : ""}`}>
+      <article className={`tgc-bubble tgc-status-${row.status}`} aria-label={tr("Message de {0}{1}", row.sender, row.chat ? ` · ${row.chat}` : "")}>
         {!row.continued && (
           <header className="tgc-meta">
             <strong className="tgc-sender">{row.sender}</strong>
@@ -161,7 +162,7 @@ function MessageRow({ row }) {
             )}
           </header>
         )}
-        <p className="tgc-text">{row.text || <em className="tgc-empty-text">Message sans texte</em>}</p>
+        <p className="tgc-text">{row.text || <em className="tgc-empty-text">{tr("Message sans texte")}</em>}</p>
         <footer className="tgc-foot">
           <Timestamp date={row.date} />
           <span className="tgc-status">
@@ -180,7 +181,7 @@ function dayFromKey(key) {
 }
 
 // Une journee affichee du plus recent au plus ancien; le flux vivant = dernier jour, les autres jours sont charges a la demande.
-export default function TelegramGrowthChat({ title = "Telegram Growth", messages = [], day = null, prevDay = null, nextDay = null, latestDay = null, onDay = null, state, phase, current, nextAt }) {
+export default function TelegramGrowthChat({ title = tr("Telegram Growth"), messages = [], day = null, prevDay = null, nextDay = null, latestDay = null, onDay = null, state, phase, current, nextAt }) {
   const live = Array.isArray(messages) ? messages : [];
   const [page, setPage] = useState(null);
   const [loadingDay, setLoadingDay] = useState(false);
@@ -206,7 +207,7 @@ export default function TelegramGrowthChat({ title = "Telegram Growth", messages
       setUnseen(0);
       if (logRef.current) logRef.current.scrollTop = 0;
     } catch (error) {
-      setDayError(error?.message || "Chargement impossible");
+      setDayError(error?.message || tr("Chargement impossible"));
     } finally {
       setLoadingDay(false);
     }
@@ -251,32 +252,32 @@ export default function TelegramGrowthChat({ title = "Telegram Growth", messages
         <div className="tgc-title">
           <h3>{title}</h3>
           <p>
-            {details.length ? details.map(String).join(" · ") : "Historique des messages · Lecture seule"}
+            {details.length ? details.map(String).join(" · ") : tr("Historique des messages · Lecture seule")}
             {next && (
               <>
-                {" · "}Prochaine action <time dateTime={next.toISOString()} title={fullLabel(next)}>{timeLabel(next)}</time>
+                {" · "}{tr("Prochaine action")}{" "}<time dateTime={next.toISOString()} title={fullLabel(next)}>{timeLabel(next)}</time>
               </>
             )}
           </p>
         </div>
         <span className={`tgc-badge tgc-badge-${stateKey}`} role="status">
           <span className="tgc-dot" aria-hidden="true" />
-          {STATE_LABELS[state] || "Inactif"}
+          {STATE_LABELS[state] || tr("Inactif")}
         </span>
       </header>
 
       {onDay && shownDay && (
-        <nav className="tgc-daynav" aria-label="Changer de jour">
-          <button type="button" onClick={() => goDay(view.prevDay)} disabled={!view.prevDay || loadingDay} aria-label="Jour précédent" title="Jour précédent">←</button>
-          <span>{loadingDay ? "Chargement…" : dayLabel(shownDay)}{page && <small> · historique</small>}</span>
-          <button type="button" onClick={() => goDay(view.nextDay)} disabled={!view.nextDay || loadingDay} aria-label="Jour suivant" title="Jour suivant">→</button>
+        <nav className="tgc-daynav" aria-label={tr("Changer de jour")}>
+          <button type="button" onClick={() => goDay(view.prevDay)} disabled={!view.prevDay || loadingDay} aria-label={tr("Jour précédent")} title={tr("Jour précédent")}>←</button>
+          <span>{loadingDay ? tr("Chargement…") : dayLabel(shownDay)}{page && <small>{" "}{tr("· historique")}</small>}</span>
+          <button type="button" onClick={() => goDay(view.nextDay)} disabled={!view.nextDay || loadingDay} aria-label={tr("Jour suivant")} title={tr("Jour suivant")}>→</button>
         </nav>
       )}
       {dayError && <p className="tgc-day-error" role="alert">{dayError}</p>}
 
       <div className="tgc-body">
         {rows.length === 0 ? (
-          <p className="tgc-empty">Aucun message disponible</p>
+          <p className="tgc-empty">{tr("Aucun message disponible")}</p>
         ) : (
           <ol
             ref={logRef}
@@ -284,7 +285,7 @@ export default function TelegramGrowthChat({ title = "Telegram Growth", messages
             role="log"
             aria-live="polite"
             aria-relevant="additions"
-            aria-label={`Historique des messages ${title}`}
+            aria-label={tr("Historique des messages {0}", title)}
             tabIndex={0}
             onScroll={onScroll}
           >
@@ -293,7 +294,7 @@ export default function TelegramGrowthChat({ title = "Telegram Growth", messages
         )}
         {unseen > 0 && (
           <button type="button" className="tgc-jump" onClick={() => scrollToTop(true)}>
-            <span aria-hidden="true">↑</span> {unseen} nouveau{unseen > 1 ? "x" : ""} message{unseen > 1 ? "s" : ""}
+            <span aria-hidden="true">↑</span> {unseen} nouveau{unseen > 1 ? "x" : ""} {tr(unseen > 1 ? "messages" : "message")}
           </button>
         )}
       </div>

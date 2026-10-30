@@ -1,21 +1,22 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { forceCollide, forceLink, forceManyBody, forceRadial, forceSimulation, forceX, forceY } from "d3-force";
 import "./agent-map.css";
+import { tr, LOCALE } from "./i18n.js";
 
 const REFRESH_MS = 30_000;
 const STORAGE_KEY = "noyau.map";
 const TYPES = [
-  { id: "agent", label: "Agents", tone: "agent" },
-  { id: "service", label: "Services", tone: "service", includes: ["service"] },
-  { id: "timer", label: "Timers · cron", tone: "timer", includes: ["timer", "cron"] },
-  { id: "module", label: "Modules", tone: "module" },
+  { id: "agent", label: tr("Agents"), tone: "agent" },
+  { id: "service", label: tr("Services"), tone: "service", includes: ["service"] },
+  { id: "timer", label: tr("Timers · cron"), tone: "timer", includes: ["timer", "cron"] },
+  { id: "module", label: tr("Modules"), tone: "module" },
   { id: "api", label: "APIs", tone: "api" },
 ];
-const STATUS_LABELS = { ok: "OK", run: "En cours", err: "Erreur", stop: "Arrêté", unknown: "Inconnu" };
-const TYPE_LABELS = { founder: "Fondateur", agent: "Agent", service: "Service", timer: "Timer systemd", cron: "Tâche cron", module: "Module Noyau", api: "API externe", script: "Script" };
-const ZONE_LABELS = { diffusion: "Diffusion · social", prod: "Production", infra: "Infra · ce PC", external: "APIs externes" };
-const ASSISTANT_LABELS = { claude: "Claude", codex: "Codex", antigravity: "Antigravity", "claude-design": "Claude Design" };
-const LINK_LABELS = { message: "messages", founder: "demandes", created: "a créé", calls: "appelle", triggers: "déclenche", controls: "pilote", declares: "héberge" };
+const STATUS_LABELS = { ok: "OK", run: tr("En cours"), err: tr("Erreur"), stop: tr("Arrêté"), unknown: tr("Inconnu") };
+const TYPE_LABELS = { founder: tr("Fondateur"), agent: tr("Agent"), service: tr("Service"), timer: tr("Timer systemd"), cron: tr("Tâche cron"), module: tr("Module Noyau"), api: tr("API externe"), script: tr("Script") };
+const ZONE_LABELS = { diffusion: tr("Diffusion · social"), prod: tr("Production"), infra: tr("Infra · ce PC"), external: "APIs externes" };
+const ASSISTANT_LABELS = { claude: tr("Claude"), codex: tr("Codex"), antigravity: tr("Antigravity"), "claude-design": tr("Claude Design") };
+const LINK_LABELS = { message: "messages", founder: "demandes", created: tr("a créé"), calls: "appelle", triggers: tr("déclenche"), controls: "pilote", declares: tr("héberge") };
 const PRIORITY = { founder: 0, agent: 1, module: 2, service: 3, timer: 4, cron: 4, api: 5, script: 5 };
 
 function readPrefs() {
@@ -79,22 +80,22 @@ function duration(ms) {
 function dayTime(value) {
   const date = new Date(value);
   const sameDay = date.toDateString() === new Date().toDateString();
-  return sameDay ? timeOf(value) : `${date.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric" })} ${timeOf(value)}`;
+  return sameDay ? timeOf(value) : `${date.toLocaleDateString(LOCALE, { weekday: "short", day: "numeric" })} ${timeOf(value)}`;
 }
 
 function timeOf(value) {
   if (!value) return "—";
   const date = new Date(value);
-  return date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" });
 }
 
 function dayOf(value) {
   const date = new Date(value);
   const today = new Date();
   const yesterday = new Date(Date.now() - 86_400_000);
-  if (date.toDateString() === today.toDateString()) return "Aujourd'hui";
-  if (date.toDateString() === yesterday.toDateString()) return "Hier";
-  return date.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "short" });
+  if (date.toDateString() === today.toDateString()) return tr("Aujourd'hui");
+  if (date.toDateString() === yesterday.toDateString()) return tr("Hier");
+  return date.toLocaleDateString(LOCALE, { weekday: "long", day: "numeric", month: "short" });
 }
 
 function relative(value) {
@@ -102,8 +103,8 @@ function relative(value) {
   const diff = Date.parse(value) - Date.now();
   const abs = Math.abs(diff);
   const unit = abs < 3_600_000 ? [Math.round(abs / 60_000), "min"] : abs < 172_800_000 ? [Math.round(abs / 3_600_000), "h"] : [Math.round(abs / 86_400_000), "j"];
-  if (abs < 60_000) return diff > 0 ? "dans un instant" : "à l'instant";
-  return diff > 0 ? `dans ${unit[0]} ${unit[1]}` : `il y a ${unit[0]} ${unit[1]}`;
+  if (abs < 60_000) return diff > 0 ? tr("dans un instant") : tr("à l'instant");
+  return diff > 0 ? tr("dans {0} {1}", unit[0], unit[1]) : tr("il y a {0} {1}", unit[0], unit[1]);
 }
 
 function zoneAnchors(width, height) {
@@ -175,7 +176,7 @@ function placeLabels(nodes, positions, scale, pinned) {
   for (const node of ordered) {
     const position = positions.get(node.id);
     if (!position) continue;
-    const text = shortLabel(node.label);
+    const text = shortLabel(tr(node.label));
     const width = text.length * charWidth + 6 / scale;
     const gap = position.r + 4 / scale;
     const candidates = [
@@ -194,7 +195,7 @@ function placeLabels(nodes, positions, scale, pinned) {
 
 const PANEL_WIDTH = 340;
 const STATUS_ORDER = { err: 0, run: 1, unknown: 2, stop: 3, ok: 4 };
-const GROUPS = [["agent", "Agents"], ["service", "Services"], ["timer", "Timers · cron"], ["module", "Modules"], ["api", "APIs et services externes"]];
+const GROUPS = [["agent", tr("Agents")], ["service", tr("Services")], ["timer", tr("Timers · cron")], ["module", tr("Modules")], ["api", tr("APIs et services externes")]];
 
 function matchesFilter(node, filter) {
   if (!filter) return true;
@@ -206,10 +207,10 @@ function matchesFilter(node, filter) {
 
 function nodeSubline(node) {
   const meta = node.meta || {};
-  if (node.type === "timer" || node.type === "cron") return [meta.scheduleText || meta.schedule, meta.nextRun ? `prochain ${dayTime(meta.nextRun)}` : null].filter(Boolean).join(" · ");
-  if (node.type === "api") return [meta.costLabel, meta.lifecycle && meta.lifecycle !== "actif" ? meta.lifecycle : null, meta.manage].filter(Boolean).join(" · ");
-  if (node.type === "agent") return [ASSISTANT_LABELS[meta.assistant] || meta.assistant, node.foreign ? `projet ${node.foreign}` : meta.state === "working" ? "travaille" : meta.state === "paused" ? "en pause" : meta.state === "archived" ? "archivé" : "disponible"].filter(Boolean).join(" · ");
-  if (node.type === "module") return [meta.environment === "production" ? "Production" : "Développement", meta.host].filter(Boolean).join(" · ");
+  if (node.type === "timer" || node.type === "cron") return [meta.scheduleText || meta.schedule, meta.nextRun ? tr("prochain {0}", dayTime(meta.nextRun)) : null].filter(Boolean).join(" · ");
+  if (node.type === "api") return [tr(meta.costLabel || ""), meta.lifecycle && meta.lifecycle !== "actif" ? meta.lifecycle : null, meta.manage].filter(Boolean).join(" · ");
+  if (node.type === "agent") return [ASSISTANT_LABELS[meta.assistant] || meta.assistant, node.foreign ? tr("projet {0}", node.foreign) : meta.state === "working" ? tr("travaille") : meta.state === "paused" ? tr("en pause") : meta.state === "archived" ? tr("archivé") : tr("disponible")].filter(Boolean).join(" · ");
+  if (node.type === "module") return [meta.environment === "production" ? tr("Production") : tr("Développement"), meta.host].filter(Boolean).join(" · ");
   return [meta.scheduleText, meta.host || (meta.script ? meta.script : null)].filter(Boolean).join(" · ");
 }
 
@@ -217,12 +218,12 @@ function ListPanel({ nodes, filter, onClearFilter, onPick, onCollapse }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("status");
   const [closed, setClosed] = useState(() => new Set());
-  const text = query.trim().toLocaleLowerCase("fr-FR");
+  const text = query.trim().toLocaleLowerCase(LOCALE);
   const items = nodes
     .filter((node) => matchesFilter(node, filter))
-    .filter((node) => !text || `${node.label} ${nodeSubline(node)}`.toLocaleLowerCase("fr-FR").includes(text))
+    .filter((node) => !text || `${tr(node.label)} ${nodeSubline(node)}`.toLocaleLowerCase(LOCALE).includes(text))
     .sort((a, b) => (sort === "status" ? (STATUS_ORDER[a.status] ?? 5) - (STATUS_ORDER[b.status] ?? 5) : 0) || a.label.localeCompare(b.label, "fr"));
-  const title = filter === "paid" ? "Payants" : filter === "archived" ? "Archivés" : filter ? TYPES.find((type) => type.id === filter)?.label : "Tous les nœuds";
+  const title = filter === "paid" ? tr("Payants") : filter === "archived" ? tr("Archivés") : filter ? TYPES.find((type) => type.id === filter)?.label : tr("Tous les nœuds");
   const groups = filter ? [[null, title, items]] : GROUPS.map(([id, label]) => [id, label, items.filter((node) => typeGroup(node.type) === id)]).filter(([, , list]) => list.length);
   const toggle = (id) => setClosed((current) => {
     const next = new Set(current);
@@ -231,12 +232,12 @@ function ListPanel({ nodes, filter, onClearFilter, onPick, onCollapse }) {
     return next;
   });
   return (
-    <aside className="amap-panel amap-list" aria-label="Liste des nœuds">
+    <aside className="amap-panel amap-list" aria-label={tr("Liste des nœuds")}>
       <div className="amap-list-head">
-        <div className="amap-list-title"><b>{title}</b><small>{items.length}</small>{filter && <button className="amap-chip-clear" onClick={onClearFilter}>tout afficher</button>}<button className="amap-close" onClick={onCollapse} aria-label="Replier le panneau">›</button></div>
+        <div className="amap-list-title"><b>{title}</b><small>{items.length}</small>{filter && <button className="amap-chip-clear" onClick={onClearFilter}>{tr("tout afficher")}</button>}<button className="amap-close" onClick={onCollapse} aria-label={tr("Replier le panneau")}>›</button></div>
         <div className="amap-list-tools">
-          <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filtrer la liste…" aria-label="Filtrer la liste" />
-          <div className="amap-seg">{[["status", "Statut"], ["name", "Nom"]].map(([id, label]) => <button key={id} className={sort === id ? "on" : ""} onClick={() => setSort(id)}>{label}</button>)}</div>
+          <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tr("Filtrer la liste…")} aria-label={tr("Filtrer la liste")} />
+          <div className="amap-seg">{[["status", tr("Statut")], ["name", tr("Nom")]].map(([id, label]) => <button key={id} className={sort === id ? "on" : ""} onClick={() => setSort(id)}>{label}</button>)}</div>
         </div>
       </div>
       <div className="amap-list-body">
@@ -246,13 +247,13 @@ function ListPanel({ nodes, filter, onClearFilter, onPick, onCollapse }) {
             {!closed.has(id) && list.map((node) => (
               <button key={node.id} className={`amap-item ${node.status}`} onClick={() => onPick(node.id)}>
                 <i className={`amap-dot ${node.status}`} />
-                <span><b>{node.label}</b><small>{nodeSubline(node) || TYPE_LABELS[node.type]}</small></span>
+                <span><b>{tr(node.label)}</b><small>{nodeSubline(node) || TYPE_LABELS[node.type]}</small></span>
                 {node.paid && <em className="amap-dot paid">$</em>}
               </button>
             ))}
           </section>
         ))}
-        {!items.length && <p className="amap-muted amap-list-empty">Aucun nœud.</p>}
+        {!items.length && <p className="amap-muted amap-list-empty">{tr("Aucun nœud.")}</p>}
       </div>
     </aside>
   );
@@ -357,7 +358,7 @@ function ChatBubbles({ events, nodeLabel }) {
   useLayoutEffect(() => {
     if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
   }, [events]);
-  if (!events.length) return <div className="amap-chat-empty">Aucun échange sur la période.</div>;
+  if (!events.length) return <div className="amap-chat-empty">{tr("Aucun échange sur la période.")}</div>;
   let lastDay = null;
   return (
     <div className="amap-chat" ref={scroller}>
@@ -365,7 +366,7 @@ function ChatBubbles({ events, nodeLabel }) {
         const day = dayOf(event.at);
         const header = day !== lastDay ? <div className="amap-day" key={`d${index}`}>{day}</div> : null;
         lastDay = day;
-        const author = event.direction === "in" ? (event.kind === "founder" ? "Fondateur" : shortLabel(event.from, 34)) : event.kind === "sent" ? `${shortLabel(nodeLabel, 20)} → ${shortLabel(event.to, 24)}` : shortLabel(nodeLabel, 34);
+        const author = event.direction === "in" ? (event.kind === "founder" ? tr("Fondateur") : shortLabel(event.from, 34)) : event.kind === "sent" ? `${shortLabel(nodeLabel, 20)} → ${shortLabel(event.to, 24)}` : shortLabel(nodeLabel, 34);
         return (
           <React.Fragment key={`${event.at}${index}`}>
             {header}
@@ -380,8 +381,8 @@ function ChatBubbles({ events, nodeLabel }) {
   );
 }
 
-const COST_OPTIONS = [["", "— (carte / scan)"], ["free", "Gratuit"], ["subscription", "Payant · abonnement"], ["usage", "Payant · à l'usage"], ["commission", "Commission par transaction"], ["unknown", "À confirmer"]];
-const LIFECYCLE_OPTIONS = ["", "actif", "en pause", "sandbox", "obsolète ?", "non utilisé", "secours", "plus détecté"];
+const COST_OPTIONS = [["", "— (carte / scan)"], ["free", tr("Gratuit")], ["subscription", tr("Payant · abonnement")], ["usage", tr("Payant · à l'usage")], ["commission", tr("Commission par transaction")], ["unknown", tr("À confirmer")]];
+const LIFECYCLE_OPTIONS = ["", "actif", tr("en pause"), "sandbox", tr("obsolète ?"), tr("non utilisé"), "secours", tr("plus détecté")];
 
 // Correction du fondateur: prime sur la carte, le scan et les fiches rédigées; jamais écrasée par un scan.
 function FixForm({ projectId, node, api, onDone }) {
@@ -421,17 +422,17 @@ function FixForm({ projectId, node, api, onDone }) {
   };
   return (
     <form className="amap-fix" onSubmit={save}>
-      <label>Description<textarea value={what} onChange={(event) => setWhat(event.target.value)} rows={3} /></label>
+      <label>{tr("Description")}<textarea value={what} onChange={(event) => setWhat(event.target.value)} rows={3} /></label>
       <div className="amap-fix-row">
-        <label>Coût<select value={cost} onChange={(event) => setCost(event.target.value)}>{COST_OPTIONS.map(([id, label]) => <option key={id} value={id}>{id ? label : `${label}${meta.costLabel ? ` : ${meta.costLabel}` : ""}`}</option>)}</select></label>
-        <label>Statut<select value={lifecycle} onChange={(event) => setLifecycle(event.target.value)}>{LIFECYCLE_OPTIONS.map((id) => <option key={id} value={id}>{id || `— (${meta.lifecycle || "auto"})`}</option>)}</select></label>
+        <label>{tr("Coût")}<select value={cost} onChange={(event) => setCost(event.target.value)}>{COST_OPTIONS.map(([id, label]) => <option key={id} value={id}>{id ? label : `${label}${meta.costLabel ? ` : ${meta.costLabel}` : ""}`}</option>)}</select></label>
+        <label>{tr("Statut")}<select value={lifecycle} onChange={(event) => setLifecycle(event.target.value)}>{LIFECYCLE_OPTIONS.map((id) => <option key={id} value={id}>{id || `— (${meta.lifecycle || "auto"})`}</option>)}</select></label>
       </div>
-      <label>Note coût / plan<input value={costNote} onChange={(event) => setCostNote(event.target.value)} placeholder="ex. plan gratuit confirmé" /></label>
+      <label>{tr("Note coût / plan")}<input value={costNote} onChange={(event) => setCostNote(event.target.value)} placeholder={tr("ex. plan gratuit confirmé")} /></label>
       {failure && <small className="amap-fix-error">{failure}</small>}
       <div className="amap-fix-actions">
-        <button type="submit" className="primary" disabled={busy}>Enregistrer</button>
-        <button type="button" onClick={() => onDone(false)} disabled={busy}>Annuler</button>
-        {meta.corrected && <button type="button" className="ghost" onClick={reset} disabled={busy}>Retirer ma correction</button>}
+        <button type="submit" className="primary" disabled={busy}>{tr("Enregistrer")}</button>
+        <button type="button" onClick={() => onDone(false)} disabled={busy}>{tr("Annuler")}</button>
+        {meta.corrected && <button type="button" className="ghost" onClick={reset} disabled={busy}>{tr("Retirer ma correction")}</button>}
       </div>
     </form>
   );
@@ -478,40 +479,40 @@ function ScanDialog({ projectId, projectName, api, onClose, onApplied }) {
   };
   const result = status?.result;
   const scanning = status?.running && status.phase === "scan";
-  const groups = result ? [["added", "Nouveaux", result.added], ["changed", "Modifiés", result.changed], ["gone", "Plus détectés", result.gone]] : [];
+  const groups = result ? [["added", tr("Nouveaux"), result.added], ["changed", tr("Modifiés"), result.changed], ["gone", tr("Plus détectés"), result.gone]] : [];
   return (
     <div className="amap-dialog-backdrop" onClick={onClose}>
-      <section className="amap-dialog" role="dialog" aria-label="Explorer le projet" onClick={(event) => event.stopPropagation()}>
+      <section className="amap-dialog" role="dialog" aria-label={tr("Explorer le projet")} onClick={(event) => event.stopPropagation()}>
         <header>
-          <div><b>Explorer · {projectName}</b><small>Clés .env (noms seulement), hôtes d'API, SDK, services systemd, crons. Aucune valeur de secret lue ni affichée.</small></div>
-          <button className="amap-close" onClick={onClose} aria-label="Fermer">×</button>
+          <div><b>{tr("Explorer ·")}{" "}{projectName}</b><small>{tr("Clés .env (noms seulement), hôtes d'API, SDK, services systemd, crons. Aucune valeur de secret lue ni affichée.")}</small></div>
+          <button className="amap-close" onClick={onClose} aria-label={tr("Fermer")}>×</button>
         </header>
         {failure && <div className="amap-error">{failure}</div>}
-        {!status ? <p className="amap-muted">Chargement…</p> : scanning ? (
-          <div className="amap-scan-progress"><i /><span>Scan en cours… {status.progress}</span></div>
+        {!status ? <p className="amap-muted">{tr("Chargement…")}</p> : scanning ? (
+          <div className="amap-scan-progress"><i /><span>{tr("Scan en cours…")}{" "}{status.progress}</span></div>
         ) : result ? (
           <>
             <div className="amap-diff-kpis">
               {groups.map(([id, label, items]) => <div key={id} className={`amap-diff-kpi ${id}`}><b>{items.length}</b><small>{label}</small></div>)}
-              <div className="amap-diff-kpi"><b>{result.total}</b><small>Nœuds détectés</small></div>
+              <div className="amap-diff-kpi"><b>{result.total}</b><small>{tr("Nœuds détectés")}</small></div>
             </div>
-            <p className="amap-muted">Scan du {dayTime(result.scannedAt)} · {result.stats?.files || 0} fichiers de code, {result.stats?.envFiles || 0} fichiers .env (noms), {result.dirs?.join(", ")}</p>
+            <p className="amap-muted">{tr("Scan du")}{" "}{dayTime(result.scannedAt)} · {result.stats?.files || 0}{" "}{tr("fichiers de code,")}{" "}{result.stats?.envFiles || 0}{" "}{tr("fichiers .env (noms),")}{" "}{result.dirs?.join(", ")}</p>
             <div className="amap-diff-body">
               {groups.filter(([, , items]) => items.length).map(([id, label, items]) => (
                 <section key={id}>
-                  <h4>{label}{id === "gone" && <small> · seront grisés, pas supprimés</small>}</h4>
-                  <ul>{items.map((item) => <li key={item.id} className={id}><i className={`tone-${typeGroup(item.type || "api")}`} />{item.label}<small>{TYPE_LABELS[item.type] || item.type || ""}</small></li>)}</ul>
+                  <h4>{label}{id === "gone" && <small>{" "}{tr("· seront grisés, pas supprimés")}</small>}</h4>
+                  <ul>{items.map((item) => <li key={item.id} className={id}><i className={`tone-${typeGroup(item.type || "api")}`} />{tr(item.label)}<small>{TYPE_LABELS[item.type] || item.type || ""}</small></li>)}</ul>
                 </section>
               ))}
             </div>
-            {status.running && <div className="amap-scan-progress"><i /><span>Rédaction des fiches… {status.progress}</span></div>}
+            {status.running && <div className="amap-scan-progress"><i /><span>{tr("Rédaction des fiches…")}{" "}{status.progress}</span></div>}
           </>
         ) : (
-          <p className="amap-muted">{status.appliedAt ? `Carte à jour (dernier scan appliqué le ${dayTime(status.appliedAt)}).` : "Aucun scan encore pour ce projet."} Un scan automatique tourne chaque nuit ; ses changements attendent ici.</p>
+          <p className="amap-muted">{status.appliedAt ? tr("Carte à jour (dernier scan appliqué le {0}).", dayTime(status.appliedAt)) : tr("Aucun scan encore pour ce projet.")}{" "}{tr("Un scan automatique tourne chaque nuit ; ses changements attendent ici.")}</p>
         )}
         <footer>
-          <button onClick={start} disabled={busy || status?.running}>{result || status?.appliedAt ? "Relancer le scan" : "Lancer le scan"}</button>
-          {result && <button className="primary" onClick={apply} disabled={busy || scanning}>Appliquer</button>}
+          <button onClick={start} disabled={busy || status?.running}>{result || status?.appliedAt ? tr("Relancer le scan") : tr("Lancer le scan")}</button>
+          {result && <button className="primary" onClick={apply} disabled={busy || scanning}>{tr("Appliquer")}</button>}
         </footer>
       </section>
     </div>
@@ -551,7 +552,7 @@ function DetailPanel({ projectId, span, node, graph, onBack, onCollapse, onOpenA
     try {
       const result = await api(`/api/map/agents/${encodeURIComponent(current.sessionId)}/message`, { method: "POST", body: JSON.stringify({ message: text }) });
       setDraft("");
-      setNotice(result?.held ? "Envoyé dès que la saisie en cours est libre." : "Message envoyé.");
+      setNotice(result?.held ? tr("Envoyé dès que la saisie en cours est libre.") : tr("Message envoyé."));
       setTimeout(load, 4000);
     } catch (failure) {
       setNotice(failure.message);
@@ -561,48 +562,48 @@ function DetailPanel({ projectId, span, node, graph, onBack, onCollapse, onOpenA
   };
   const rows = [];
   if (current.type === "agent") {
-    rows.push(["Assistant", ASSISTANT_LABELS[meta.assistant] || meta.assistant || "—"]);
-    rows.push(["État", current.foreign ? `Projet ${current.foreign}` : meta.state === "working" ? "Travail en cours" : meta.state === "waiting" ? "Attend une réponse" : meta.state === "paused" ? "En pause (arrêté)" : meta.state === "archived" ? "Archivé" : "Disponible"]);
-    if (meta.createdAt) rows.push(["Créé", `${new Date(meta.createdAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })} ${timeOf(meta.createdAt)}`]);
-    if (meta.archivedAt) rows.push(["Archivé", relative(meta.archivedAt)]);
-    rows.push(["Dernière réponse", relative(meta.lastReplyAt)]);
-    rows.push(["Échanges", `${meta.inbound || 0} entrants · ${meta.outbound || 0} sortants`]);
-    if (meta.costNote) rows.push(["Coût", `Payant · ${meta.costNote}`]);
-    if (meta.manage) rows.push(["Où le gérer", meta.manage]);
+    rows.push([tr("Assistant"), ASSISTANT_LABELS[meta.assistant] || meta.assistant || "—"]);
+    rows.push([tr("État"), current.foreign ? `Projet ${current.foreign}` : meta.state === "working" ? tr("Travail en cours") : meta.state === "waiting" ? tr("Attend une réponse") : meta.state === "paused" ? tr("En pause (arrêté)") : meta.state === "archived" ? tr("Archivé") : tr("Disponible")]);
+    if (meta.createdAt) rows.push([tr("Créé"), `${new Date(meta.createdAt).toLocaleDateString(LOCALE, { day: "2-digit", month: "2-digit" })} ${timeOf(meta.createdAt)}`]);
+    if (meta.archivedAt) rows.push([tr("Archivé"), relative(meta.archivedAt)]);
+    rows.push([tr("Dernière réponse"), relative(meta.lastReplyAt)]);
+    rows.push([tr("Échanges"), `${meta.inbound || 0} entrants · ${meta.outbound || 0} sortants`]);
+    if (meta.costNote) rows.push([tr("Coût"), `Payant · ${meta.costNote}`]);
+    if (meta.manage) rows.push([tr("Où le gérer"), meta.manage]);
   } else {
-    if (meta.host) rows.push(["Où", `${meta.host}${meta.user ? ` · compte ${meta.user}` : ""}`]);
-    if (meta.owner) rows.push(["Propriétaire", meta.owner]);
-    if (meta.environment) rows.push(["Environnement", meta.environment === "production" ? "Production" : "Développement"]);
-    if (meta.maintenance) rows.push(["Maintenance", meta.maintenance]);
-    if (meta.reachable === false) rows.push(["Tunnel", "injoignable"]);
-    if (meta.statusSource) rows.push(["Statut via", meta.statusSource]);
-    if (current.shared) rows.push(["Portée", "Partagé entre projets"]);
+    if (meta.host) rows.push([tr("Où"), `${meta.host}${meta.user ? ` · compte ${meta.user}` : ""}`]);
+    if (meta.owner) rows.push([tr("Propriétaire"), meta.owner]);
+    if (meta.environment) rows.push([tr("Environnement"), meta.environment === "production" ? tr("Production") : tr("Développement")]);
+    if (meta.maintenance) rows.push([tr("Maintenance"), meta.maintenance]);
+    if (meta.reachable === false) rows.push([tr("Tunnel"), "injoignable"]);
+    if (meta.statusSource) rows.push([tr("Statut via"), meta.statusSource]);
+    if (current.shared) rows.push([tr("Portée"), tr("Partagé entre projets")]);
   }
   const outgoing = graph.links.filter((link) => link.source === current.id && ["calls", "triggers"].includes(link.kind)).map((link) => graph.label(link.target));
   const contains = graph.links.filter((link) => link.source === current.id && ["declares", "controls"].includes(link.kind)).map((link) => graph.label(link.target));
   const incoming = graph.links.filter((link) => link.target === current.id && !["founder", "message", "created", "declares", "controls"].includes(link.kind)).map((link) => graph.label(link.source));
   const usedIn = [...new Set([...(meta.usedIn || []), ...(current.type === "api" ? incoming : [])])];
-  const costText = meta.costLabel || (meta.paidVia?.length ? "Payant (via les APIs appelées)" : current.type === "api" ? "À confirmer" : "Pas de coût propre");
-  const ran = meta.lastRun ? `${timeOf(meta.lastRun)} · ${relative(meta.lastRun)}${meta.durationMs != null ? ` · durée ${duration(meta.durationMs)}` : ""}` : null;
-  const result = meta.result ? (meta.result === "success" ? "succès" : `${meta.result}${meta.exitStatus && meta.exitStatus !== "0" ? ` (code ${meta.exitStatus})` : ""}`) : null;
+  const costText = meta.costLabel || (meta.paidVia?.length ? tr("Payant (via les APIs appelées)") : current.type === "api" ? tr("À confirmer") : tr("Pas de coût propre"));
+  const ran = meta.lastRun ? `${timeOf(meta.lastRun)} · ${relative(meta.lastRun)}${meta.durationMs != null ? tr(" · durée {0}", duration(meta.durationMs)) : ""}` : null;
+  const result = meta.result ? (meta.result === "success" ? tr("succès") : `${meta.result}${meta.exitStatus && meta.exitStatus !== "0" ? ` (code ${meta.exitStatus})` : ""}`) : null;
   return (
-    <aside className="amap-panel" aria-label={`Détail ${current.label}`}>
+    <aside className="amap-panel" aria-label={tr("Détail {0}", current.label)}>
       <div className="amap-panel-head">
         <div className="amap-kind">{TYPE_LABELS[current.role === "bot" ? "service" : current.type] || current.type}{current.role === "bot" ? " · bot" : ""}{meta.assistant ? ` · ${ASSISTANT_LABELS[meta.assistant] || meta.assistant}` : ""}</div>
-        <div className="amap-panel-actions"><button className="amap-back" onClick={onBack}>← liste</button><button className="amap-close" onClick={onCollapse} aria-label="Replier le panneau">›</button></div>
+        <div className="amap-panel-actions"><button className="amap-back" onClick={onBack}>{tr("← liste")}</button><button className="amap-close" onClick={onCollapse} aria-label={tr("Replier le panneau")}>›</button></div>
         <h3>{current.label} <span className={`amap-pill ${current.status}`}>● {STATUS_LABELS[current.status] || current.status}</span></h3>
         {current.type === "agent" && meta.what && <p className="amap-desc">{meta.what}</p>}
         {current.type === "agent" && <dl className="amap-meta">{rows.map(([label, value]) => <React.Fragment key={label}><dt>{label}</dt><dd>{value}</dd></React.Fragment>)}</dl>}
-        {current.type === "agent" && current.sessionId && !current.archived && !current.foreign && <div className="amap-actions"><button onClick={() => onOpenAgent?.(current.sessionId)}>Ouvrir le terminal</button></div>}
+        {current.type === "agent" && current.sessionId && !current.archived && !current.foreign && <div className="amap-actions"><button onClick={() => onOpenAgent?.(current.sessionId)}>{tr("Ouvrir le terminal")}</button></div>}
       </div>
       {error && <div className="amap-error">{error}</div>}
       {current.type === "agent" ? (
         <>
-          {detail ? <ChatBubbles events={detail.chat || []} nodeLabel={current.label} /> : <div className="amap-chat-empty">Chargement…</div>}
+          {detail ? <ChatBubbles events={detail.chat || []} nodeLabel={current.label} /> : <div className="amap-chat-empty">{tr("Chargement…")}</div>}
           {meta.canMessage && (
             <form className="amap-compose" onSubmit={send}>
-              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={`Écrire à ${shortLabel(current.label, 30)}…`} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) send(event); }} />
-              <button type="submit" disabled={!draft.trim() || sending} aria-label="Envoyer">↑</button>
+              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={tr("Écrire à {0}…", shortLabel(current.label, 30))} rows={1} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) send(event); }} />
+              <button type="submit" disabled={!draft.trim() || sending} aria-label={tr("Envoyer")}>↑</button>
               {notice && <small>{notice}</small>}
             </form>
           )}
@@ -610,85 +611,85 @@ function DetailPanel({ projectId, span, node, graph, onBack, onCollapse, onOpenA
       ) : (
         <div className="amap-sheet">
           <section>
-            <h4>À quoi ça sert{meta.verify && <b className="amap-verify">à vérifier</b>}{!fixing && <button className="amap-fix-btn" onClick={() => setFixing(true)}>corriger</button>}</h4>
+            <h4>{tr("À quoi ça sert")}{meta.verify && <b className="amap-verify">{tr("à vérifier")}</b>}{!fixing && <button className="amap-fix-btn" onClick={() => setFixing(true)}>corriger</button>}</h4>
             {fixing ? <FixForm projectId={projectId} node={current} api={api} onDone={(saved) => { setFixing(false); if (saved) { void load(); onChanged?.(); } }} /> : (
               <>
-                {meta.what ? <p className="amap-what">{meta.what}</p> : <p className="amap-muted">Pas encore de description : lance « Explorer » ou corrige-la ici.</p>}
-                {meta.whatSource && <small className={`amap-source ${meta.corrected ? "fixed" : ""}`}>source : {meta.whatSource}</small>}
+                {meta.what ? <p className="amap-what">{meta.what}</p> : <p className="amap-muted">{tr("Pas encore de description : lance « Explorer » ou corrige-la ici.")}</p>}
+                {meta.whatSource && <small className={`amap-source ${meta.corrected ? "fixed" : ""}`}>{tr("source :")}{" "}{meta.whatSource}</small>}
                 {meta.note && <p className="amap-note">« {meta.note} »</p>}
               </>
             )}
           </section>
           <section className="amap-facts">
-            <div className="amap-fact"><span>Où c'est utilisé</span>{usedIn.length ? <div className="amap-tags">{usedIn.map((item) => <i key={item}>{item}</i>)}</div> : <b className="amap-muted">—</b>}</div>
-            <div className="amap-fact"><span>Clés .env</span>{meta.keys?.length ? <ul className="amap-keys">{meta.keys.map((item) => <li key={item}><code>{item.split(" — ")[0]}</code>{item.includes(" — ") && <small>{item.split(" — ").slice(1).join(" — ")}</small>}</li>)}</ul> : <b className="amap-muted">aucune déclarée</b>}</div>
-            <div className="amap-fact"><span>Coût</span><b className={`amap-cost ${meta.cost || "none"}`}>{costText}</b>{meta.costNote && <small>{meta.costNote}</small>}{meta.paidVia?.length > 0 && <small>via {meta.paidVia.join(", ")}</small>}</div>
-            {meta.quota && <div className="amap-fact"><span>Quota / limite</span><b>{meta.quota}</b></div>}
-            <div className="amap-fact"><span>Statut</span><b className={`amap-life ${String(meta.lifecycle || "").replace(/\W+/g, "")}`}>{meta.lifecycle || STATUS_LABELS[current.status]}</b></div>
-            {meta.manage && <div className="amap-fact"><span>Où le gérer</span><b>{meta.manage}</b></div>}
-            {meta.detected && <div className="amap-fact"><span>Détecté par le scan</span><b className="amap-muted">{[meta.detected.hosts?.length ? meta.detected.hosts.join(", ") : null, meta.detected.sdks?.length ? `paquets ${meta.detected.sdks.join(", ")}` : null, `${meta.detected.files} fichier(s)`].filter(Boolean).join(" · ")}</b></div>}
+            <div className="amap-fact"><span>{tr("Où c'est utilisé")}</span>{usedIn.length ? <div className="amap-tags">{usedIn.map((item) => <i key={item}>{item}</i>)}</div> : <b className="amap-muted">—</b>}</div>
+            <div className="amap-fact"><span>{tr("Clés .env")}</span>{meta.keys?.length ? <ul className="amap-keys">{meta.keys.map((item) => <li key={item}><code>{item.split(" — ")[0]}</code>{item.includes(" — ") && <small>{item.split(" — ").slice(1).join(" — ")}</small>}</li>)}</ul> : <b className="amap-muted">{tr("aucune déclarée")}</b>}</div>
+            <div className="amap-fact"><span>{tr("Coût")}</span><b className={`amap-cost ${meta.cost || "none"}`}>{costText}</b>{meta.costNote && <small>{meta.costNote}</small>}{meta.paidVia?.length > 0 && <small>via {meta.paidVia.join(", ")}</small>}</div>
+            {meta.quota && <div className="amap-fact"><span>{tr("Quota / limite")}</span><b>{meta.quota}</b></div>}
+            <div className="amap-fact"><span>{tr("Statut")}</span><b className={`amap-life ${String(meta.lifecycle || "").replace(/\W+/g, "")}`}>{meta.lifecycle || STATUS_LABELS[current.status]}</b></div>
+            {meta.manage && <div className="amap-fact"><span>{tr("Où le gérer")}</span><b>{meta.manage}</b></div>}
+            {meta.detected && <div className="amap-fact"><span>{tr("Détecté par le scan")}</span><b className="amap-muted">{[meta.detected.hosts?.length ? meta.detected.hosts.join(", ") : null, meta.detected.sdks?.length ? `paquets ${meta.detected.sdks.join(", ")}` : null, `${meta.detected.files} fichier(s)`].filter(Boolean).join(" · ")}</b></div>}
           </section>
           {(meta.scheduleText || meta.nextRun || meta.schedule) && (
             <section>
-              <h4>Quand</h4>
+              <h4>{tr("Quand")}</h4>
               <p className="amap-what">{meta.scheduleText || meta.schedule}</p>
-              {meta.nextRun && <p className="amap-line"><span>Prochain passage</span><b>{dayTime(meta.nextRun)} · {relative(meta.nextRun)}</b></p>}
+              {meta.nextRun && <p className="amap-line"><span>{tr("Prochain passage")}</span><b>{dayTime(meta.nextRun)} · {relative(meta.nextRun)}</b></p>}
             </section>
           )}
           {(meta.produces?.length > 0 || meta.dependsOn?.length > 0 || outgoing.length > 0 || incoming.length > 0 || contains.length > 0) && (
             <section>
-              <h4>Produit · dépend de</h4>
-              {meta.produces?.length > 0 && <div className="amap-tags"><span>Produit</span>{meta.produces.map((item) => <i key={item}>{item}</i>)}</div>}
-              {meta.dependsOn?.length > 0 && <div className="amap-tags"><span>Dépend de</span>{meta.dependsOn.map((item) => <i key={item}>{item}</i>)}</div>}
-              {outgoing.length > 0 && <div className="amap-tags"><span>Appelle</span>{[...new Set(outgoing)].map((item) => <i className="link" key={item}>{item}</i>)}</div>}
-              {contains.length > 0 && <div className="amap-tags"><span>Pilote</span>{[...new Set(contains)].map((item) => <i className="link" key={item}>{item}</i>)}</div>}
-              {incoming.length > 0 && <div className="amap-tags"><span>Appelé par</span>{[...new Set(incoming)].map((item) => <i className="link" key={item}>{item}</i>)}</div>}
+              <h4>{tr("Produit · dépend de")}</h4>
+              {meta.produces?.length > 0 && <div className="amap-tags"><span>{tr("Produit")}</span>{meta.produces.map((item) => <i key={item}>{item}</i>)}</div>}
+              {meta.dependsOn?.length > 0 && <div className="amap-tags"><span>{tr("Dépend de")}</span>{meta.dependsOn.map((item) => <i key={item}>{item}</i>)}</div>}
+              {outgoing.length > 0 && <div className="amap-tags"><span>{tr("Appelle")}</span>{[...new Set(outgoing)].map((item) => <i className="link" key={item}>{item}</i>)}</div>}
+              {contains.length > 0 && <div className="amap-tags"><span>{tr("Pilote")}</span>{[...new Set(contains)].map((item) => <i className="link" key={item}>{item}</i>)}</div>}
+              {incoming.length > 0 && <div className="amap-tags"><span>{tr("Appelé par")}</span>{[...new Set(incoming)].map((item) => <i className="link" key={item}>{item}</i>)}</div>}
             </section>
           )}
           {(ran || result || meta.unit) && (
             <section>
-              <h4>Dernier passage</h4>
-              {ran ? <p className="amap-line"><span>Lancé</span><b>{ran}</b></p> : <p className="amap-muted">Pas encore lancé sur la période.</p>}
-              {result && <p className="amap-line"><span>Résultat</span><b className={meta.result === "success" ? "ok" : "err"}>{result}</b></p>}
+              <h4>{tr("Dernier passage")}</h4>
+              {ran ? <p className="amap-line"><span>{tr("Lancé")}</span><b>{ran}</b></p> : <p className="amap-muted">{tr("Pas encore lancé sur la période.")}</p>}
+              {result && <p className="amap-line"><span>{tr("Résultat")}</span><b className={meta.result === "success" ? "ok" : "err"}>{result}</b></p>}
               {detail?.logs?.length > 0 && <div className="amap-log">{detail.logs.map((item, index) => <div key={index}><time>{item.at ? timeOf(item.at) : ""}</time><span>{item.text}</span></div>)}</div>}
             </section>
           )}
           {!meta.unit && current.type === "cron" && meta.host && (
             <section>
-              <h4>Dernier passage</h4>
-              <p className="amap-muted">Pas de journal lisible depuis ce PC : le statut vient de la santé globale des crons prod (HealthMonitorCron).</p>
+              <h4>{tr("Dernier passage")}</h4>
+              <p className="amap-muted">{tr("Pas de journal lisible depuis ce PC : le statut vient de la santé globale des crons prod (HealthMonitorCron).")}</p>
             </section>
           )}
           {meta.unit && (
             <section>
-              <h4>Erreurs récentes</h4>
-              {!detail ? <p className="amap-muted">Chargement…</p> : detail.errors?.length ? detail.errors.map((item, index) => <div className="amap-error-line" key={index}><time>{item.at ? timeOf(item.at) : ""}</time><span>{item.text}</span></div>) : <p className="amap-muted">Aucune erreur sur la période.</p>}
+              <h4>{tr("Erreurs récentes")}</h4>
+              {!detail ? <p className="amap-muted">{tr("Chargement…")}</p> : detail.errors?.length ? detail.errors.map((item, index) => <div className="amap-error-line" key={index}><time>{item.at ? timeOf(item.at) : ""}</time><span>{item.text}</span></div>) : <p className="amap-muted">{tr("Aucune erreur sur la période.")}</p>}
             </section>
           )}
           {(meta.command || meta.script || meta.unit) && (
             <section>
-              <h4>Commande</h4>
+              <h4>{tr("Commande")}</h4>
               {meta.command && <code className="amap-code">{meta.command}</code>}
-              {meta.script && <p className="amap-line"><span>Script</span><b>{meta.scriptPath || meta.script}</b></p>}
-              {meta.unit && <p className="amap-line"><span>Unité</span><b>{meta.unit}{meta.service && meta.service !== meta.unit ? ` → ${meta.service}` : ""}{meta.scope === "system" ? " · système" : ""}</b></p>}
-              {meta.workingDirectory && <p className="amap-line"><span>Dossier</span><b>{meta.workingDirectory}</b></p>}
+              {meta.script && <p className="amap-line"><span>{tr("Script")}</span><b>{meta.scriptPath || meta.script}</b></p>}
+              {meta.unit && <p className="amap-line"><span>{tr("Unité")}</span><b>{meta.unit}{meta.service && meta.service !== meta.unit ? ` → ${meta.service}` : ""}{meta.scope === "system" ? tr(" · système") : ""}</b></p>}
+              {meta.workingDirectory && <p className="amap-line"><span>{tr("Dossier")}</span><b>{meta.workingDirectory}</b></p>}
             </section>
           )}
           {rows.length > 0 && (
             <section>
-              <h4>Contexte</h4>
+              <h4>{tr("Contexte")}</h4>
               <dl className="amap-meta">{rows.map(([label, value]) => <React.Fragment key={label}><dt>{label}</dt><dd>{value}</dd></React.Fragment>)}</dl>
             </section>
           )}
           {detail?.comments?.length > 0 && (
             <section>
-              <h4>Notes de l'unité systemd</h4>
+              <h4>{tr("Notes de l'unité systemd")}</h4>
               <ul className="amap-notes">{detail.comments.map((item) => <li key={item}>{item}</li>)}</ul>
             </section>
           )}
           {detail?.header?.length > 0 && (
             <section>
-              <h4>En-tête du script <small>(peut dater)</small></h4>
+              <h4>{tr("En-tête du script")}{" "}<small>{tr("(peut dater)")}</small></h4>
               <ul className="amap-notes">{detail.header.map((item, index) => <li key={index}>{item}</li>)}</ul>
             </section>
           )}
@@ -771,8 +772,8 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
     return () => clearTimeout(timer);
   }, [view.k]);
 
-  const query = search.trim().toLocaleLowerCase("fr-FR");
-  const matches = useMemo(() => (query ? new Set(visible.nodes.filter((node) => node.label.toLocaleLowerCase("fr-FR").includes(query)).map((node) => node.id)) : null), [visible.nodes, query]);
+  const query = search.trim().toLocaleLowerCase(LOCALE);
+  const matches = useMemo(() => (query ? new Set(visible.nodes.filter((node) => node.label.toLocaleLowerCase(LOCALE).includes(query)).map((node) => node.id)) : null), [visible.nodes, query]);
   const focusId = hoverId || selectedId;
   const neighbours = useMemo(() => {
     if (!focusId) return null;
@@ -855,35 +856,35 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
     <section className={`amap ${panelOpen ? "has-panel" : "panel-collapsed"}`}>
       {exploring && activeProject && <ScanDialog projectId={activeProject} projectName={data?.project?.name || ""} api={api} onClose={() => { setExploring(false); void load(); }} onApplied={load} />}
       <div className="amap-toolbar">
-        <div className="amap-chips amap-projects" role="tablist" aria-label="Projet">
+        <div className="amap-chips amap-projects" role="tablist" aria-label={tr("Projet")}>
           {projectList.map((project) => (
             <button key={project.id} className={`amap-chip ${project.id === activeProject ? "on" : ""}`} onClick={() => { setProjectId(project.id); onProjectChange?.(project.id); }}>{project.name}</button>
           ))}
         </div>
-        <div className="amap-chips amap-types" aria-label="Types de nœuds">
+        <div className="amap-chips amap-types" aria-label={tr("Types de nœuds")}>
           {TYPES.map((type) => (
             <button key={type.id} className={`amap-chip ${filter === type.id ? "on" : ""}`} onClick={() => pickFilter(type.id)} aria-pressed={filter === type.id}><i className={`tone-${type.tone}`} />{type.label}{data ? <small>{data.nodes.filter((node) => matchesFilter(node, type.id)).length}</small> : null}</button>
           ))}
-          <button className={`amap-chip paid ${filter === "paid" ? "on" : ""}`} onClick={() => pickFilter("paid")} aria-pressed={filter === "paid"} title="Ce qui coûte de l'argent"><b>$</b>Payants{data ? <small>{data.nodes.filter((node) => matchesFilter(node, "paid")).length}</small> : null}</button>
-          <button className={`amap-chip ${filter === "archived" ? "on" : ""}`} onClick={() => pickFilter("archived")} aria-pressed={filter === "archived"}><i className="tone-archived" />Archivés{data ? <small>{data.nodes.filter((node) => node.archived).length}</small> : null}</button>
+          <button className={`amap-chip paid ${filter === "paid" ? "on" : ""}`} onClick={() => pickFilter("paid")} aria-pressed={filter === "paid"} title={tr("Ce qui coûte de l'argent")}><b>$</b>{tr("Payants")}{data ? <small>{data.nodes.filter((node) => matchesFilter(node, "paid")).length}</small> : null}</button>
+          <button className={`amap-chip ${filter === "archived" ? "on" : ""}`} onClick={() => pickFilter("archived")} aria-pressed={filter === "archived"}><i className="tone-archived" />{tr("Archivés")}{data ? <small>{data.nodes.filter((node) => node.archived).length}</small> : null}</button>
         </div>
-        <button className={`amap-explore ${data?.scan?.running ? "running" : ""}`} onClick={() => setExploring(true)} title="Scanner le projet : clés .env (noms), APIs, SDK, services, crons">Explorer{data?.scan?.pending > 0 && <b>{data.scan.pending}</b>}</button>
-        <input className="amap-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Rechercher un nœud…" aria-label="Rechercher un nœud" />
-        <div className="amap-seg" role="group" aria-label="Fenêtre de temps">
-          {["24h", "7d"].map((value) => <button key={value} className={span === value ? "on" : ""} onClick={() => setSpan(value)}>{value === "24h" ? "24 h" : "7 j"}</button>)}
+        <button className={`amap-explore ${data?.scan?.running ? "running" : ""}`} onClick={() => setExploring(true)} title={tr("Scanner le projet : clés .env (noms), APIs, SDK, services, crons")}>{tr("Explorer")}{data?.scan?.pending > 0 && <b>{data.scan.pending}</b>}</button>
+        <input className="amap-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr("Rechercher un nœud…")} aria-label={tr("Rechercher un nœud")} />
+        <div className="amap-seg" role="group" aria-label={tr("Fenêtre de temps")}>
+          {["24h", "7d"].map((value) => <button key={value} className={span === value ? "on" : ""} onClick={() => setSpan(value)}>{value === "24h" ? "24 h" : tr("7 j")}</button>)}
         </div>
       </div>
       <div className="amap-body">
         <div className="amap-stage" ref={stage} onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
           {kpis && (
             <div className="amap-kpis">
-              <div className="amap-kpi"><small>Agents actifs</small><b>{kpis.agents}</b><em className="run">{kpis.working ? `● ${kpis.working} en cours` : "au repos"}</em></div>
-              <div className="amap-kpi"><small>Services · timers</small><b>{kpis.services}</b><em className={kpis.errors ? "err" : "ok"}>● {kpis.errors ? `${kpis.errors} erreur${kpis.errors > 1 ? "s" : ""}` : "tout OK"}</em></div>
-              <div className="amap-kpi"><small>Prochain run</small><b>{kpis.nextRun ? timeOf(kpis.nextRun.at) : "—"}</b><em>{kpis.nextRun ? shortLabel(kpis.nextRun.label, 18) : ""}</em></div>
-              <div className="amap-kpi"><small>Messages {span === "7d" ? "7 j" : "24 h"}</small><b>{kpis.messages}</b><em>{visible.links.filter((link) => link.live).length} liens actifs</em></div>
+              <div className="amap-kpi"><small>{tr("Agents actifs")}</small><b>{kpis.agents}</b><em className="run">{kpis.working ? `● ${kpis.working} en cours` : tr("au repos")}</em></div>
+              <div className="amap-kpi"><small>{tr("Services · timers")}</small><b>{kpis.services}</b><em className={kpis.errors ? "err" : "ok"}>● {kpis.errors ? tr(kpis.errors > 1 ? "{0} erreurs" : "{0} erreur", kpis.errors) : tr("tout OK")}</em></div>
+              <div className="amap-kpi"><small>{tr("Prochain run")}</small><b>{kpis.nextRun ? timeOf(kpis.nextRun.at) : "—"}</b><em>{kpis.nextRun ? shortLabel(kpis.nextRun.label, 18) : ""}</em></div>
+              <div className="amap-kpi"><small>{tr("Messages")}{" "}{span === "7d" ? tr("7 j") : "24 h"}</small><b>{kpis.messages}</b><em>{visible.links.filter((link) => link.live).length}{" "}{tr("liens actifs")}</em></div>
             </div>
           )}
-          <svg className="amap-svg" width={size.width} height={size.height} role="img" aria-label="Carte des agents et services">
+          <svg className="amap-svg" width={size.width} height={size.height} role="img" aria-label={tr("Carte des agents et services")}>
             <g className="amap-world" style={{ transform: `translate(${size.width / 2 + view.x + shift}px,${size.height / 2 + view.y}px) scale(${view.k})` }}>
               <g className="amap-orbits">
                 <circle r={Math.min(size.width, size.height) * 0.21} />
@@ -927,7 +928,7 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
                       onClick={(event) => { event.stopPropagation(); setSelectedId(node.id); setPanelOpen(true); }}
                       tabIndex={0}
                       role="button"
-                      aria-label={`${TYPE_LABELS[node.type] || node.type} ${node.label}, ${STATUS_LABELS[node.status] || node.status}`}
+                      aria-label={`${TYPE_LABELS[node.type] || node.type} ${tr(node.label)}, ${STATUS_LABELS[node.status] || node.status}`}
                       onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedId(node.id); } }}
                     >
                       {(node.status === "run" || node.status === "err") && <circle className={`amap-pulse ${node.status}`} r={position.r} />}
@@ -949,7 +950,7 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
             const meta = hovered.meta || {};
             const detail = hovered.type === "agent"
               ? `${meta.inbound || 0} entrants · ${meta.outbound || 0} sortants${meta.lastMessageAt ? ` · ${relative(meta.lastMessageAt)}` : ""}`
-              : meta.nextRun ? `prochain ${timeOf(meta.nextRun)}` : meta.lastRun ? `dernier run ${relative(meta.lastRun)}` : meta.schedule || meta.host || "";
+              : meta.nextRun ? `prochain ${timeOf(meta.nextRun)}` : meta.lastRun ? tr("dernier run {0}", relative(meta.lastRun)) : meta.schedule || meta.host || "";
             return (
               <div className="amap-tip" style={{ left: Math.min(left, size.width - 230), top: Math.max(8, top) }}>
                 <b>{hovered.label}</b> · {TYPE_LABELS[hovered.type] || hovered.type}
@@ -959,24 +960,24 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
           })()}
           <div className="amap-legend">
             {Object.entries(STATUS_LABELS).filter(([key]) => key !== "unknown").map(([key, value]) => <span key={key}><i className={`amap-dot ${key}`} />{value}</span>)}
-            <span><i className="amap-dot paid">$</i>payant</span>
-            <span className="amap-legend-note">lien animé = échange &lt; 1 h · épaisseur = volume</span>
+            <span><i className="amap-dot paid">$</i>{tr("payant")}</span>
+            <span className="amap-legend-note">{tr("lien animé = échange < 1 h · épaisseur = volume")}</span>
           </div>
           <div className="amap-zoom">
-            <button onClick={() => setView((current) => ({ ...current, k: Math.min(3.2, current.k * 1.25) }))} aria-label="Zoom avant">+</button>
-            <button onClick={() => setView((current) => ({ ...current, k: Math.max(0.45, current.k / 1.25) }))} aria-label="Zoom arrière">−</button>
-            <button onClick={() => setView({ x: 0, y: 0, k: 1 })} aria-label="Recentrer">⌖</button>
+            <button onClick={() => setView((current) => ({ ...current, k: Math.min(3.2, current.k * 1.25) }))} aria-label={tr("Zoom avant")}>+</button>
+            <button onClick={() => setView((current) => ({ ...current, k: Math.max(0.45, current.k / 1.25) }))} aria-label={tr("Zoom arrière")}>−</button>
+            <button onClick={() => setView({ x: 0, y: 0, k: 1 })} aria-label={tr("Recentrer")}>⌖</button>
           </div>
-          {!data && !error && <div className="amap-loading">Lecture des agents, services et messages…</div>}
+          {!data && !error && <div className="amap-loading">{tr("Lecture des agents, services et messages…")}</div>}
           {error && <div className="amap-loading error">{error}</div>}
-          {data && <div className="amap-updated">maj {timeOf(data.generatedAt)}{now - Date.parse(data.generatedAt) > REFRESH_MS * 3 ? " · données anciennes" : ""}</div>}
+          {data && <div className="amap-updated">maj {timeOf(data.generatedAt)}{now - Date.parse(data.generatedAt) > REFRESH_MS * 3 ? tr(" · données anciennes") : ""}</div>}
         </div>
         {panelOpen ? (
           selected
             ? <DetailPanel key={selected.id} projectId={activeProject} span={span} node={selected} graph={graph} api={api} onBack={() => setSelectedId(null)} onCollapse={() => setPanelOpen(false)} onOpenAgent={onOpenAgent} onChanged={load} />
             : <ListPanel nodes={(data?.nodes || []).filter((node) => node.type !== "founder" && (filter === "archived" || !node.archived))} filter={filter} onClearFilter={() => setFilter(null)} onPick={focusNode} onCollapse={() => setPanelOpen(false)} />
         ) : (
-          <button className="amap-panel-tab" onClick={() => setPanelOpen(true)} aria-label="Afficher la liste"><span>‹</span><b>Liste{data ? ` · ${filter ? data.nodes.filter((node) => matchesFilter(node, filter)).length : data.nodes.length - 1}` : ""}</b></button>
+          <button className="amap-panel-tab" onClick={() => setPanelOpen(true)} aria-label={tr("Afficher la liste")}><span>‹</span><b>{tr("Liste")}{data ? ` · ${filter ? data.nodes.filter((node) => matchesFilter(node, filter)).length : data.nodes.length - 1}` : ""}</b></button>
         )}
       </div>
     </section>

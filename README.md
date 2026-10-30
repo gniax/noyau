@@ -8,36 +8,61 @@ Everything runs on your machine: no third-party service, no database, plain file
 
 ## Features
 
-**Agents** — Each agent is a persistent `tmux` session, so it survives a closed tab, a server restart or a dropped connection. The terminal is xterm.js over a WebSocket, with a key bar built for touch (Ctrl, Alt, Esc, paste, file upload, screen capture).
+### One agent, any engine
 
-- conversation mode on top of the raw terminal: chat bubbles, live activity preview, request summary with jump-to-message, Enter to send / Shift+Enter for a new line;
-- switch provider mid-conversation (Codex ⇄ Claude ⇄ Antigravity) in the same tmux session, with a stable agent identity and a shared memory that survives the switch;
-- Codex / Claude / Antigravity quotas polled and displayed;
-- Web Push notifications when an agent waits for an answer;
-- archiving: closing an agent keeps its thread, one click brings it back where it stopped;
-- agent-to-agent tools: list running agents, read their context, hand them a task;
-- shared files per project: agents drop deliverables (images, PDF, builds) and the chat shows a one-click preview card;
-- project map: agents, services, timers and the links between them.
+Each agent is a persistent `tmux` session: it survives a closed tab, a server restart or a dropped connection. Switch it from Claude Code to Codex or Antigravity (and back) without losing the thread: the pane is respawned in place, the agent keeps its identity, aliases and project, and the new engine starts with the handover and the shared memory.
 
-**Projects** — Group agents by work without forcing a shared folder. A project can expose modules declared in `.noyau/modules/*.json`: systemd unit control, one-click actions, external links, Android/iOS builds installable from the phone, knowledge sources.
+![Engine switch](docs/screenshots/provider-switch.png)
 
-**Tasks** — A Trello-style board with custom zones (create, rename, reorder, fold), or a plain list.
+### Persistent multi-agent memory
+
+Every agent owns a memory that is independent of the engine: durable notes (decisions, constraints, next steps), automatic handovers and checkpoints. It is injected at start-up and after every switch, and agents write to it themselves before their context changes (`node scripts/noyau-agent.mjs memory <id> note "…"`).
+
+![Shared memory](docs/screenshots/agent-memory.png)
+
+### Agents that talk to each other
+
+Agents list each other, read each other's context and hand over work from their own terminal. Messages are queued while you are typing, so an agent never overwrites your draft.
+
+```bash
+node scripts/noyau-agent.mjs list                          # running agents, project, state
+node scripts/noyau-agent.mjs send "Atlas Mobile" "API ready on staging"
+node scripts/noyau-agent.mjs read "Atlas API"              # context of another agent
+node scripts/noyau-agent.mjs create --name "Load tests" --prompt "…"
+```
+
+![Agent terminal](docs/screenshots/terminal.png)
+
+
+### Project map
+
+Who runs what, and who talks to whom: agents, systemd services and timers, cron jobs, modules and the external APIs found in the code (`.env` key names, SDKs, hosts — never values). Nodes and links can also be declared in a module manifest (`.noyau/modules/*.json`, `map` key).
+
+![Project map](docs/screenshots/project-map.png)
+
+### Shared files
+
+Each project has a shared folder where agents drop deliverables (`node scripts/noyau-file.mjs put build.apk`). When an agent mentions a file, the chat shows a one-click preview card; images, PDF (rendered with pdf.js, works on mobile), audio, video, CSV, JSON and Markdown open in place.
+
+![Shared files](docs/screenshots/shared-files.png)
+
+### Chat or terminal
+
+A conversation view sits on top of the raw xterm.js terminal: chat bubbles, live activity, a summary of your requests with jump-to-message, Enter to send. The terminal keeps a key bar built for touch (Ctrl, Alt, Esc, paste, upload, screen capture). Quotas for Codex, Claude and Antigravity are polled and shown; notifications fire when an agent finishes.
+
+### Tasks with automatic tracking
+
+A Trello-style board stored as hand-editable Markdown in an Obsidian vault (`- [ ] text 📅 2026-09-12 <!-- noyau:{…} -->`), with short `*A1B2` references clickable inside a terminal. A `UserPromptSubmit` hook (Claude Code and Codex) gives the agent the open tasks of the project: it creates or comments the task, then moves it to "to review" with the commit — never to "done", that stays your call.
 
 ![Task board](docs/screenshots/todos-board.png)
 
-- stored as hand-editable Markdown in an Obsidian vault: `- [ ] text 📅 2026-09-12 <!-- noyau:{…} -->`;
-- short `*A1B2` reference per task, clickable inside an agent terminal;
-- timestamped comments, agent-written ones marked apart from yours;
-- unread badges at three levels (tab, project, card);
-- optional LLM rewrite of what you type.
+### Optional modules
 
-**Automatic tracking** — A `UserPromptSubmit` hook (Claude Code and Codex) hands the agent the open tasks of the current project and asks it to record every change or bug: create the task, or comment the existing one. Once handled, the agent moves it to "to verify" with the date and commit — never to "done", that stays a manual call. Tracking can be switched off per project and per agent.
+Projects, Tasks, Calendar, Groceries (meal planning, basket comparison) and Budget (envelopes, optional bank sync) can each be switched off for the whole instance from Settings, in `.data/features.json`, or with `NOYAU_DISABLED_MODULES=groceries,budget`.
 
-**Groceries & calendar** — Weekly meal planning, shopping lists and basket comparison across stores; tasks with a due date show up in the calendar.
+### English and French
 
-**Budget** — Envelope-based expense tracking, LLM-assisted categorisation, optional bank connection (Enable Banking) over local HTTPS.
-
-![Budget](docs/screenshots/budget.png)
+The UI ships in English and French (Settings → Language, default from the browser). Strings live in `src/locales/en.json` with the French source text as key; `node scripts/i18n-check.mjs` lists anything untranslated and the test suite fails on it.
 
 ![Projects](docs/screenshots/projects.png)
 
@@ -95,6 +120,7 @@ Noyau can start shell sessions and control project services, so treat its web UI
 | `NOYAU_WORKSPACE_ROOT` | Root of the repositories offered when creating an agent |
 | `NOYAU_TODO_FILE` | Markdown file of the Obsidian vault |
 | `NOYAU_TODO_MOUNT_URI` | GVFS mount to perform when the vault sits on a NAS |
+| `NOYAU_DISABLED_MODULES` | Comma-separated modules hidden by default (`projects,todos,calendar,groceries,budget`) |
 
 `noyau.service` is a user systemd unit to adapt, `desktop/` holds the entries to run the UI fullscreen on a touch machine.
 
@@ -106,7 +132,6 @@ A Capacitor shell (`capacitor.config.json`, `scripts/build-mobile.mjs`) packages
 
 ![Mobile home](docs/screenshots/mobile.png)
 
-![Agent terminal](docs/screenshots/terminal.png)
 
 ## Agent commands
 

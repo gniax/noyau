@@ -13,6 +13,7 @@ import {
   downloadProjectFile
 } from "./project-file-preview.jsx";
 import { reformulateRequest, fallbackRecap, findMatchingTodo } from "./request-reformulate.js";
+import { tr, LOCALE } from "./i18n.js";
 
 export { reformulateRequest, fallbackRecap, findMatchingTodo };
 
@@ -111,7 +112,7 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
       setTodos((prev) => prev.map((t) => (t.id === todo.id ? { ...t, status: nextStatus } : t)));
       window.dispatchEvent(new Event("noyau:todos"));
     } catch (err) {
-      window.alert(err.message || "Erreur mise à jour tâche");
+      window.alert(err.message || tr("Erreur mise à jour tâche"));
     }
   }, [api]);
 
@@ -194,7 +195,7 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
     const newMsg = {
       id: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       direction: "in",
-      from: "Vous",
+      from: tr("Vous"),
       text,
       at: new Date().toISOString(),
       pending: true,
@@ -315,7 +316,7 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
     if (!files.length || uploading) return; const uploadSession = session.id; setUploading(true); setError("");
     try {
       for (const file of files) {
-        if (file.size > 500 * 1024 * 1024) throw new Error("Fichier trop volumineux (maximum 500 Mo).");
+        if (file.size > 500 * 1024 * 1024) throw new Error(tr("Fichier trop volumineux (maximum 500 Mo)."));
         const form = new FormData(); form.append("file", file); form.append("sessionId", session.id);
         const result = await api("/api/uploads/file", { method: "POST", body: form });
         if (currentSession.current !== uploadSession) break;
@@ -345,7 +346,7 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
   }
 
   function enqueueDraft() {
-    const attachmentText = attachments.map((file) => `Fichier joint : ${file.path}`).join("\n");
+    const attachmentText = attachments.map((file) => tr("Fichier joint : {0}", file.path)).join("\n");
     const text = [draft.trim(), attachmentText].filter(Boolean).join("\n\n");
     if (!text || text.length > 16384) return;
     updateQueue((old) => [...old, { id: crypto.randomUUID(), text, createdAt: new Date().toISOString() }]);
@@ -357,7 +358,7 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
 
   function send(event) {
     event?.preventDefault?.();
-    const attachmentText = attachments.map((file) => `Fichier joint : ${file.path}`).join("\n");
+    const attachmentText = attachments.map((file) => tr("Fichier joint : {0}", file.path)).join("\n");
     const text = [draft.trim(), attachmentText].filter(Boolean).join("\n\n");
     if (!text || text.length > 16384 || !connected || uploading) return;
     input.current?.blur();
@@ -388,20 +389,20 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
       const lastRelatedOut = relatedOut[relatedOut.length - 1];
 
       let status = "done";
-      let statusLabel = "Demande traitée";
+      let statusLabel = tr("Demande traitée");
 
       if (uMsg.pending || (isLastUserMsg && session.agentStatus?.state === "working")) {
         status = "working";
-        statusLabel = "En cours de traitement";
+        statusLabel = tr("En cours de traitement");
       } else if (isLastUserMsg && session.agentStatus?.state === "waiting") {
         status = "question";
-        statusLabel = "En attente de réponse";
+        statusLabel = tr("En attente de réponse");
       } else if (lastRelatedOut && /\?\s*$/.test(lastRelatedOut.text?.trim() || "") && isLastUserMsg) {
         status = "question";
-        statusLabel = "Question posée par l'agent";
+        statusLabel = tr("Question posée par l'agent");
       } else if (!relatedOut.length && !uMsg.pending) {
         status = isLastUserMsg ? "working" : "done";
-        statusLabel = isLastUserMsg ? "En attente de prise en charge" : "Envoyé";
+        statusLabel = isLastUserMsg ? tr("En attente de prise en charge") : tr("Envoyé");
       }
 
       const matchedTodo = findMatchingTodo(uMsg.text, todos, projectId);
@@ -419,35 +420,35 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
     });
   }, [displayMessages, lastUserMsgIndex, session.agentStatus?.state, todos, projectId]);
 
-  return <section className="agent-conversation" aria-label={`Conversation avec ${session.name}`}>
+  return <section className="agent-conversation" aria-label={tr("Conversation avec {0}", session.name)}>
     <div className="agent-chat-layout">
       <div className="agent-chat-feed" ref={scroll} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; }}>
-        {available && displayMessages.length > 0 && <div className="agent-chat-history-note">Historique récent · les messages plus anciens peuvent manquer</div>}
-        {available !== null && displayMessages.length === 0 && <div className="agent-chat-empty"><b>Conversation avec {session.name}</b><p>Envoie un message pour commencer.</p></div>}
+        {available && displayMessages.length > 0 && <div className="agent-chat-history-note">{tr("Historique récent · les messages plus anciens peuvent manquer")}</div>}
+        {available !== null && displayMessages.length === 0 && <div className="agent-chat-empty"><b>{tr("Conversation avec")}{" "}{session.name}</b><p>{tr("Envoie un message pour commencer.")}</p></div>}
         {displayMessages.map((message, index) => {
           const isCurrentExecutingPrompt = isWorkingOnLastMsg && index === lastUserMsgIndex;
           const mentionedFiles = message.direction === "out" ? detectProjectFiles(message.text, projectFiles) : [];
           return <article data-chat-id={message.stableId} className={`agent-chat-message ${message.direction === "in" ? "user" : "assistant"}${message.pending ? " pending" : ""}`} key={message.stableId}>
             <div className="agent-chat-meta">
               <span className={`agent-chat-avatar ${message.direction === "in" ? "user" : "assistant"}`} aria-hidden="true">{message.direction === "in" ? (message.from ? message.from.slice(0, 1).toUpperCase() : "V") : <AppIcon name="chat" size={13}/>}</span>
-              <strong>{message.direction === "in" ? message.from || "Vous" : session.name}</strong>
-              <span className="agent-chat-role">{message.direction === "in" ? (message.kind === "agent" ? "Agent" : "Vous") : "Assistant"}</span>
+              <strong>{message.direction === "in" ? message.from || tr("Vous") : session.name}</strong>
+              <span className="agent-chat-role">{message.direction === "in" ? (message.kind === "agent" ? tr("Agent") : tr("Vous")) : tr("Assistant")}</span>
               {message.pending ? (
                 <span className="agent-chat-pending-wrap">
-                  <small className="agent-chat-pending-tag"> · Envoi en cours…</small>
+                  <small className="agent-chat-pending-tag">{" "}{tr("· Envoi en cours…")}</small>
                   <button
                     type="button"
                     className="agent-chat-send-now-btn"
                     onClick={() => handleForceSend(message)}
                     disabled={forcedIds.has(message.id)}
-                    title="Forcer l'envoi immédiat à l'agent sans délai"
-                    aria-label="Forcer l'envoi immédiat"
+                    title={tr("Forcer l'envoi immédiat à l'agent sans délai")}
+                    aria-label={tr("Forcer l'envoi immédiat")}
                   >
                     <AppIcon name="arrowUp" size={11} />
-                    <span>{forcedIds.has(message.id) ? "Envoyé" : "Send now"}</span>
+                    <span>{forcedIds.has(message.id) ? tr("Envoyé") : tr("Send now")}</span>
                   </button>
                 </span>
-              ) : (message.at ? ` · ${new Date(message.at).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : "")}
+              ) : (message.at ? ` · ${new Date(message.at).toLocaleString(LOCALE, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : "")}
             </div>
             <div className="agent-chat-bubble">
               {message.direction === "out" ? (
@@ -478,7 +479,7 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
                                 e.preventDefault();
                                 setPreviewingFile(matchingFile);
                               }}
-                              title={`Aperçu direct de ${matchingFile.name}`}
+                              title={tr("Aperçu direct de {0}", matchingFile.name)}
                             >
                               <AppIcon name="eye" size={12} />
                               {props.children}
@@ -493,12 +494,12 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
                   </ReactMarkdown>
                 </div>
               ) : message.text}
-              {message.truncated && <small> · Texte tronqué</small>}
+              {message.truncated && <small>{" "}{tr("· Texte tronqué")}</small>}
               {mentionedFiles.length > 0 && (
-                <div className="agent-chat-shared-files" aria-label="Fichiers partagés mentionnés">
+                <div className="agent-chat-shared-files" aria-label={tr("Fichiers partagés mentionnés")}>
                   <div className="agent-chat-shared-files-head">
                     <AppIcon name="folder" size={13} />
-                    <span>{mentionedFiles.length === 1 ? "Fichier partagé disponible" : "Fichiers partagés disponibles"}</span>
+                    <span>{mentionedFiles.length === 1 ? tr("Fichier partagé disponible") : tr("Fichiers partagés disponibles")}</span>
                   </div>
                   <div className="agent-chat-shared-files-list">
                     {mentionedFiles.map((f) => {
@@ -537,18 +538,18 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
                             <button
                               type="button"
                               className="agent-chat-file-btn primary"
-                              title="Aperçu direct"
-                              aria-label={`Aperçu direct de ${f.name}`}
+                              title={tr("Aperçu direct")}
+                              aria-label={tr("Aperçu direct de {0}", f.name)}
                               onClick={() => setPreviewingFile(f)}
                             >
                               <AppIcon name="eye" size={14} />
-                              <span>Voir</span>
+                              <span>{tr("Voir")}</span>
                             </button>
                             <button
                               type="button"
                               className="agent-chat-file-btn"
-                              title="Télécharger"
-                              aria-label={`Télécharger ${f.name}`}
+                              title={tr("Télécharger")}
+                              aria-label={tr("Télécharger {0}", f.name)}
                               onClick={() => downloadProjectFile(f.projectId || projectId, f.name)}
                             >
                               <AppIcon name="download" size={14} />
@@ -562,16 +563,16 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
               )}
             </div>
             <div className="agent-chat-message-actions">
-              {isCurrentExecutingPrompt && onStop && <button type="button" className="agent-chat-msg-cancel" aria-label="Annuler la réponse" title="Arrêter la réponse de l’agent" onClick={onStop}><AppIcon name="stop" size={15}/> <span>Annuler</span></button>}
-              {message.direction === "in" && message.kind !== "agent" && !message.truncated && !isCurrentExecutingPrompt && !message.pending && <button type="button" aria-label="Réutiliser le message" title="Réutiliser dans un nouveau message" onClick={() => { updateDraft(message.text); input.current?.focus(); }}><AppIcon name="edit" size={15}/></button>}
-              {message.direction === "out" && typeof speechSynthesis !== "undefined" && <button type="button" onClick={() => { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(message.text); u.lang = "fr-FR"; speechSynthesis.speak(u); }} aria-label="Lire la réponse" title="Lire la réponse"><AppIcon name="volume" size={15}/></button>}
+              {isCurrentExecutingPrompt && onStop && <button type="button" className="agent-chat-msg-cancel" aria-label={tr("Annuler la réponse")} title={tr("Arrêter la réponse de l’agent")} onClick={onStop}><AppIcon name="stop" size={15}/> <span>{tr("Annuler")}</span></button>}
+              {message.direction === "in" && message.kind !== "agent" && !message.truncated && !isCurrentExecutingPrompt && !message.pending && <button type="button" aria-label={tr("Réutiliser le message")} title={tr("Réutiliser dans un nouveau message")} onClick={() => { updateDraft(message.text); input.current?.focus(); }}><AppIcon name="edit" size={15}/></button>}
+              {message.direction === "out" && typeof speechSynthesis !== "undefined" && <button type="button" onClick={() => { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(message.text); u.lang = LOCALE; speechSynthesis.speak(u); }} aria-label={tr("Lire la réponse")} title={tr("Lire la réponse")}><AppIcon name="volume" size={15}/></button>}
             </div>
           </article>;
         })}
-        {quotaExhausted && <div className="agent-chat-quota-alert" role="alert"><span className="agent-chat-quota-icon"><AppIcon name="lock" size={18}/></span><div className="agent-chat-quota-text"><strong>Limite de quota atteinte</strong><p>L’agent a atteint son plafond d’utilisation ({session.assistant}). Vous pouvez basculer de moteur ou attendre la réinitialisation.</p></div></div>}
-        {session.agentStatus?.state === "working" && <div className="agent-chat-progress working"><span className="agent-chat-pulse working" /> {session.name} travaille <button type="button" aria-label="Voir activité en direct" title="Voir activité en direct" onClick={onTerminal}><AppIcon name="terminal" size={16}/></button><button type="button" aria-label="Arrêter la réponse" title="Arrêter la réponse" onClick={onStop}><AppIcon name="stop" size={16}/></button></div>}
-        {session.agentStatus?.state === "working" && activity && <pre className="agent-chat-live" aria-label="Activité en direct">{activity}</pre>}
-        {session.agentStatus?.state === "waiting" && <div className="agent-chat-progress waiting"><span className="agent-chat-pulse waiting" /> {session.name} attend une réponse</div>}
+        {quotaExhausted && <div className="agent-chat-quota-alert" role="alert"><span className="agent-chat-quota-icon"><AppIcon name="lock" size={18}/></span><div className="agent-chat-quota-text"><strong>{tr("Limite de quota atteinte")}</strong><p>{tr("L’agent a atteint son plafond d’utilisation (")}{session.assistant}{tr("). Vous pouvez basculer de moteur ou attendre la réinitialisation.")}</p></div></div>}
+        {session.agentStatus?.state === "working" && <div className="agent-chat-progress working"><span className="agent-chat-pulse working" /> {session.name} travaille <button type="button" aria-label={tr("Voir activité en direct")} title={tr("Voir activité en direct")} onClick={onTerminal}><AppIcon name="terminal" size={16}/></button><button type="button" aria-label={tr("Arrêter la réponse")} title={tr("Arrêter la réponse")} onClick={onStop}><AppIcon name="stop" size={16}/></button></div>}
+        {session.agentStatus?.state === "working" && activity && <pre className="agent-chat-live" aria-label={tr("Activité en direct")}>{activity}</pre>}
+        {session.agentStatus?.state === "waiting" && <div className="agent-chat-progress waiting"><span className="agent-chat-pulse waiting" /> {session.name}{" "}{tr("attend une réponse")}</div>}
         <div ref={bottomAnchor} className="agent-chat-anchor" aria-hidden="true" />
       </div>
 
@@ -582,19 +583,19 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
           aria-hidden="true"
         />
       )}
-      <aside className={`agent-chat-timeline-sidebar ${timelineOpen ? "open" : "collapsed"}`} aria-label="Sommaire des 10 dernières demandes">
+      <aside className={`agent-chat-timeline-sidebar ${timelineOpen ? "open" : "collapsed"}`} aria-label={tr("Sommaire des 10 dernières demandes")}>
         <header className="agent-chat-timeline-head">
           <button
             type="button"
             className="agent-chat-timeline-toggle-btn"
             onClick={() => setTimelineOpen((v) => !v)}
-            title={timelineOpen ? "Masquer le sommaire" : "Afficher le sommaire des demandes"}
-            aria-label="Basculer sommaire"
+            title={timelineOpen ? tr("Masquer le sommaire") : tr("Afficher le sommaire des demandes")}
+            aria-label={tr("Basculer sommaire")}
           >
             {timelineOpen ? (
               <>
                 <AppIcon name="task" size={13} />
-                <strong>Demandes ({timelineItems.length})</strong>
+                <strong>{tr("Demandes (")}{timelineItems.length})</strong>
                 <span className="agent-chat-timeline-collapse-icon">›</span>
               </>
             ) : (
@@ -655,23 +656,23 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
                         setExpandedId(next);
                         if (next) loadRecap(item);
                       }}
-                      title={isExpanded ? "Masquer le récapitulatif" : "Lire le récapitulatif IA"}
-                      aria-label="Récapitulatif de la demande"
+                      title={isExpanded ? tr("Masquer le récapitulatif") : tr("Lire le récapitulatif IA")}
+                      aria-label={tr("Récapitulatif de la demande")}
                     >
-                      {isExpanded ? "Masquer" : "Récap"}
+                      {isExpanded ? tr("Masquer") : tr("Récap")}
                     </button>
                   </div>
                   {isExpanded && (
                     <div className="agent-chat-timeline-full-prompt" onClick={(e) => e.stopPropagation()}>
                       <div className="agent-chat-timeline-recap-head">
-                        <span className="agent-chat-timeline-recap-title">✨ Récapitulatif IA</span>
+                        <span className="agent-chat-timeline-recap-title">{tr("✨ Récapitulatif IA")}</span>
                         <button
                           type="button"
                           className="agent-chat-timeline-raw-toggle"
                           onClick={() => setShowRawText((prev) => ({ ...prev, [item.id]: !prev[item.id] }))}
-                          title="Basculer entre récapitulatif structuré et message brut"
+                          title={tr("Basculer entre récapitulatif structuré et message brut")}
                         >
-                          {showRawText[item.id] ? "Voir récap" : "Texte brut"}
+                          {showRawText[item.id] ? tr("Voir récap") : tr("Texte brut")}
                         </button>
                       </div>
                       {showRawText[item.id] ? (
@@ -693,16 +694,16 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
                       <div className="agent-chat-timeline-todo-head">
                         <span className="agent-chat-timeline-todo-ref">{item.todo.ref}</span>
                         <span className={`agent-chat-timeline-todo-status ${item.todo.status}`}>
-                          {item.todo.status === "done" ? "✓ Fait" : item.todo.status === "review" ? "⏳ À tester" : "○ À faire"}
+                          {item.todo.status === "done" ? "✓ Fait" : item.todo.status === "review" ? tr("⏳ À tester") : tr("○ À faire")}
                         </span>
                         <button
                           type="button"
                           className="agent-chat-timeline-todo-btn"
                           onClick={() => openTodoInView(item.todo)}
-                          title="Voir dans la fenêtre Todo"
-                          aria-label="Voir dans la fenêtre Todo"
+                          title={tr("Voir dans la fenêtre Todo")}
+                          aria-label={tr("Voir dans la fenêtre Todo")}
                         >
-                          Voir todo ↗
+                          {tr("Voir todo ↗")}
                         </button>
                       </div>
                     </div>
@@ -713,9 +714,9 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
                           type="button"
                           className="agent-chat-timeline-tag-btn"
                           onClick={() => onTagTodo(item.text)}
-                          title="Lier ou créer une tâche todo"
+                          title={tr("Lier ou créer une tâche todo")}
                         >
-                          + Todo
+                          {tr("+ Todo")}
                         </button>
                       </div>
                     )
@@ -724,42 +725,42 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
               );
             })}
             {timelineItems.length === 0 && (
-              <div className="agent-chat-timeline-empty">Aucune demande récente.</div>
+              <div className="agent-chat-timeline-empty">{tr("Aucune demande récente.")}</div>
             )}
           </div>
         )}
       </aside>
     </div>
     <div className="agent-chat-bottom">
-      {held > 0 && <div className="agent-chat-held-notice"><AppIcon name="chat" size={14}/> {held} message{held > 1 ? "s" : ""} inter-agent en attente</div>}
-      {queued > 0 && <div className="agent-chat-held-notice"><AppIcon name="refresh" size={14}/> {queued} message{queued > 1 ? "s" : ""} en attente de transmission</div>}
+      {held > 0 && <div className="agent-chat-held-notice"><AppIcon name="chat" size={14}/> {held} {tr(held > 1 ? "messages" : "message")}{" "}{tr("inter-agent en attente")}</div>}
+      {queued > 0 && <div className="agent-chat-held-notice"><AppIcon name="refresh" size={14}/> {queued} {tr(queued > 1 ? "messages" : "message")}{" "}{tr("en attente de transmission")}</div>}
       {queue.length > 0 && (
-        <section className="agent-chat-queue-section" aria-label="Messages en file d'attente">
+        <section className="agent-chat-queue-section" aria-label={tr("Messages en file d'attente")}>
           <header className="agent-chat-queue-head">
             <span className="agent-chat-queue-badge">{queue.length}</span>
-            <strong>{queue.length === 1 ? "1 message en file d’attente" : `${queue.length} messages en file d’attente`}</strong>
-            <small>{session.agentStatus?.state === "working" ? `Partira automatiquement dès que ${session.name} sera disponible` : "Prêt à partir"}</small>
+            <strong>{queue.length === 1 ? tr("1 message en file d’attente") : tr("{0} messages en file d’attente", queue.length)}</strong>
+            <small>{session.agentStatus?.state === "working" ? tr("Partira automatiquement dès que {0} sera disponible", session.name) : tr("Prêt à partir")}</small>
           </header>
           <div className="agent-chat-queue-items">
             {queue.map((item, index) => (
               <article className="agent-chat-queue-card" key={item.id || index}>
                 <div className="agent-chat-queue-meta">
                   <span className="agent-chat-queue-idx">#{index + 1}</span>
-                  <span className="agent-chat-queue-tag">En attente</span>
+                  <span className="agent-chat-queue-tag">{tr("En attente")}</span>
                 </div>
                 <p className="agent-chat-queue-content">{item.text}</p>
                 <div className="agent-chat-queue-actions">
-                  <button type="button" onClick={() => editQueueItem(index)} aria-label="Modifier ce message" title="Modifier">
+                  <button type="button" onClick={() => editQueueItem(index)} aria-label={tr("Modifier ce message")} title={tr("Modifier")}>
                     <AppIcon name="edit" size={14}/>
-                    <span>Modifier</span>
+                    <span>{tr("Modifier")}</span>
                   </button>
-                  <button type="button" onClick={() => sendQueueItemNow(index)} aria-label="Envoyer maintenant" title="Forcer l’envoi">
+                  <button type="button" onClick={() => sendQueueItemNow(index)} aria-label={tr("Envoyer maintenant")} title={tr("Forcer l’envoi")}>
                     <AppIcon name="arrowUp" size={14}/>
-                    <span>Envoyer</span>
+                    <span>{tr("Envoyer")}</span>
                   </button>
-                  <button type="button" className="agent-chat-queue-cancel" onClick={() => cancelQueueItem(index)} aria-label="Annuler ce message" title="Annuler">
+                  <button type="button" className="agent-chat-queue-cancel" onClick={() => cancelQueueItem(index)} aria-label={tr("Annuler ce message")} title={tr("Annuler")}>
                     <AppIcon name="trash" size={14}/>
-                    <span>Annuler</span>
+                    <span>{tr("Annuler")}</span>
                   </button>
                 </div>
               </article>
@@ -769,7 +770,7 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
       )}
       {error && <p className="agent-chat-error" role="status">{error}</p>}
       {attachments.length > 0 && <div className="agent-chat-attachments">{attachments.map((file, i) => <span key={`${file.path}-${i}`}><AppIcon name="paperclip" size={14}/> {file.name} <button type="button" aria-label={`Retirer ${file.name}`} onClick={() => updateAttachments((old) => old.filter((_, n) => n !== i))}>×</button></span>)}</div>}
-      {agentPicker && <div className="agent-tag-panel" role="dialog" aria-label="Mentionner un agent"><header><strong>Mentionner un agent</strong><button type="button" aria-label="Fermer" onClick={() => setAgentPicker(false)}>×</button></header><input aria-label="Rechercher un agent à mentionner" placeholder="Rechercher un agent…" value={agentQuery} onChange={(event) => setAgentQuery(event.target.value)}/><small>Ajoute une référence au message, sans contacter l’agent automatiquement.</small><div className="agent-tag-list">{agents.filter((item) => item.id !== session.id && `${item.name} ${item.project?.name || ""}`.toLocaleLowerCase("fr").includes(agentQuery.trim().toLocaleLowerCase("fr"))).slice(0, 30).map((item) => <button key={item.id} type="button" onClick={() => { const reference = `@${item.name} (agent Noyau : ${item.agentId || item.id})`; updateDraft(`${draft}${draft && !/\s$/.test(draft) ? " " : ""}${reference} `); setAgentPicker(false); setAgentQuery(""); input.current?.focus(); }}><strong>{item.name}</strong><small>{item.project?.name || "Sans projet"}</small></button>)}</div></div>}
+      {agentPicker && <div className="agent-tag-panel" role="dialog" aria-label={tr("Mentionner un agent")}><header><strong>{tr("Mentionner un agent")}</strong><button type="button" aria-label={tr("Fermer")} onClick={() => setAgentPicker(false)}>×</button></header><input aria-label={tr("Rechercher un agent à mentionner")} placeholder={tr("Rechercher un agent…")} value={agentQuery} onChange={(event) => setAgentQuery(event.target.value)}/><small>{tr("Ajoute une référence au message, sans contacter l’agent automatiquement.")}</small><div className="agent-tag-list">{agents.filter((item) => item.id !== session.id && `${item.name} ${item.project?.name || ""}`.toLocaleLowerCase("fr").includes(agentQuery.trim().toLocaleLowerCase("fr"))).slice(0, 30).map((item) => <button key={item.id} type="button" onClick={() => { const reference = `@${item.name} (agent Noyau : ${item.agentId || item.id})`; updateDraft(`${draft}${draft && !/\s$/.test(draft) ? " " : ""}${reference} `); setAgentPicker(false); setAgentQuery(""); input.current?.focus(); }}><strong>{item.name}</strong><small>{item.project?.name || tr("Sans projet")}</small></button>)}</div></div>}
       <form className="agent-chat-compose" onSubmit={send} onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); addFiles([...e.dataTransfer.files]); }}>
         <textarea
           ref={input}
@@ -782,21 +783,21 @@ export function AgentConversation({ session, connected, api, onSubmit, onForceSu
             }
           }}
           onPaste={(e) => { const files = [...(e.clipboardData?.files || [])]; if (files.length) { e.preventDefault(); addFiles(files); } }}
-          placeholder={`Écrire à ${session.name}…`}
-          aria-label="Message à l’agent"
+          placeholder={tr("Écrire à {0}…", session.name)}
+          aria-label={tr("Message à l’agent")}
           rows={2}
           maxLength={16384}
         />
         <div className="agent-chat-actions">
-          <label className="agent-chat-attach" title="Joindre des fichiers" aria-label="Joindre des fichiers"><input type="file" multiple disabled={uploading} onChange={(e) => { addFiles([...e.target.files]); e.target.value = ""; }} /><span>{uploading ? "…" : <AppIcon name="paperclip" size={18}/>}</span></label>
-          {onTagTodo && <button type="button" className="agent-chat-tool" aria-label="Taguer une tâche" title="Taguer une tâche" onClick={onTagTodo}><AppIcon name="task" size={18}/></button>}
-          {onCreateNote && <button type="button" className="agent-chat-tool" aria-label="Créer une note" title="Créer une note" onClick={onCreateNote}><AppIcon name="file" size={18}/></button>}
-          {agents.length > 1 && <button type="button" className="agent-chat-tool" aria-label="Mentionner un agent" title="Mentionner un agent" onClick={() => setAgentPicker((open) => !open)}><AppIcon name="tag" size={18}/></button>}
-          {onDictation && <button type="button" className="agent-chat-tool" aria-label="Dicter un message" title="Dicter un message" onClick={onDictation}><AppIcon name="microphone" size={18}/></button>}
-          {(draft.trim() || attachments.length > 0) && <button type="button" className="agent-chat-tool" aria-label="Mettre en file d'attente" title="Mettre en file d'attente pour plus tard" onClick={enqueueDraft}><AppIcon name="more" size={18}/></button>}
-          <button className="agent-chat-send" type="submit" aria-label="Envoyer" title="Envoyer" onPointerDown={(event) => { event.preventDefault(); }} onTouchStart={(event) => { const touch = event.changedTouches[0]; sendTouch.current = touch ? { x: touch.clientX, y: touch.clientY } : null; }} onTouchCancel={() => { sendTouch.current = null; }} onTouchEnd={(event) => { const start = sendTouch.current; const touch = event.changedTouches[0]; sendTouch.current = null; if (!start || !touch || Math.abs(touch.clientX - start.x) > 12 || Math.abs(touch.clientY - start.y) > 12 || event.currentTarget.disabled) return; event.preventDefault(); send(); }} disabled={!connected || uploading || (!draft.trim() && !attachments.length)}><AppIcon name="arrowUp" size={19}/></button>
+          <label className="agent-chat-attach" title={tr("Joindre des fichiers")} aria-label={tr("Joindre des fichiers")}><input type="file" multiple disabled={uploading} onChange={(e) => { addFiles([...e.target.files]); e.target.value = ""; }} /><span>{uploading ? "…" : <AppIcon name="paperclip" size={18}/>}</span></label>
+          {onTagTodo && <button type="button" className="agent-chat-tool" aria-label={tr("Taguer une tâche")} title={tr("Taguer une tâche")} onClick={onTagTodo}><AppIcon name="task" size={18}/></button>}
+          {onCreateNote && <button type="button" className="agent-chat-tool" aria-label={tr("Créer une note")} title={tr("Créer une note")} onClick={onCreateNote}><AppIcon name="file" size={18}/></button>}
+          {agents.length > 1 && <button type="button" className="agent-chat-tool" aria-label={tr("Mentionner un agent")} title={tr("Mentionner un agent")} onClick={() => setAgentPicker((open) => !open)}><AppIcon name="tag" size={18}/></button>}
+          {onDictation && <button type="button" className="agent-chat-tool" aria-label={tr("Dicter un message")} title={tr("Dicter un message")} onClick={onDictation}><AppIcon name="microphone" size={18}/></button>}
+          {(draft.trim() || attachments.length > 0) && <button type="button" className="agent-chat-tool" aria-label={tr("Mettre en file d'attente")} title={tr("Mettre en file d'attente pour plus tard")} onClick={enqueueDraft}><AppIcon name="more" size={18}/></button>}
+          <button className="agent-chat-send" type="submit" aria-label={tr("Envoyer")} title={tr("Envoyer")} onPointerDown={(event) => { event.preventDefault(); }} onTouchStart={(event) => { const touch = event.changedTouches[0]; sendTouch.current = touch ? { x: touch.clientX, y: touch.clientY } : null; }} onTouchCancel={() => { sendTouch.current = null; }} onTouchEnd={(event) => { const start = sendTouch.current; const touch = event.changedTouches[0]; sendTouch.current = null; if (!start || !touch || Math.abs(touch.clientX - start.x) > 12 || Math.abs(touch.clientY - start.y) > 12 || event.currentTarget.disabled) return; event.preventDefault(); send(); }} disabled={!connected || uploading || (!draft.trim() && !attachments.length)}><AppIcon name="arrowUp" size={19}/></button>
         </div>
-      </form><small>{connected ? "Entrée pour envoyer · Shift+Entrée pour aller à la ligne" : "Connexion interrompue : message conservé ici."}</small>
+      </form><small>{connected ? tr("Entrée pour envoyer · Shift+Entrée pour aller à la ligne") : tr("Connexion interrompue : message conservé ici.")}</small>
     </div>
     {previewingFile && (
       <ProjectFilePreviewModal

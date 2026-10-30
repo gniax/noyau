@@ -1,7 +1,7 @@
 {
   "name": "noyau",
   "private": true,
-  "version": "0.157.0",
+  "version": "0.159.1",
   "type": "module",
   "scripts": {
     "dev": "NODE_ENV=development node --watch server/index.js",
@@ -30,6 +30,7 @@
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "node-pty": "^1.1.0",
+    "pdfjs-dist": "^6.4.299",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-markdown": "^10.1.0",

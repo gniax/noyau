@@ -16,6 +16,7 @@ import sharp from "sharp";
 import { WebSocketServer } from "ws";
 import { SessionStore } from "./session-store.js";
 import { InputGate, draftAfterInput } from "./input-gate.js";
+import { resolveModules, sanitizeModules } from "./app-modules.js";
 import { TmuxController, chainCommands, literalKeyCommands, validSessionId } from "./tmux.js";
 import { PushService } from "./push-service.js";
 import { UsageService, lastClaudeMessage, parseClaudeRateLimits, refreshExpiredQuota } from "./usage.js";
@@ -141,6 +142,7 @@ await moduleStore.load();
 const knowledgeConfigStore = new SessionStore(path.join(dataDir, "knowledge-config.json"));
 await knowledgeConfigStore.load();
 const projectOrderStore = new SessionStore(path.join(dataDir, "project-order.json"));
+const featureStore = new SessionStore(path.join(dataDir, "features.json"));
 await projectOrderStore.load();
 const financeStore = new SessionStore(path.join(dataDir, "finance.json"));
 await financeStore.load();
@@ -1444,7 +1446,18 @@ app.delete("/api/groceries/devices/:id", async (request, response, next) => { tr
 app.post("/api/groceries/recipe-import", async (request, response, next) => { try { response.json(await groceries.importRecipe(request.body?.url)); } catch (error) { next(error); } });
 app.post("/api/groceries/product-page", async (request, response, next) => { try { response.json(await groceries.publicProduct(request.body?.url, request.body?.storeId)); } catch (error) { next(error); } });
 
-app.get("/api/config", (_request, response) => response.json({ workspaceRoot }));
+app.get("/api/config", (_request, response) => response.json({ workspaceRoot, modules: resolveModules(featureStore.get("modules")) }));
+app.put("/api/config/modules", async (request, response, next) => {
+  try {
+    // Reglage de toute l'instance: reserve au profil principal.
+    if (request.profile?.id !== primaryProfileId) throw new Error("Seul le profil principal peut changer les modules.");
+    const modules = sanitizeModules(request.body?.modules, resolveModules(featureStore.get("modules")));
+    await featureStore.set("modules", modules);
+    response.json({ modules });
+  } catch (error) {
+    next(error);
+  }
+});
 
 app.post("/api/presence", (request, response) => {
   const deviceId = String(request.body?.deviceId || "").slice(0, 64);
@@ -4541,6 +4554,8 @@ if (process.env.NODE_ENV === "production") {
   app.use(express.static(path.join(root, "dist"), { index: false }));
   app.use((request, response, next) => {
     if (request.method !== "GET" || request.path.startsWith("/api/")) return next();
+    // Asset hashe absent (rebuild) => 404, sinon le navigateur recoit du HTML comme module JS et l'app reste blanche.
+    if (request.path.startsWith("/assets/") || path.extname(request.path)) return response.status(404).type("text/plain").send("Not found");
     response.sendFile(path.join(root, "dist", "index.html"));
   });
 } else {

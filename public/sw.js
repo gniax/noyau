@@ -74,6 +74,8 @@ self.addEventListener("message", (event) => {
 
 function cacheCopy(request, response) {
   if (!response.ok || response.redirected || response.type === "opaque") return;
+  // Un asset absent renvoyait le shell HTML: ne jamais le mettre en cache sous l'URL d'un JS/CSS.
+  if ((response.headers.get("content-type") || "").includes("text/html")) return;
   const copy = response.clone();
   openCache().then((cache) => cache.put(request, copy)).catch(() => {});
 }

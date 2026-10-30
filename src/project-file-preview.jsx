@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { AppIcon } from "./app-icon.jsx";
 import { isNative } from "./native-mobile.js";
 import { readProjectFile } from "./project-file-transport.js";
+import { PdfPreview } from "./pdf-preview.jsx";
 import {
   formatFileBytes,
   getFileIcon,
@@ -13,6 +14,7 @@ import {
   detectProjectFiles,
   downloadProjectFile
 } from "./project-file-utils.js";
+import { tr } from "./i18n.js";
 
 export {
   formatFileBytes,
@@ -61,7 +63,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
         const mime = blob.type && blob.type !== "application/octet-stream" ? blob.type : getMimeType(ext);
         const typedBlob = blob.type === mime ? blob : new Blob([blob], { type: mime });
         objectUrl = URL.createObjectURL(typedBlob);
-        setMediaPreview({ key: previewUrl, url: objectUrl, error: "", loading: false });
+        setMediaPreview({ key: previewUrl, url: objectUrl, blob: typedBlob, error: "", loading: false });
       })
       .catch((error) => {
         if (!active) return;
@@ -106,7 +108,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
         })
         .catch((err) => {
           if (active) {
-            setTextError(err.message || "Erreur de chargement du fichier");
+            setTextError(err.message || tr("Erreur de chargement du fichier"));
             setLoadingText(false);
           }
         });
@@ -173,7 +175,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
 
   const modalContent = (
     <div className="modal-backdrop project-file-preview-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
-      <section className="modal project-file-preview-modal" role="dialog" aria-modal="true" aria-label={`Aperçu de ${file.name}`}>
+      <section className="modal project-file-preview-modal" role="dialog" aria-modal="true" aria-label={tr("Aperçu de {0}", file.name)}>
         <header className="project-file-preview-head">
           <div className="project-file-preview-title-area">
             <span className="project-file-preview-icon">{getFileIcon(ext)}</span>
@@ -187,7 +189,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
               <div className="project-file-preview-meta">
                 <span>{file.sizeFormatted || formatFileBytes(file.size)}</span>
                 {imgDimensions && <span> · {imgDimensions.w} × {imgDimensions.h} px</span>}
-                {linesCount > 0 && <span> · {linesCount} ligne{linesCount > 1 ? "s" : ""}</span>}
+                {linesCount > 0 && <span> · {linesCount} {tr(linesCount > 1 ? "lignes" : "ligne")}</span>}
               </div>
             </div>
             {files.length > 1 && (
@@ -197,7 +199,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
                   className="project-file-preview-nav-btn"
                   onClick={() => hasPrev && onSelectFile?.(files[currentIndex - 1])}
                   disabled={!hasPrev}
-                  title="Fichier précédent (←)"
+                  title={tr("Fichier précédent (←)")}
                 >
                   ‹
                 </button>
@@ -207,7 +209,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
                   className="project-file-preview-nav-btn"
                   onClick={() => hasNext && onSelectFile?.(files[currentIndex + 1])}
                   disabled={!hasNext}
-                  title="Fichier suivant (→)"
+                  title={tr("Fichier suivant (→)")}
                 >
                   ›
                 </button>
@@ -220,24 +222,24 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
               target="_blank"
               rel="noreferrer"
               className="ghost"
-              title="Ouvrir dans un nouvel onglet"
+              title={tr("Ouvrir dans un nouvel onglet")}
             >
-              <AppIcon name="external" size={16} /><span>Ouvrir</span>
+              <AppIcon name="external" size={16} /><span>{tr("Ouvrir")}</span>
             </a>
             <button
               type="button"
               className="ghost"
               onClick={() => onDownload ? onDownload(file.name) : downloadProjectFile(projectId, file.name)}
-              title="Télécharger sur l'appareil"
+              title={tr("Télécharger sur l'appareil")}
             >
-              <AppIcon name="download" size={16} /><span>Télécharger</span>
+              <AppIcon name="download" size={16} /><span>{tr("Télécharger")}</span>
             </button>
             <button
               type="button"
               className="ghost project-file-preview-close"
               onClick={onClose}
-              title="Fermer l'aperçu (Échap)"
-              aria-label="Fermer l'aperçu"
+              title={tr("Fermer l'aperçu (Échap)")}
+              aria-label={tr("Fermer l'aperçu")}
             >
               <AppIcon name="close" size={16} />
             </button>
@@ -248,7 +250,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
           {category === "image" && (
             <div className="project-file-preview-image-container">
               {mediaPreview.loading && !displayedPreviewUrl && (
-                <div className="project-file-preview-loading">Chargement de l'image…</div>
+                <div className="project-file-preview-loading">{tr("Chargement de l'image…")}</div>
               )}
               {displayedPreviewUrl && (
                 <img
@@ -262,21 +264,19 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
                 />
               )}
               <div className="project-file-preview-image-toolbar">
-                <button type="button" onClick={() => setZoomScale((s) => Math.max(0.25, s - 0.25))} title="Zoom arrière">－</button>
+                <button type="button" onClick={() => setZoomScale((s) => Math.max(0.25, s - 0.25))} title={tr("Zoom arrière")}>－</button>
                 <span>{Math.round(zoomScale * 100)}%</span>
-                <button type="button" onClick={() => setZoomScale((s) => Math.min(4, s + 0.25))} title="Zoom avant">＋</button>
-                <button type="button" onClick={() => setZoomScale(1)} title="Taille réelle (100%)">100%</button>
+                <button type="button" onClick={() => setZoomScale((s) => Math.min(4, s + 0.25))} title={tr("Zoom avant")}>＋</button>
+                <button type="button" onClick={() => setZoomScale(1)} title={tr("Taille réelle (100%)")}>100%</button>
               </div>
             </div>
           )}
 
-          {category === "pdf" && (
-            <iframe
-              src={displayedPreviewUrl ? `${displayedPreviewUrl}#toolbar=1` : undefined}
-              title={file.name}
-              className="project-file-preview-iframe"
-            />
-          )}
+          {category === "pdf" && (mediaPreview.key === previewUrl && mediaPreview.blob
+            ? <PdfPreview blob={mediaPreview.blob} name={file.name} />
+            : mediaPreview.key === previewUrl && !mediaPreview.loading && !isNative
+              ? <iframe src={`${previewUrl}#toolbar=1`} title={file.name} className="project-file-preview-iframe" />
+              : <div className="project-file-preview-loading">{mediaPreview.error ? tr("Aperçu PDF impossible : {0}", mediaPreview.error) : tr("Chargement du PDF…")}</div>)}
 
           {category === "audio" && (
             <div className="project-file-preview-media-container">
@@ -305,19 +305,19 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
                         className={viewMode !== "raw" ? "active" : ""}
                         onClick={() => setViewMode("default")}
                       >
-                        Tableau ({csvData?.rows?.length || 0})
+                        {tr("Tableau (")}{csvData?.rows?.length || 0})
                       </button>
                       <button
                         type="button"
                         className={viewMode === "raw" ? "active" : ""}
                         onClick={() => setViewMode("raw")}
                       >
-                        Brut (CSV)
+                        {tr("Brut (CSV)")}
                       </button>
                       {viewMode !== "raw" && (
                         <input
                           type="search"
-                          placeholder="Filtrer les lignes…"
+                          placeholder={tr("Filtrer les lignes…")}
                           value={csvFilter}
                           onChange={(e) => setCsvFilter(e.target.value)}
                           className="project-file-preview-search"
@@ -332,14 +332,14 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
                         className={viewMode === "default" ? "active" : ""}
                         onClick={() => setViewMode("default")}
                       >
-                        Formaté
+                        {tr("Formaté")}
                       </button>
                       <button
                         type="button"
                         className={viewMode === "raw" ? "active" : ""}
                         onClick={() => setViewMode("raw")}
                       >
-                        Brut
+                        {tr("Brut")}
                       </button>
                     </>
                   )}
@@ -349,29 +349,29 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
                     type="button"
                     className={`ghost ${wrapLines ? "active" : ""}`}
                     onClick={() => setWrapLines((w) => !w)}
-                    title="Retour à la ligne automatique"
+                    title={tr("Retour à la ligne automatique")}
                   >
-                    Retour à la ligne
+                    {tr("Retour à la ligne")}
                   </button>
                   <button
                     type="button"
                     className="ghost"
                     onClick={copyText}
-                    title="Copier le contenu dans le presse-papiers"
+                    title={tr("Copier le contenu dans le presse-papiers")}
                   >
-                    {copied ? "Copié !" : "Copier le texte"}
+                    {copied ? tr("Copié !") : tr("Copier le texte")}
                   </button>
                 </div>
               </div>
 
               {loadingText && (
-                <div className="project-file-preview-loading">Chargement du contenu…</div>
+                <div className="project-file-preview-loading">{tr("Chargement du contenu…")}</div>
               )}
               {textError && (
                 <div className="project-file-preview-error">
                   <p>{textError}</p>
                   <button type="button" onClick={() => onDownload ? onDownload(file.name) : downloadProjectFile(project?.id, file.name)}>
-                    Télécharger plutôt le fichier
+                    {tr("Télécharger plutôt le fichier")}
                   </button>
                 </div>
               )}
@@ -400,7 +400,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
                   </table>
                   {filteredCsvRows.length === 0 && (
                     <div className="project-file-preview-table-empty">
-                      Aucune ligne ne correspond au filtre « {csvFilter} »
+                      {tr("Aucune ligne ne correspond au filtre «")}{" "}{csvFilter} »
                     </div>
                   )}
                 </div>
@@ -424,14 +424,14 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
               <span className="project-file-preview-unsupported-icon">{getFileIcon(ext)}</span>
               <h3>{file.name}</h3>
               <p>
-                L'aperçu direct de ce type de fichier (<strong>{ext || "binaire"}</strong>) n'est pas pris en charge dans le navigateur.
+                {tr("L'aperçu direct de ce type de fichier (")}<strong>{ext || "binaire"}</strong>{tr(") n'est pas pris en charge dans le navigateur.")}
               </p>
               <div className="project-file-preview-unsupported-actions">
                 <button type="button" className="primary" onClick={() => onDownload ? onDownload(file.name) : downloadProjectFile(project?.id, file.name)}>
-                  ↓ Télécharger ({file.sizeFormatted || formatFileBytes(file.size)})
+                  {tr("↓ Télécharger (")}{file.sizeFormatted || formatFileBytes(file.size)})
                 </button>
                 <a href={previewUrl} target="_blank" rel="noreferrer" className="ghost">
-                  ↗ Tenter l'ouverture dans un nouvel onglet
+                  {tr("↗ Tenter l'ouverture dans un nouvel onglet")}
                 </a>
               </div>
             </div>

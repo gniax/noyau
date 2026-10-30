@@ -37,13 +37,15 @@ import { disableBiometric, biometricStatus, enableBiometric, biometricClient } f
 import { canQueueOffline } from "./offline-policy.js";
 import { loginNavigation } from "./login-navigation.js";
 import { calendarSnapshot, sameSnapshotScope } from "./offline-snapshots.js";
+import { tr, LANGUAGES, currentLanguage, setLanguage, LOCALE } from "./i18n.js";
+import { useModules, setModules, moduleEnabled, viewModule } from "./app-modules.js";
 
 const assistantMeta = {
-  codex: { label: "Codex", glyph: "C", color: "green" },
-  claude: { label: "Claude", glyph: "A", color: "orange" },
-  "claude-design": { label: "Claude Design", glyph: "D", color: "orange" },
-  antigravity: { label: "Antigravity", glyph: "G", color: "violet" },
-  shell: { label: "Terminal", glyph: ">_", color: "blue" },
+  codex: { label: tr("Codex"), glyph: "C", color: "green" },
+  claude: { label: tr("Claude"), glyph: "A", color: "orange" },
+  "claude-design": { label: tr("Claude Design"), glyph: "D", color: "orange" },
+  antigravity: { label: tr("Antigravity"), glyph: "G", color: "violet" },
+  shell: { label: tr("Terminal"), glyph: ">_", color: "blue" },
 };
 const LAUNCHABLE_ASSISTANTS = ["codex", "claude", "antigravity", "shell"];
 
@@ -66,9 +68,9 @@ function profileCacheKey(key) {
 
 const ROOT_FOLDER = "root";
 const DEFAULT_COLUMNS = [
-  { id: "todo", name: "À faire", kind: "todo" },
-  { id: "review", name: "À tester / valider", kind: "review" },
-  { id: "done", name: "Terminé", kind: "done" },
+  { id: "todo", name: tr("À faire"), kind: "todo" },
+  { id: "review", name: tr("À tester / valider"), kind: "review" },
+  { id: "done", name: tr("Terminé"), kind: "done" },
 ];
 // Reference courte affichee sur la carte: sert a designer une tache dans un prompt d'agent.
 function todoRef(id) {
@@ -168,8 +170,8 @@ function wantsOnScreenKeyboard() {
 }
 const THEME_KEY = "noyau:theme";
 const THEMES = {
-  noyau: { label: "Thème Noyau", terminal: { background: "#080b0a", foreground: "#d9e0dc", cursor: "#b8ff5e", selectionBackground: "#31551f88" } },
-  "moving-castle": { label: "Château ambulant", terminal: { background: "#0f1119", foreground: "#eeeae3", cursor: "#e1b047", selectionBackground: "#e1b04744" } },
+  noyau: { label: tr("Thème Noyau"), terminal: { background: "#080b0a", foreground: "#d9e0dc", cursor: "#b8ff5e", selectionBackground: "#31551f88" } },
+  "moving-castle": { label: tr("Château ambulant"), terminal: { background: "#0f1119", foreground: "#eeeae3", cursor: "#e1b047", selectionBackground: "#e1b04744" } },
 };
 
 function applyTheme(theme) {
@@ -182,7 +184,7 @@ function applyTheme(theme) {
 function applyInstallIdentity(profile) {
   if (!profile) return;
   document.querySelector('link[rel="manifest"]')?.setAttribute("href", `/manifest.webmanifest?profile=${encodeURIComponent(profile.id)}`);
-  document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute("content", profile.primary ? "Noyau" : `Noyau · ${profile.name}`);
+  document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute("content", profile.primary ? tr("Noyau") : `Noyau · ${profile.name}`);
 }
 
 function terminalTheme() {
@@ -271,7 +273,7 @@ async function api(path, options = {}) {
   const token = typeof localStorage !== "undefined" ? (localStorage.getItem("noyau:token") || localStorage.getItem("token")) : null;
   const method = (options.method || "GET").toUpperCase();
   const isMutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-  if (isNative && nativeReadOnlyOffline && isMutation && canQueueOffline(path, method)) throw Object.assign(new Error("Tâches et calendrier sont en lecture seule hors ligne. Reconnectez-vous pour les modifier."), { status: 409 });
+  if (isNative && nativeReadOnlyOffline && isMutation && canQueueOffline(path, method)) throw Object.assign(new Error(tr("Tâches et calendrier sont en lecture seule hors ligne. Reconnectez-vous pour les modifier.")), { status: 409 });
 
   try {
     const response = await fetch(path, {
@@ -287,7 +289,7 @@ async function api(path, options = {}) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (isNative && response.status === 401 && !path.startsWith("/api/auth") && path !== "/api/logout") window.dispatchEvent(new Event("noyau:biometric-reauth"));
-      const error = new Error(body.error || `Erreur ${response.status}`);
+      const error = new Error(body.error ? tr(body.error) : tr("Erreur {0}", response.status));
       error.status = response.status;
       error.retryAfter = Number(body.retryAfter || response.headers.get("retry-after")) || 0;
       throw error;
@@ -295,7 +297,7 @@ async function api(path, options = {}) {
     return body;
   } catch (error) {
     if (isMutation && !multipart && canQueueOffline(path, method) && (!error.status || error.status >= 500 || error.name === "TypeError" || /failed to fetch/i.test(error.message))) {
-      if (isNative) throw Object.assign(new Error("Connexion perdue : tâches et calendrier restent en lecture seule hors ligne. Vérifiez la connexion avant de modifier."), { status: 409 });
+      if (isNative) throw Object.assign(new Error(tr("Connexion perdue : tâches et calendrier restent en lecture seule hors ligne. Vérifiez la connexion avant de modifier.")), { status: 409 });
       enqueueOfflineMutation({ path, method, body: options.body, profileId });
       return { offlineQueued: true, success: true };
     }
@@ -382,35 +384,35 @@ function Boot({ percent, step, offline, detail, attempts, onRetry, onReset, onEn
     <div className="boot">
       <div className="boot-content">
         <Mark />
-        <strong>Noyau</strong>
+        <strong>{tr("Noyau")}</strong>
         {!offline && <BootRing percent={percent} />}
-        <small className={offline ? "boot-step error" : "boot-step"}>{offline ? "VPN déconnecté" : step}</small>
+        <small className={offline ? "boot-step error" : "boot-step"}>{offline ? tr("VPN déconnecté") : step}</small>
         {offline && (
           <div className="boot-vpn-box">
-            <div className="vpn-prompt-card" onClick={handleWireGuardClick} role="button" tabIndex={0} title="Ouvrir WireGuard">
+            <div className="vpn-prompt-card" onClick={handleWireGuardClick} role="button" tabIndex={0} title={tr("Ouvrir WireGuard")}>
               <div className="vpn-shield-badge">
                 <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                   <path d="M9 12l2 2 4-4" />
                 </svg>
               </div>
-              <strong className="vpn-badge-title">TURN ON VPN FIRST</strong>
-              <p className="vpn-badge-sub">Le Noyau tourne sur ton serveur privé local. Active WireGuard pour synchroniser en direct.</p>
+              <strong className="vpn-badge-title">{tr("TURN ON VPN FIRST")}</strong>
+              <p className="vpn-badge-sub">{tr("Le Noyau tourne sur ton serveur privé local. Active WireGuard pour synchroniser en direct.")}</p>
               <button type="button" className="vpn-redirect-button" onClick={(e) => { e.stopPropagation(); handleWireGuardClick(); }}>
-                 Ouvrir l’application WireGuard
+                 {tr("Ouvrir l’application WireGuard")}
               </button>
             </div>
 
-            {isNative && Capacitor.getPlatform() === "ios" && <p className="muted boot-detail">Une seule fois : dans Raccourcis, crée « Noyau WireGuard » avec l’action « Ouvrir l’app » → WireGuard.</p>}
+            {isNative && Capacitor.getPlatform() === "ios" && <p className="muted boot-detail">{tr("Une seule fois : dans Raccourcis, crée « Noyau WireGuard » avec l’action « Ouvrir l’app » → WireGuard.")}</p>}
             {vpnError && <p role="status" className="muted boot-detail">{vpnError}</p>}
-            <p className="muted boot-detail">{detail || "Vérifie le tunnel WireGuard / le Wi-Fi local."} ({attempts} tentative{attempts > 1 ? "s" : ""})</p>
+            <p className="muted boot-detail">{detail || tr("Vérifie le tunnel WireGuard / le Wi-Fi local.")} ({attempts} {tr(attempts > 1 ? "tentatives" : "tentative")})</p>
 
             <div className="boot-actions boot-vpn-actions">
               <button type="button" className="primary highlight-offline" onClick={onEnterOffline}>
-                Accéder au Noyau en hors-ligne
+                {tr("Accéder au Noyau en hors-ligne")}
               </button>
-              <button type="button" className="ghost" onClick={onRetry}>Réessayer connexion</button>
-              <button type="button" className="ghost danger" onClick={onReset}>Réinitialiser</button>
+              <button type="button" className="ghost" onClick={onRetry}>{tr("Réessayer connexion")}</button>
+              <button type="button" className="ghost danger" onClick={onReset}>{tr("Réinitialiser")}</button>
             </div>
           </div>
         )}
@@ -487,18 +489,18 @@ function Login({ onLogin, onOffline }) {
 
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId);
 
-  if (biometricOffer) return <main className="login-shell"><section className="login-card"><Mark /><h1>Connexion plus rapide</h1><p>Activer {biometricOffer.label} pour ce profil sur cet appareil ? Votre mot de passe ne sera pas enregistré.</p>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary wide" type="button" disabled={loading} onClick={async () => { setLoading(true); setError(""); try { await enableBiometric(biometricOffer.profileId, token); setToken(""); setBiometricOffer(null); onLogin(); } catch (reason) { setError(reason.message || "Activation impossible."); } finally { setLoading(false); } }}>{loading ? "Activation…" : `Activer ${biometricOffer.label}`}</button><button className="ghost wide" type="button" disabled={loading} onClick={() => { setToken(""); setBiometricOffer(null); onLogin(); }}>Plus tard</button></section></main>;
+  if (biometricOffer) return <main className="login-shell"><section className="login-card"><Mark /><h1>{tr("Connexion plus rapide")}</h1><p>{tr("Activer")}{" "}{biometricOffer.label}{" "}{tr("pour ce profil sur cet appareil ? Votre mot de passe ne sera pas enregistré.")}</p>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary wide" type="button" disabled={loading} onClick={async () => { setLoading(true); setError(""); try { await enableBiometric(biometricOffer.profileId, token); setToken(""); setBiometricOffer(null); onLogin(); } catch (reason) { setError(reason.message || tr("Activation impossible.")); } finally { setLoading(false); } }}>{loading ? tr("Activation…") : `Activer ${biometricOffer.label}`}</button><button className="ghost wide" type="button" disabled={loading} onClick={() => { setToken(""); setBiometricOffer(null); onLogin(); }}>{tr("Plus tard")}</button></section></main>;
 
   return (
     <main className="login-shell">
       <section className="login-card">
         <Mark />
-        <p className="eyebrow">CENTRE DE CONTRÔLE LOCAL</p>
-        <h1>Noyau</h1>
-        <p className="muted">Tes agents. Ton ordinateur. Depuis partout.</p>
+        <p className="eyebrow">{tr("CENTRE DE CONTRÔLE LOCAL")}</p>
+        <h1>{tr("Noyau")}</h1>
+        <p className="muted">{tr("Tes agents. Ton ordinateur. Depuis partout.")}</p>
         {profiles.length > 1 && (
           <div className="login-profile-picker">
-            <span className="login-profile-label">Profil de connexion</span>
+            <span className="login-profile-label">{tr("Profil de connexion")}</span>
             <div className="login-profiles-list">
               {profiles.map((p) => (
                 <button
@@ -516,7 +518,7 @@ function Login({ onLogin, onOffline }) {
         )}
         <form onSubmit={submit}>
           <label htmlFor="token">
-            {selectedProfile ? `Mot de passe (${selectedProfile.name})` : "Mot de passe ou clé d’accès"}
+            {selectedProfile ? tr("Mot de passe ({0})", selectedProfile.name) : tr("Mot de passe ou clé d’accès")}
           </label>
           <input
             id="token"
@@ -525,7 +527,7 @@ function Login({ onLogin, onOffline }) {
             onChange={(event) => setToken(event.target.value)}
             autoFocus
             autoComplete="current-password"
-            placeholder={selectedProfile?.hasPassword ? "Mot de passe du profil" : "Mot de passe ou clé master"}
+            placeholder={selectedProfile?.hasPassword ? tr("Mot de passe du profil") : tr("Mot de passe ou clé master")}
           />
           <label className="login-remember">
             <input
@@ -533,13 +535,13 @@ function Login({ onLogin, onOffline }) {
               checked={remember}
               onChange={(event) => setRemember(event.target.checked)}
             />
-            <span>Garder la session active (2h max)</span>
+            <span>{tr("Garder la session active (2h max)")}</span>
           </label>
           {error && <p className="form-error">{error}</p>}
-          <button className="primary wide" disabled={!token || loading}>{loading ? "Connexion…" : "Entrer"}</button>
+          <button className="primary wide" disabled={!token || loading}>{loading ? tr("Connexion…") : tr("Entrer")}</button>
         </form>
-        {onOffline && <button className="ghost wide" type="button" onClick={onOffline}>Continuer hors ligne</button>}
-        <p className="login-hint">Session limitée à 2h max pour ta sécurité. Clé master dans terminal en secours.</p>
+        {onOffline && <button className="ghost wide" type="button" onClick={onOffline}>{tr("Continuer hors ligne")}</button>}
+        <p className="login-hint">{tr("Session limitée à 2h max pour ta sécurité. Clé master dans terminal en secours.")}</p>
       </section>
     </main>
   );
@@ -559,7 +561,7 @@ function SwitchProfileModal({ target, onClose, onConfirm, onBiometric }) {
     try {
       await onConfirm(password);
     } catch (err) {
-      setError(err.message || "Mot de passe incorrect pour ce profil.");
+      setError(err.message || tr("Mot de passe incorrect pour ce profil."));
     } finally {
       setBusy(false);
     }
@@ -569,29 +571,29 @@ function SwitchProfileModal({ target, onClose, onConfirm, onBiometric }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(event) => event.stopPropagation()}>
         <header className="modal-head">
-          <h2>Accéder à {target.name}</h2>
-          <button type="button" className="ghost" onClick={onClose} aria-label="Fermer">✕</button>
+          <h2>{tr("Accéder à")}{" "}{target.name}</h2>
+          <button type="button" className="ghost" onClick={onClose} aria-label={tr("Fermer")}>✕</button>
         </header>
-        {biometric && <button type="button" className="primary wide" disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onBiometric(); } catch (err) { setError(err.message || "Authentification impossible."); } finally { setBusy(false); } }}>Utiliser {biometric.label}</button>}
+        {biometric && <button type="button" className="primary wide" disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await onBiometric(); } catch (err) { setError(err.message || tr("Authentification impossible.")); } finally { setBusy(false); } }}>{tr("Utiliser")}{" "}{biometric.label}</button>}
         <form onSubmit={submit}>
           <p className="muted" style={{ marginBottom: "16px" }}>
-            Entre le mot de passe pour basculer sur le profil <strong>{target.name}</strong>.
+            {tr("Entre le mot de passe pour basculer sur le profil")}{" "}<strong>{target.name}</strong>.
           </p>
-          <label htmlFor="switch-profile-pwd">Mot de passe</label>
+          <label htmlFor="switch-profile-pwd">{tr("Mot de passe")}</label>
           <input
             id="switch-profile-pwd"
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             autoFocus
-            placeholder={target.hasPassword ? "Mot de passe du profil" : "Mot de passe ou clé master"}
+            placeholder={target.hasPassword ? tr("Mot de passe du profil") : tr("Mot de passe ou clé master")}
             autoComplete="current-password"
           />
           {error && <p className="form-error">{error}</p>}
           <div className="modal-actions">
-            <button type="button" className="ghost" onClick={onClose} disabled={busy}>Annuler</button>
+            <button type="button" className="ghost" onClick={onClose} disabled={busy}>{tr("Annuler")}</button>
             <button type="submit" className="primary" disabled={!password || busy}>
-              {busy ? "Vérification…" : "Basculer"}
+              {busy ? tr("Vérification…") : tr("Basculer")}
             </button>
           </div>
         </form>
@@ -657,21 +659,21 @@ function CloseAgentHost() {
     <div className="modal-backdrop" onClick={() => answer(null)}>
       <div className="modal close-agent-modal" role="dialog" aria-modal="true" aria-labelledby="close-agent-title" onClick={(event) => event.stopPropagation()}>
         <header className="modal-head">
-          <h2 id="close-agent-title">Fermer « {session.name} »</h2>
-          <button type="button" className="ghost" onClick={() => answer(null)} aria-label="Annuler">✕</button>
+          <h2 id="close-agent-title">{tr("Fermer «")}{" "}{session.name} »</h2>
+          <button type="button" className="ghost" onClick={() => answer(null)} aria-label={tr("Annuler")}>✕</button>
         </header>
         <div className="close-agent-choices">
           <button type="button" className="close-agent-choice" onClick={() => answer("archive")} autoFocus>
-            <strong> Archiver</strong>
-            <span>L'agent se ferme. Sa conversation reste dans « Agents archivés » pour le relancer plus tard.</span>
+            <strong>{" "}{tr("Archiver")}</strong>
+            <span>{tr("L'agent se ferme. Sa conversation reste dans « Agents archivés » pour le relancer plus tard.")}</span>
           </button>
           <button type="button" className="close-agent-choice danger" onClick={() => answer("exit")}>
-            <strong>⏻ Quitter totalement</strong>
-            <span>Ferme l'agent et tout ce qu'il a lancé (serveurs, scripts). Rien n'est gardé. Tes fenêtres (navigateur…) restent ouvertes.</span>
+            <strong>{tr("⏻ Quitter totalement")}</strong>
+            <span>{tr("Ferme l'agent et tout ce qu'il a lancé (serveurs, scripts). Rien n'est gardé. Tes fenêtres (navigateur…) restent ouvertes.")}</span>
           </button>
         </div>
         <div className="modal-actions">
-          <button type="button" className="ghost" onClick={() => answer(null)}>Annuler</button>
+          <button type="button" className="ghost" onClick={() => answer(null)}>{tr("Annuler")}</button>
         </div>
       </div>
     </div>,
@@ -686,7 +688,7 @@ function preloadProjectImage(src) {
   if (projectImageCache.has(src)) return;
   fetch(src, { credentials: "include" })
     .then((response) => {
-      if (!response.ok) throw new Error("Image indisponible");
+      if (!response.ok) throw new Error(tr("Image indisponible"));
       return response.blob();
     })
     .then((blob) => {
@@ -710,7 +712,7 @@ function useProjectImage(src) {
     const controller = new AbortController();
     fetch(src, { credentials: "include", signal: controller.signal })
       .then((response) => {
-        if (!response.ok) throw new Error("Image indisponible");
+        if (!response.ok) throw new Error(tr("Image indisponible"));
         return response.blob();
       })
       .then((blob) => {
@@ -749,7 +751,7 @@ function ProjectIcon({ project, small = false }) {
 }
 
 function RelativeTime({ date }) {
-  const formatter = useMemo(() => new Intl.RelativeTimeFormat("fr", { numeric: "auto" }), []);
+  const formatter = useMemo(() => new Intl.RelativeTimeFormat(LOCALE, { numeric: "auto" }), []);
   if (!date) return "inconnue";
   const seconds = Math.round((new Date(date).getTime() - Date.now()) / 1000);
   if (Math.abs(seconds) < 60) return formatter.format(seconds, "second");
@@ -790,48 +792,48 @@ function providerQuota(quotas, assistant) {
 }
 
 function formatReset(value) {
-  if (!value || Number.isNaN(new Date(value).getTime())) return "Reset inconnu";
-  return `Reset ${new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value))}`;
+  if (!value || Number.isNaN(new Date(value).getTime())) return tr("Reset inconnu");
+  return `Reset ${new Intl.DateTimeFormat(LOCALE, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value))}`;
 }
 
 // Temps restant avant renouvellement: plus parlant qu'une date pour savoir si on peut lancer un agent.
 function resetCountdown(value) {
   const target = new Date(value).getTime();
-  if (!value || Number.isNaN(target)) return "reset inconnu";
+  if (!value || Number.isNaN(target)) return tr("reset inconnu");
   const minutes = Math.round((target - Date.now()) / 60_000);
-  if (minutes <= 0) return "renouvelé";
-  if (minutes < 60) return `dans ${minutes} min`;
+  if (minutes <= 0) return tr("renouvelé");
+  if (minutes < 60) return tr("dans {0} min", minutes);
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `dans ${hours} h${minutes % 60 ? ` ${minutes % 60}` : ""}`;
   return `dans ${Math.floor(hours / 24)} j ${hours % 24} h`;
 }
 
 function weatherLabel(code) {
-  if (code === 0) return "Dégagé";
-  if ([1, 2].includes(code)) return "Peu nuageux";
-  if (code === 3) return "Couvert";
-  if ([45, 48].includes(code)) return "Brouillard";
-  if (code >= 51 && code <= 57) return "Bruine";
-  if (code >= 61 && code <= 67) return "Pluie";
-  if (code >= 71 && code <= 77) return "Neige";
-  if (code >= 80 && code <= 82) return "Averses";
-  if (code >= 85 && code <= 86) return "Neige";
-  if (code >= 95) return "Orage";
-  return "Variable";
+  if (code === 0) return tr("Dégagé");
+  if ([1, 2].includes(code)) return tr("Peu nuageux");
+  if (code === 3) return tr("Couvert");
+  if ([45, 48].includes(code)) return tr("Brouillard");
+  if (code >= 51 && code <= 57) return tr("Bruine");
+  if (code >= 61 && code <= 67) return tr("Pluie");
+  if (code >= 71 && code <= 77) return tr("Neige");
+  if (code >= 80 && code <= 82) return tr("Averses");
+  if (code >= 85 && code <= 86) return tr("Neige");
+  if (code >= 95) return tr("Orage");
+  return tr("Variable");
 }
 
 const AGENT_SORT_MODES = ["recent", "alpha", "project"];
 
 const AGENT_SORT_LABELS = {
-  recent: "Récents",
+  recent: tr("Récents"),
   alpha: "A-Z",
-  project: "Projets",
+  project: tr("Projets"),
 };
 
 const AGENT_SORT_TOOLTIPS = {
-  recent: "Tri : Plus récemment utilisés (favoris d'abord)",
-  alpha: "Tri : Alphabétique A-Z (favoris d'abord)",
-  project: "Tri : Par projet (favoris d'abord)",
+  recent: tr("Tri : Plus récemment utilisés (favoris d'abord)"),
+  alpha: tr("Tri : Alphabétique A-Z (favoris d'abord)"),
+  project: tr("Tri : Par projet (favoris d'abord)"),
 };
 
 function getAgentTimestamp(session, lastInteractedMap = {}) {
@@ -900,7 +902,7 @@ function sortAgents(sessions, mode = "recent", lastInteractedMap = {}) {
 }
 
 function euro(value) {
-  return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(Number(value) || 0);
+  return new Intl.NumberFormat(LOCALE, { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(Number(value) || 0);
 }
 
 function localIsoDate(date = new Date()) {
@@ -915,7 +917,7 @@ function shiftIsoDate(days, from = new Date()) {
 
 function operationDate(item) {
   const actual = item.date.split("-").reverse().join("/");
-  return item.bookingDate ? `${actual} · comptabilisé ${item.bookingDate.split("-").reverse().join("/")}` : actual;
+  return item.bookingDate ? tr("{0} · comptabilisé {1}", actual, item.bookingDate.split("-").reverse().join("/")) : actual;
 }
 
 function merchantKey(value) {
@@ -936,28 +938,28 @@ function merchantKey(value) {
 
 // Ligne d'etat de synchro: derniere reception bancaire et resultat du passage automatique de 6h.
 function bankSyncLabel(banking) {
-  if (!banking?.status?.connections?.length) return "Aucune banque liée.";
+  if (!banking?.status?.connections?.length) return tr("Aucune banque liée.");
   const last = banking.lastSyncAt ? new Date(banking.lastSyncAt) : null;
   const when = last && !Number.isNaN(last.getTime())
-    ? `${last.toLocaleDateString("fr-FR")} à ${last.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`
+    ? `${last.toLocaleDateString(LOCALE)} à ${last.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" })}`
     : "jamais";
-  const auto = banking.autoSync?.error ? ` · dernier passage auto en échec: ${banking.autoSync.error}` : "";
-  return `Dernière synchro bancaire ${when} · automatique chaque matin à 6h${auto}`;
+  const auto = banking.autoSync?.error ? tr(" · dernier passage auto en échec: {0}", banking.autoSync.error) : "";
+  return tr("Dernière synchro bancaire {0} · automatique chaque matin à 6h{1}", when, auto);
 }
 
 function exclusionLabel(reason) {
-  return reason === "placement" ? "Placement exclu" : reason === "doublon-carte" ? "Doublon carte exclu" : reason === "professionnel" ? "Dépense professionnelle exclue" : "Transfert interne exclu";
+  return reason === "placement" ? tr("Placement exclu") : reason === "doublon-carte" ? tr("Doublon carte exclu") : reason === "professionnel" ? tr("Dépense professionnelle exclue") : tr("Transfert interne exclu");
 }
 
 function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
   const [open, setOpen] = useState(false);
   const active = profiles.find((item) => item.id === profileId);
-  const label = active?.name || "Session locale";
+  const label = active?.name || tr("Session locale");
   return (
     <div className="profile-switcher">
       {open && (
         <>
-          <button className="profile-menu-backdrop" onClick={() => setOpen(false)} aria-label="Fermer profils" />
+          <button className="profile-menu-backdrop" onClick={() => setOpen(false)} aria-label={tr("Fermer profils")} />
           <nav className="profile-menu">
             {profiles.map((item) => (
               <button className={item.id === profileId ? "active" : ""} onClick={() => { setOpen(false); onSwitch(item.id); }} key={item.id}>
@@ -966,7 +968,7 @@ function ProfileSwitcher({ profiles, profileId, onSwitch, onLogout }) {
                 {item.id === profileId && <i>✓</i>}
               </button>
             ))}
-            <button className="profile-logout" onClick={() => { setOpen(false); onLogout(); }}>Se déconnecter</button>
+            <button className="profile-logout" onClick={() => { setOpen(false); onLogout(); }}>{tr("Se déconnecter")}</button>
           </nav>
         </>
       )}
@@ -1027,11 +1029,11 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
       }
       let group = groupsMap.get(pId);
       if (!group) {
-        const projectObj = projects.find((p) => p.id === pId) || session.project || { id: pId, name: session.project?.name || "Projet" };
+        const projectObj = projects.find((p) => p.id === pId) || session.project || { id: pId, name: session.project?.name || tr("Projet") };
         group = {
           projectId: pId,
           project: projectObj,
-          name: projectObj.name || session.project?.name || "Projet",
+          name: projectObj.name || session.project?.name || tr("Projet"),
           sessions: [],
           hasWorking: false,
           hasFavorite: false,
@@ -1088,7 +1090,7 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
       list.push({
         projectId: "__none__",
         project: null,
-        name: "Sans projet",
+        name: tr("Sans projet"),
         sessions: noProjectSessions,
         hasWorking: noProjectSessions.some((s) => s.agentStatus?.state === "working"),
       });
@@ -1099,23 +1101,23 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
   const renderSessionButton = (session) => (
     <button className={activeId === session.id ? "active" : ""} onClick={() => { onOpen(session.id); onClose(); }} key={session.id}>
       <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small />
-      <span><strong>{session.favorite && <b className="favorite-star">★</b>}{session.name}{(session.shared || session.canEdit === false) && <b className="shared-star" title={session.canEdit === false ? `Partagé par ${session.owner?.name || "autre profil"}` : "Partagé avec les autres profils"}>⇄</b>}</strong><small>{session.canEdit === false ? `${session.owner?.name || "Autre profil"} · ` : ""}{assistantMeta[session.assistant]?.label || "Terminal"} · {session.agentStatus?.label || "Disponible"}</small></span>
-      <i className={`live-dot ${session.agentStatus?.state || "available"}`} title={session.agentStatus?.label || "Disponible"} />
+      <span><strong>{session.favorite && <b className="favorite-star">★</b>}{session.name}{(session.shared || session.canEdit === false) && <b className="shared-star" title={session.canEdit === false ? tr("Partagé par {0}", session.owner?.name || "autre profil") : tr("Partagé avec les autres profils")}>⇄</b>}</strong><small>{session.canEdit === false ? `${session.owner?.name || tr("Autre profil")} · ` : ""}{assistantMeta[session.assistant]?.label || tr("Terminal")} · {tr(session.agentStatus?.label || "Disponible")}</small></span>
+      <i className={`live-dot ${session.agentStatus?.state || "available"}`} title={tr(session.agentStatus?.label || "Disponible")} />
     </button>
   );
 
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
-      <div className="brand"><Mark /><span>Noyau</span><button className="icon-button close-menu" onClick={onClose} aria-label="Fermer">×</button></div>
+      <div className="brand"><Mark /><span>{tr("Noyau")}</span><button className="icon-button close-menu" onClick={onClose} aria-label={tr("Fermer")}>×</button></div>
       <ProfileSwitcher profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onLogout={onLogout} />
       <nav className="main-nav">
-        <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>Accueil</button>
-        <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg></span>Projets</button>
-        <button className={!activeId && view === "groceries" ? "active" : ""} onClick={() => { onOpen(null); onView("groceries"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m3 4 3 1 2 12h10l3-10H6M9 21h.01M18 21h.01M10 8c0-4 6-4 6 0" /></svg></span>Courses</button>
-        <button className={!activeId && view === "calendar" ? "active" : ""} onClick={() => { onOpen(null); onView("calendar"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /><circle cx="8" cy="14" r=".75" fill="currentColor" /><circle cx="12" cy="14" r=".75" fill="currentColor" /><circle cx="16" cy="14" r=".75" fill="currentColor" /><circle cx="8" cy="18" r=".75" fill="currentColor" /><circle cx="12" cy="18" r=".75" fill="currentColor" /><circle cx="16" cy="18" r=".75" fill="currentColor" /></svg></span>Calendrier</button>
-        <button className={!activeId && view === "todos" ? "active" : ""} onClick={() => { onOpen(null); onView("todos"); onClose(); }}><span>✓</span>Todo{todoUnread > 0 && <b className="nav-badge" title={`${todoUnread} changement${todoUnread > 1 ? "s" : ""} non lu${todoUnread > 1 ? "s" : ""}`}>{todoUnread > 99 ? "99+" : todoUnread}</b>}</button>
-        <button className={!activeId && ["finances", "finance-transactions", "finance-agent", "finance-modules"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>Budget</button>
-        <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>Réglages</button>
+        <button className={!activeId && view === "dashboard" ? "active" : ""} onClick={() => { onOpen(null); onView("dashboard"); onClose(); }}><span>⌂</span>{tr("Accueil")}</button>
+        {moduleEnabled("projects") && <button className={!activeId && view === "projects" ? "active" : ""} onClick={() => { onOpen(null); onView("projects"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg></span>{tr("Projets")}</button>}
+        {moduleEnabled("groceries") && <button className={!activeId && view === "groceries" ? "active" : ""} onClick={() => { onOpen(null); onView("groceries"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="m3 4 3 1 2 12h10l3-10H6M9 21h.01M18 21h.01M10 8c0-4 6-4 6 0" /></svg></span>{tr("Courses")}</button>}
+        {moduleEnabled("calendar") && <button className={!activeId && view === "calendar" ? "active" : ""} onClick={() => { onOpen(null); onView("calendar"); onClose(); }}><span className="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /><circle cx="8" cy="14" r=".75" fill="currentColor" /><circle cx="12" cy="14" r=".75" fill="currentColor" /><circle cx="16" cy="14" r=".75" fill="currentColor" /><circle cx="8" cy="18" r=".75" fill="currentColor" /><circle cx="12" cy="18" r=".75" fill="currentColor" /><circle cx="16" cy="18" r=".75" fill="currentColor" /></svg></span>{tr("Calendrier")}</button>}
+        {moduleEnabled("todos") && <button className={!activeId && view === "todos" ? "active" : ""} onClick={() => { onOpen(null); onView("todos"); onClose(); }}><span>✓</span>{tr("Todo")}{todoUnread > 0 && <b className="nav-badge" title={tr("{0} changement{1} non lu{2}", todoUnread, todoUnread > 1 ? "s" : "", todoUnread > 1 ? "s" : "")}>{todoUnread > 99 ? "99+" : todoUnread}</b>}</button>}
+        {moduleEnabled("budget") && <button className={!activeId && ["finances", "finance-transactions", "finance-agent", "finance-modules"].includes(view) ? "active" : ""} onClick={() => { onOpen(null); onView("finances"); onClose(); }}><span>€</span>{tr("Budget")}</button>}
+        <button className={!activeId && view === "settings" ? "active" : ""} onClick={() => { onOpen(null); onView("settings"); onClose(); }}><span className="nav-settings-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h10m4 0h2M4 17h2m4 0h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg></span>{tr("Réglages")}</button>
       </nav>
       <div className="sidebar-title">
         <div className="sidebar-title-left">
@@ -1124,11 +1126,11 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
               type="button"
               className="sidebar-sort-btn"
               onClick={onCycleSort}
-              title={AGENT_SORT_TOOLTIPS[sortMode] || "Trier les agents"}
-              aria-label={AGENT_SORT_TOOLTIPS[sortMode] || "Trier les agents"}
+              title={AGENT_SORT_TOOLTIPS[sortMode] || tr("Trier les agents")}
+              aria-label={AGENT_SORT_TOOLTIPS[sortMode] || tr("Trier les agents")}
             >
               {sortMode === "alpha" ? (
-                <span className="sidebar-sort-text" aria-hidden="true">AZ</span>
+                <span className="sidebar-sort-text" aria-hidden="true">{tr("AZ")}</span>
               ) : sortMode === "project" ? (
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <rect x="3" y="3" width="7" height="7" />
@@ -1144,9 +1146,9 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
               )}
             </button>
           )}
-          <span>AGENTS</span>
+          <span>{tr("AGENTS")}</span>
         </div>
-        <button onClick={onNew} aria-label="Nouvelle session">+</button>
+        <button onClick={onNew} aria-label={tr("Nouvelle session")}>+</button>
       </div>
       <div className="session-list">
         {projectGroups.map((group) => {
@@ -1167,7 +1169,7 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
               <ProjectIcon project={group.project} small />
               <span className="sidebar-group-name" title={group.name}>{group.name}</span>
               <span className="sidebar-group-meta">
-                {group.hasWorking && <i className="live-dot working" title="Un agent travaille" />}
+                {group.hasWorking && <i className="live-dot working" title={tr("Un agent travaille")} />}
                 <small className="sidebar-group-count">{group.sessions.length}</small>
                 {mapButton}
               </span>
@@ -1178,20 +1180,20 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
           </details>
         );
       })}
-        {!sessions.length && <p className="empty-small">Aucune session active.</p>}
+        {!sessions.length && <p className="empty-small">{tr("Aucune session active.")}</p>}
       </div>
       <AgentArchives onOpen={(id) => { onOpen(id); onClose(); }} compact />
     </aside>
   );
 }
 
-function Header({ title, subtitle, onMenu, actionLabel = "Nouvel agent", onAction }) {
+function Header({ title, subtitle, onMenu, actionLabel = tr("Nouvel agent"), onAction }) {
   const [network, setNetwork] = useState(null);
   useEffect(() => { if (!isNative) return; let disposed = false; const update = () => nativeNetworkStatus().then((value) => { if (!disposed) setNetwork(value); }).catch(() => {}); update(); window.addEventListener("noyau:network-return", update); return () => { disposed = true; window.removeEventListener("noyau:network-return", update); }; }, []);
   return (
     <header className="topbar">
-      <button className="icon-button menu-button" onClick={onMenu} aria-label="Menu">☰</button>
-      <div><h2>{title}</h2>{isNative && network ? <p className="native-header-network">{networkLabel(network)} · VPN non vérifiable</p> : subtitle && <p>{subtitle}</p>}</div>
+      <button className="icon-button menu-button" onClick={onMenu} aria-label={tr("Menu")}>☰</button>
+      <div><h2>{title}</h2>{isNative && network ? <p className="native-header-network">{networkLabel(network)}{" "}{tr("· VPN non vérifiable")}</p> : subtitle && <p>{subtitle}</p>}</div>
       <div className="top-actions">
         <FullscreenToggle />
         {onAction && <button className="primary" onClick={onAction}><span>+</span> {actionLabel}</button>}
@@ -1214,11 +1216,11 @@ function FullscreenToggle({ className = "" }) {
       if (document.fullscreenElement) await document.exitFullscreen();
       else await document.documentElement.requestFullscreen({ navigationUI: "hide" });
     } catch (error) {
-      window.alert(`Plein écran refusé: ${error.message}`);
+      window.alert(tr("Plein écran refusé: {0}", error.message));
     }
   };
   return (
-    <button className={`fullscreen-toggle ${className}`} onClick={toggle} title={full ? "Quitter le plein écran (F11)" : "Passer en plein écran (F11)"} aria-label={full ? "Quitter le plein écran" : "Passer en plein écran"}>
+    <button className={`fullscreen-toggle ${className}`} onClick={toggle} title={full ? tr("Quitter le plein écran (F11)") : tr("Passer en plein écran (F11)")} aria-label={full ? tr("Quitter le plein écran") : tr("Passer en plein écran")}>
       <svg viewBox="0 0 24 24" aria-hidden="true">
         {full
           ? <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
@@ -1245,8 +1247,8 @@ function TouchSystemBar({ sessions, onHome, onNew }) {
   }, []);
   const working = sessions.filter(({ agentStatus }) => agentStatus?.state === "working").length;
   const waiting = sessions.filter(({ agentStatus }) => agentStatus?.state === "waiting").length;
-  const time = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(now);
-  const date = new Intl.DateTimeFormat("fr-FR", { weekday: "short", day: "2-digit", month: "short" }).format(now);
+  const time = new Intl.DateTimeFormat(LOCALE, { hour: "2-digit", minute: "2-digit" }).format(now);
+  const date = new Intl.DateTimeFormat(LOCALE, { weekday: "short", day: "2-digit", month: "short" }).format(now);
   async function sleepDisplay() {
     setSleeping(true);
     try {
@@ -1259,16 +1261,16 @@ function TouchSystemBar({ sessions, onHome, onNew }) {
   }
   return (
     <header className="touch-system-bar">
-      <button className="touch-system-home" onClick={onHome}><Mark /><span><strong>NOYAU</strong><small>DESK OS</small></span></button>
+      <button className="touch-system-home" onClick={onHome}><Mark /><span><strong>{tr("NOYAU")}</strong><small>{tr("DESK OS")}</small></span></button>
       <div className="touch-system-stats">
         <span><i className="available" /><b>{sessions.length}</b> agents</span>
         <span><i className="working" /><b>{working}</b> travail</span>
         <span><i className="waiting" /><b>{waiting}</b> attente</span>
-        <span><i className={online ? "available" : "offline"} />{online ? "PC local" : "Hors ligne"}</span>
+        <span><i className={online ? "available" : "offline"} />{online ? "PC local" : tr("Hors ligne")}</span>
       </div>
-      <button className="touch-system-new" onClick={onNew}>＋ Agent</button>
+      <button className="touch-system-new" onClick={onNew}>{tr("＋ Agent")}</button>
       <FullscreenToggle className="touch-system-fullscreen" />
-      <button className="touch-system-sleep" onClick={sleepDisplay} disabled={sleeping} title="Éteindre écran jusqu’au prochain toucher">◐ Écran</button>
+      <button className="touch-system-sleep" onClick={sleepDisplay} disabled={sleeping} title={tr("Éteindre écran jusqu’au prochain toucher")}>{tr("◐ Écran")}</button>
       <time dateTime={now.toISOString()}><strong>{time}</strong><small>{date}</small></time>
     </header>
   );
@@ -1331,7 +1333,7 @@ function ContextControl({ session, onRefresh }) {
       const result = await api(`/api/sessions/${session.id}/context-audit`, { method: "POST" });
       setAudit(result);
       setPicked(result.proposals.filter((item) => item.advised).map((item) => item.id));
-      if (!result.proposals.length) setNote("Rien d'inutile trouvé: tout ce qui est chargé a déjà servi ici.");
+      if (!result.proposals.length) setNote(tr("Rien d'inutile trouvé: tout ce qui est chargé a déjà servi ici."));
     } catch (error) {
       setNote(error.message);
     } finally {
@@ -1343,7 +1345,7 @@ function ContextControl({ session, onRefresh }) {
     setBusy("apply");
     try {
       const result = await api(`/api/sessions/${session.id}/context-audit/apply`, { method: "POST", body: JSON.stringify({ ids: picked }) });
-      setNote(`${result.applied.length} élément(s) retirés pour cet agent · ~${formatTokens(result.savedTokens)} jetons par tour${result.restarted ? ", agent relancé sur sa conversation" : ", effectif au prochain démarrage"}.`);
+      setNote(tr("{0} élément(s) retirés pour cet agent · ~{1} jetons par tour{2}.", result.applied.length, formatTokens(result.savedTokens), result.restarted ? tr(", agent relancé sur sa conversation") : tr(", effectif au prochain démarrage")));
       setAudit((current) => (current ? { ...current, proposals: [], revertible: true } : current));
     } catch (error) {
       setNote(error.message);
@@ -1357,7 +1359,7 @@ function ContextControl({ session, onRefresh }) {
     try {
       await api(`/api/sessions/${session.id}/context-audit/revert`, { method: "POST" });
       setAudit(null);
-      setNote("Réglages d'origine rétablis pour cet agent.");
+      setNote(tr("Réglages d'origine rétablis pour cet agent."));
     } catch (error) {
       setNote(error.message);
     } finally {
@@ -1379,24 +1381,24 @@ function ContextControl({ session, onRefresh }) {
         aria-expanded={open}
         title={advice?.message || `Contexte: ${advice?.percent ?? "—"}% restant`}
       >
-        <span className="agent-context-ring" style={{ "--remaining": `${Number.isFinite(Number(advice?.percent ?? session.usage?.contextPercent)) ? Math.max(0, Math.min(100, Number(advice?.percent ?? session.usage?.contextPercent))) : 0}%` }}><b>{advice?.estimated || session.usage?.estimated ? "~" : ""}{advice?.percent ?? session.usage?.contextPercent ?? "—"}%</b></span><span className="agent-context-count">{session.usage?.remainingTokens != null ? `${session.usage.estimated ? "~" : ""}${formatTokens(session.usage.remainingTokens)} restants` : "Contexte"}</span>
+        <span className="agent-context-ring" style={{ "--remaining": `${Number.isFinite(Number(advice?.percent ?? session.usage?.contextPercent)) ? Math.max(0, Math.min(100, Number(advice?.percent ?? session.usage?.contextPercent))) : 0}%` }}><b>{advice?.estimated || session.usage?.estimated ? "~" : ""}{advice?.percent ?? session.usage?.contextPercent ?? "—"}%</b></span><span className="agent-context-count">{session.usage?.remainingTokens != null ? `${session.usage.estimated ? "~" : ""}${formatTokens(session.usage.remainingTokens)} restants` : tr("Contexte")}</span>
 
       </button>
       {open && (
         <div className={`context-control-menu ${audit ? "wide" : ""}`}>
           <p className="context-control-state">
-            {advice?.message || "Contexte encore large: rien à faire pour l'instant."}
-            {session.usage?.remainingTokens != null ? <em>{session.usage.estimated ? "Environ " : ""}{new Intl.NumberFormat("fr-FR").format(session.usage.remainingTokens)} tokens de contexte restants</em> : <em>Nombre de tokens restant indisponible pour cet agent.</em>}
+            {advice?.message || tr("Contexte encore large: rien à faire pour l'instant.")}
+            {session.usage?.remainingTokens != null ? <em>{session.usage.estimated ? tr("Environ ") : ""}{new Intl.NumberFormat(LOCALE).format(session.usage.remainingTokens)}{" "}{tr("tokens de contexte restants")}</em> : <em>{tr("Nombre de tokens restant indisponible pour cet agent.")}</em>}
           </p>
           <button className={advice?.action === "compact" ? "primary" : ""} disabled={busy === "compact"} onClick={() => optimize("compact")}>
-            {busy === "compact" ? "…" : "Réduire le contexte"}<small>Résume la conversation et garde l'essentiel</small>
+            {busy === "compact" ? "…" : tr("Réduire le contexte")}<small>{tr("Résume la conversation et garde l'essentiel")}</small>
           </button>
           <button className={advice?.action === "clear" ? "primary" : ""} disabled={busy === "clear"} onClick={() => optimize("clear")}>
-            {busy === "clear" ? "…" : "Repartir propre"}<small>Vide la conversation, l'agent recommence à zéro</small>
+            {busy === "clear" ? "…" : tr("Repartir propre")}<small>{tr("Vide la conversation, l'agent recommence à zéro")}</small>
           </button>
           {auditable && (
             <button disabled={busy === "audit"} onClick={analyse}>
-              {busy === "audit" ? "Analyse en cours…" : "Alléger l'agent"}<small>Plugins, skills et serveurs jamais utilisés · ne touche que cet agent</small>
+              {busy === "audit" ? tr("Analyse en cours…") : tr("Alléger l'agent")}<small>{tr("Plugins, skills et serveurs jamais utilisés · ne touche que cet agent")}</small>
             </button>
           )}
           {audit?.proposals?.length > 0 && (
@@ -1406,18 +1408,18 @@ function ContextControl({ session, onRefresh }) {
                   <input type="checkbox" checked={picked.includes(item.id)} onChange={() => toggle(item.id)} />
                   <span>
                     <strong>{item.label}<b>~{formatTokens(item.savedTokens)}</b></strong>
-                    <small>{item.detail} · {item.reason}{item.risk === "medium" ? " · retire une capacité" : ""}</small>
+                    <small>{item.detail} · {item.reason}{item.risk === "medium" ? tr(" · retire une capacité") : ""}</small>
                   </span>
                 </label>
               ))}
               <button className="primary" disabled={!picked.length || busy === "apply"} onClick={applyAudit}>
-                {busy === "apply" ? "…" : `Appliquer · ~${formatTokens(savings)} jetons par tour`}
+                {busy === "apply" ? "…" : tr("Appliquer · ~{0} jetons par tour", formatTokens(savings))}
               </button>
             </div>
           )}
           {audit?.revertible && (
             <button disabled={busy === "revert"} onClick={revertAudit}>
-              {busy === "revert" ? "…" : "Annuler l'allègement"}<small>Remet les plugins et skills retirés</small>
+              {busy === "revert" ? "…" : tr("Annuler l'allègement")}<small>{tr("Remet les plugins et skills retirés")}</small>
             </button>
           )}
           {note && <p className="context-control-note">{note}</p>}
@@ -1435,34 +1437,34 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
         <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} />
         <span className="agent-info">
           <strong>
-            <b className={`assistant-chip ${session.assistant}`} title={`${assistantMeta[session.assistant]?.label || session.assistant}${session.switchedFrom ? ` · basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}` : ""}`}>{assistantMeta[session.assistant]?.glyph || "?"}</b>
-            {session.switchedFrom && <i className="switched-mark" title={`Basculé depuis ${assistantMeta[session.switchedFrom]?.label || session.switchedFrom}`}>↔</i>}
+            <b className={`assistant-chip ${session.assistant}`} title={`${assistantMeta[session.assistant]?.label || session.assistant}${session.switchedFrom ? tr(" · basculé depuis {0}", assistantMeta[session.switchedFrom]?.label || session.switchedFrom) : ""}`}>{assistantMeta[session.assistant]?.glyph || "?"}</b>
+            {session.switchedFrom && <i className="switched-mark" title={tr("Basculé depuis {0}", assistantMeta[session.switchedFrom]?.label || session.switchedFrom)}>↔</i>}
             <span className="agent-name">{session.name}</span>
             <span
               className="agent-desc-btn"
-              title={session.description ? `Description : ${session.description}` : "Voir la description de l'agent"}
+              title={session.description ? `Description : ${session.description}` : tr("Voir la description de l'agent")}
               onClick={(event) => {
                 event.stopPropagation();
                 setDescOpen((v) => !v);
               }}
               role="button"
               tabIndex={0}
-              aria-label="Description de l'agent"
+              aria-label={tr("Description de l'agent")}
             >
               <AppIcon name="info" size={15} />
             </span>
-            {session.canEdit === false && <b className="shared-chip" title={`Agent partagé par ${session.owner?.name || "autre profil"}`}>⇄ {session.owner?.name || "partagé"}</b>}
-            {session.canEdit !== false && session.shared && <b className="shared-chip own" title="Agent partagé avec les autres profils">⇄<span className="shared-chip-label"> partagé</span></b>}
+            {session.canEdit === false && <b className="shared-chip" title={tr("Agent partagé par {0}", session.owner?.name || "autre profil")}>⇄ {session.owner?.name || tr("partagé")}</b>}
+            {session.canEdit !== false && session.shared && <b className="shared-chip own" title={tr("Agent partagé avec les autres profils")}>⇄<span className="shared-chip-label">{" "}{tr("partagé")}</span></b>}
           </strong>
           {session.description ? (
             <small className="agent-desc-line" title={session.description}>
               <span className="agent-desc-text">{session.description}</span>
-              <span className="agent-desc-sub"> · {session.project?.name || "Sans projet"}</span>
+              <span className="agent-desc-sub"> · {session.project?.name || tr("Sans projet")}</span>
             </small>
           ) : (
-            <small>{session.project?.name || "Sans projet"} · {session.cwd || session.id}</small>
+            <small>{session.project?.name || tr("Sans projet")} · {session.cwd || session.id}</small>
           )}
-          <em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {session.agentStatus?.label || "Disponible"} · {session.contextAdvice ? <ContextGauge advice={session.contextAdvice} small /> : <>{session.usage?.contextPercent ?? "—"}% contexte</>} · <RelativeTime date={session.activityAt} /></em>
+          <em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {tr(session.agentStatus?.label || "Disponible")} · {session.contextAdvice ? <ContextGauge advice={session.contextAdvice} small /> : <>{session.usage?.contextPercent ?? "—"}{tr("% contexte")}</>} · <RelativeTime date={session.activityAt} /></em>
         </span>
         <span className="open-arrow">›</span>
       </button>
@@ -1472,9 +1474,9 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
           <div className="agent-desc-popover card-desc-popover" onClick={(e) => e.stopPropagation()}>
           <div className="agent-desc-popover-head">
             <strong>{session.name}</strong>
-            <button type="button" onClick={() => setDescOpen(false)} aria-label="Fermer">×</button>
+            <button type="button" onClick={() => setDescOpen(false)} aria-label={tr("Fermer")}>×</button>
           </div>
-          <p>{session.description || "Aucune description renseignée pour cet agent."}</p>
+          <p>{session.description || tr("Aucune description renseignée pour cet agent.")}</p>
           {session.managed && session.canEdit !== false && onEdit && (
             <button
               type="button"
@@ -1484,16 +1486,16 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
                 onEdit(session.id);
               }}
             >
-              Modifier
+              {tr("Modifier")}
             </button>
           )}
         </div>
       </>)}
       {session.managed && session.canEdit !== false && (
         <div className="agent-card-actions">
-          <button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? "Retirer" : "Ajouter"} favori`}>★</button>
-          {!session.core && <button className="agent-card-archive" onClick={() => onArchive(session)} title="Fermer l'agent (archiver ou quitter)" aria-label={`Fermer ${session.name}`}>⏻</button>}
-          <button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={`Éditer ${session.name}`} title="Éditer">✎<span className="agent-card-edit-label"> Éditer</span></button>
+          <button className={`agent-card-favorite ${session.favorite ? "active" : ""}`} onClick={() => onFavorite(session)} aria-label={`${session.favorite ? tr("Retirer") : tr("Ajouter")} favori`}>★</button>
+          {!session.core && <button className="agent-card-archive" onClick={() => onArchive(session)} title={tr("Fermer l'agent (archiver ou quitter)")} aria-label={`Fermer ${session.name}`}>⏻</button>}
+          <button className="agent-card-edit" onClick={() => onEdit(session.id)} aria-label={tr("Éditer {0}", session.name)} title={tr("Éditer")}>✎<span className="agent-card-edit-label">{" "}{tr("Éditer")}</span></button>
         </div>
       )}
     </article>
@@ -1536,18 +1538,18 @@ function TodoTagPicker({ onPick, onClose, projectId = null, projectName = null }
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal todo-picker">
-        <div className="modal-head"><div><p className="eyebrow">TÂCHES</p><h2>Taguer une tâche</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
+        <div className="modal-head"><div><p className="eyebrow">{tr("TÂCHES")}</p><h2>{tr("Taguer une tâche")}</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
         <input
           autoFocus
           className="todo-picker-search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Chercher une tâche ou une référence *A1B2…"
+          placeholder={tr("Chercher une tâche ou une référence *A1B2…")}
         />
         {projectId && (
           <div className="todo-picker-scope">
-            <button className={scope === "project" ? "active" : ""} onClick={() => setScope("project")}>{projectName || "Ce projet"}</button>
-            <button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}>Toutes les tâches</button>
+            <button className={scope === "project" ? "active" : ""} onClick={() => setScope("project")}>{projectName || tr("Ce projet")}</button>
+            <button className={scope === "all" ? "active" : ""} onClick={() => setScope("all")}>{tr("Toutes les tâches")}</button>
           </div>
         )}
         {error && <p className="form-error">{error}</p>}
@@ -1557,11 +1559,11 @@ function TodoTagPicker({ onPick, onClose, projectId = null, projectName = null }
               <b>{todoRef(todo.id)}</b>
               <span>
                 <strong>{todo.text}</strong>
-                <small>{todo.status === "done" ? "Terminé" : todo.status === "review" ? "À tester / valider" : "À faire"} · {todo.comments?.length || 0} commentaire{(todo.comments?.length || 0) > 1 ? "s" : ""}{todo.activityAt ? ` · ${formatCommentDate(todo.activityAt)}` : ""}</small>
+                <small>{todo.status === "done" ? tr("Terminé") : todo.status === "review" ? tr("À tester / valider") : tr("À faire")} · {todo.comments?.length || 0} {tr((todo.comments?.length || 0) > 1 ? "commentaires" : "commentaire")}{todo.activityAt ? ` · ${formatCommentDate(todo.activityAt)}` : ""}</small>
               </span>
             </button>
           ))}
-          {!matches.length && <p className="todo-column-empty">Aucune tâche trouvée.</p>}
+          {!matches.length && <p className="todo-column-empty">{tr("Aucune tâche trouvée.")}</p>}
         </div>
       </section>
     </div>
@@ -1595,7 +1597,7 @@ function TodoDetailOverlay({ todo, onClose, onTag }) {
   return (
     <div className="todo-detail-overlay">
       <header>
-        <button className="todo-detail-back" onClick={onClose}>‹ Retour à l’agent</button>
+        <button className="todo-detail-back" onClick={onClose}>{tr("‹ Retour à l’agent")}</button>
         <b className="todo-ref-pill">{todoRef(entry.id)}</b>
         <select
           className={`todo-assignee-select assignee-${getTodoAssignee(entry)}`}
@@ -1612,33 +1614,33 @@ function TodoDetailOverlay({ todo, onClose, onTag }) {
               window.dispatchEvent(new Event("noyau:todos"));
             } catch {}
           }}
-          title="Changer l'attribution"
-          aria-label="Attribution de la tâche"
+          title={tr("Changer l'attribution")}
+          aria-label={tr("Attribution de la tâche")}
         >
-          <option value="aurora"> Aurora</option>
-          <option value="main"> Moi</option>
-          <option value="all"> Tout le monde</option>
+          <option value="aurora">{" "}{tr("Aurora")}</option>
+          <option value="main">{" "}{tr("Moi")}</option>
+          <option value="all">{" "}{tr("Tout le monde")}</option>
         </select>
-        {onTag && <button className="ghost" onClick={() => { onTag(entry); onClose(); }}>Taguer dans la conversation</button>}
+        {onTag && <button className="ghost" onClick={() => { onTag(entry); onClose(); }}>{tr("Taguer dans la conversation")}</button>}
       </header>
       <div className="todo-detail-body">
         <h2>{entry.text}</h2>
         <p className="todo-detail-meta">
-          {entry.status === "done" ? "Terminé" : entry.status === "review" ? "À tester / valider" : "À faire"}
-          {entry.dueDate ? ` · échéance ${entry.dueDate.split("-").reverse().join("/")}` : ""}
-          {entry.activityAt ? ` · dernière activité ${formatCommentDate(entry.activityAt)}` : ""}
+          {entry.status === "done" ? tr("Terminé") : entry.status === "review" ? tr("À tester / valider") : tr("À faire")}
+          {entry.dueDate ? tr(" · échéance {0}", entry.dueDate.split("-").reverse().join("/")) : ""}
+          {entry.activityAt ? tr(" · dernière activité {0}", formatCommentDate(entry.activityAt)) : ""}
         </p>
         <div className="todo-comments-list">
           {(entry.comments || []).map((item) => {
             const isAgent = isCommentByAgent(item);
             const authorText = item.author
               ? (isAgent ? (item.author.startsWith("IA ·") ? item.author : `IA · ${item.author}`) : item.author)
-              : (isAgent ? "IA" : "Vous");
+              : (isAgent ? "IA" : tr("Vous"));
             return (
               <div className={`todo-comment-item ${isAgent ? "comment-agent" : "comment-user"}`} key={item.id}>
                 <div className="todo-comment-meta">
                   <span className={`todo-comment-avatar ${isAgent ? "agent" : "user"}`}>
-                    {isAgent ? "Agent" : "Profil"}
+                    {isAgent ? tr("Agent") : tr("Profil")}
                   </span>
                   <strong className={`todo-comment-author ${isAgent ? "agent" : "user"}`}>
                     {authorText}
@@ -1649,12 +1651,12 @@ function TodoDetailOverlay({ todo, onClose, onTag }) {
               </div>
             );
           })}
-          {!(entry.comments || []).length && <p className="todo-comments-empty">Aucun commentaire pour le moment.</p>}
+          {!(entry.comments || []).length && <p className="todo-comments-empty">{tr("Aucun commentaire pour le moment.")}</p>}
         </div>
         {error && <p className="form-error">{error}</p>}
         <form className="todo-comment-form" onSubmit={addComment}>
-          <input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Ajouter un commentaire…" maxLength="2000" />
-          <button className="primary" disabled={busy || !comment.trim()}>{busy ? "…" : "Commenter"}</button>
+          <input value={comment} onChange={(event) => setComment(event.target.value)} placeholder={tr("Ajouter un commentaire…")} maxLength="2000" />
+          <button className="primary" disabled={busy || !comment.trim()}>{busy ? "…" : tr("Commenter")}</button>
         </form>
       </div>
     </div>
@@ -1700,7 +1702,7 @@ function AgentArchives({ onOpen, compact = false }) {
   }
 
   async function forget(archive) {
-    if (!window.confirm(`Oublier définitivement l'archive « ${archive.name} » ?`)) return;
+    if (!window.confirm(tr("Oublier définitivement l'archive « {0} » ?", archive.name))) return;
     setBusy(archive.id);
     try {
       const result = await api(`/api/agents/archives/${encodeURIComponent(archive.id)}`, { method: "DELETE" });
@@ -1717,8 +1719,8 @@ function AgentArchives({ onOpen, compact = false }) {
     <details className={`agent-archives ${compact ? "compact" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>
         <span className="agent-group-chevron">›</span>
-        <strong>Agents archivés</strong>
-        <small>{archives.length ? `${archives.length} restaurable${archives.length > 1 ? "s" : ""}` : "aucun"}</small>
+        <strong>{tr("Agents archivés")}</strong>
+        <small>{archives.length ? tr(archives.length > 1 ? "{0} restaurables" : "{0} restaurable", archives.length) : tr("aucun")}</small>
       </summary>
       {error && <p className="finance-error">{error}</p>}
       <div className="agent-archive-list">
@@ -1728,18 +1730,18 @@ function AgentArchives({ onOpen, compact = false }) {
               <strong>{archive.name}</strong>
               <small>
                 {[assistantMeta[archive.assistant]?.label || archive.assistant, archive.cwd ? ` ${archive.cwd.split("/").filter(Boolean).pop()}` : null, formatCommentDate(archive.archivedAt)].filter(Boolean).join(" · ")}
-                {archive.reason === "reaped" ? " · fermé tout seul" : ""}
+                {archive.reason === "reaped" ? tr(" · fermé tout seul") : ""}
               </small>
             </div>
             <div className="agent-archive-actions">
-              <button className="agent-archive-restore" aria-label={`Restaurer ${archive.name}`} onClick={() => restore(archive)} disabled={busy === archive.id} title="Relancer cet agent avec son fil de discussion">
-                {busy === archive.id ? "…" : <>↺<span> Restaurer</span></>}
+              <button className="agent-archive-restore" aria-label={`Restaurer ${archive.name}`} onClick={() => restore(archive)} disabled={busy === archive.id} title={tr("Relancer cet agent avec son fil de discussion")}>
+                {busy === archive.id ? "…" : <>↺<span>{" "}{tr("Restaurer")}</span></>}
               </button>
-              <button className="agent-archive-forget" onClick={() => forget(archive)} disabled={busy === archive.id} title="Oublier définitivement cette archive" aria-label={`Oublier ${archive.name}`}><AppIcon name="trash" size={16}/></button>
+              <button className="agent-archive-forget" onClick={() => forget(archive)} disabled={busy === archive.id} title={tr("Oublier définitivement cette archive")} aria-label={`Oublier ${archive.name}`}><AppIcon name="trash" size={16}/></button>
             </div>
           </article>
         ))}
-        {!archives.length && <p className="todo-column-empty">Aucun agent archivé pour le moment.</p>}
+        {!archives.length && <p className="todo-column-empty">{tr("Aucun agent archivé pour le moment.")}</p>}
       </div>
     </details>
   );
@@ -1802,19 +1804,19 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
     const spared = (item.detachedApps || []).filter((app) => app.gui);
     const message = item.kind === "session"
       ? [
-        `Archiver « ${label} » et tuer ses ${item.processes} processus (${formatMb(item.rssMb)}) ?`,
-        launched.length ? `Aussi fermés (lancés par l'agent) : ${launched.map((app) => `${app.name} ${formatMb(app.rssMb)}`).join(", ")}.` : "",
-        spared.length ? `Conservés (applis graphiques) : ${spared.map((app) => `${app.name} ${formatMb(app.rssMb)}`).join(", ")}.` : "",
-        "L'agent reste restaurable depuis « Agents archivés ».",
+        tr("Archiver « {0} » et tuer ses {1} processus ({2}) ?", label, item.processes, formatMb(item.rssMb)),
+        launched.length ? tr("Aussi fermés (lancés par l'agent) : {0}.", launched.map((app) => `${app.name} ${formatMb(app.rssMb)}`).join(", ")) : "",
+        spared.length ? tr("Conservés (applis graphiques) : {0}.", spared.map((app) => `${app.name} ${formatMb(app.rssMb)}`).join(", ")) : "",
+        tr("L'agent reste restaurable depuis « Agents archivés »."),
       ].filter(Boolean).join("\n\n")
-      : `Tuer « ${label} » (pid ${item.pid}, ${item.processes} processus, ${formatMb(item.rssMb)}) ? Session hors Noyau : non restaurable.`;
+      : tr("Tuer « {0} » (pid {1}, {2} processus, {3}) ? Session hors Noyau : non restaurable.", label, item.pid, item.processes, formatMb(item.rssMb));
     if (!window.confirm(message)) return;
     setKilling(item.id);
     try {
       const body = item.kind === "session" ? { sessionId: item.id } : { pid: item.pid };
       const result = await api("/api/system/resources/kill", { method: "POST", body: JSON.stringify(body) });
       const freed = item.rssMb + (item.detachedApps || []).filter((app) => !app.gui).reduce((total, app) => total + app.rssMb, 0);
-      setStatus(`${result.name} fermé · ~${formatMb(freed)} libérés`);
+      setStatus(tr("{0} fermé · ~{1} libérés", result.name, formatMb(freed)));
       setData((current) => current && { ...current, agents: current.agents.filter((a) => a.id !== item.id) });
       if (item.kind === "session") {
         window.dispatchEvent(new Event("noyau:archives"));
@@ -1841,7 +1843,7 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
     setStatus("");
     try {
       const result = await api("/api/system/resources/optimize", { method: "POST", body: JSON.stringify(focus ? { focus } : {}) });
-      setStatus(result.reused ? "Instantané envoyé" : "Agent lancé");
+      setStatus(result.reused ? tr("Instantané envoyé") : tr("Agent lancé"));
       if (result.agentId) setTimeout(() => onOpen?.(result.agentId), 1200);
     } catch (reason) {
       setStatus(reason.message);
@@ -1865,23 +1867,23 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
       <summary className="resources-summary">
         <span className="resources-summary__title">
           <span className="resources-chevron" aria-hidden="true">›</span>
-          <strong>Ressources</strong>
+          <strong>{tr("Ressources")}</strong>
           {worst && <em className={`resources-alert-dot ${worst}`} title={hints.map((h) => h.text).join("\n")}>{hints.length}</em>}
         </span>
         {data ? (
           <span className="resource-gauges">
             <ResourceGauge label="CPU" percent={data.cpu.percent} detail={`Load ${data.cpu.loadAvg.join(" · ")} / ${data.cpu.cores} threads`} />
             <ResourceGauge label="RAM" percent={memory.percent} detail={`${formatMb(memory.usedMb)} / ${formatMb(memory.totalMb)} · ${formatMb(memory.availableMb)} dispo`} />
-            {memory.swapTotalMb > 0 && <ResourceGauge label="Swap" percent={memory.swapPercent} detail={`${formatMb(memory.swapUsedMb)} / ${formatMb(memory.swapTotalMb)}`} warn={50} alert={75} />}
+            {memory.swapTotalMb > 0 && <ResourceGauge label={tr("Swap")} percent={memory.swapPercent} detail={`${formatMb(memory.swapUsedMb)} / ${formatMb(memory.swapTotalMb)}`} warn={50} alert={75} />}
             {gpus.map((gpu) => (
               <ResourceGauge key={gpu.id} label={gpuShort(gpu.name)} percent={gpu.busyPercent} detail={`${gpu.name}${gpu.freqMhz ? ` · ${gpu.freqMhz}/${gpu.maxFreqMhz} MHz` : ""}`} />
             ))}
           </span>
         ) : (
-          <small className="resources-loading">{error || "Mesure…"}</small>
+          <small className="resources-loading">{error || tr("Mesure…")}</small>
         )}
-        <button type="button" className="resources-optimize" onClick={optimize} disabled={busy || !data} title="Un agent analyse et propose des optimisations. Il ne stoppe rien sans ta confirmation.">
-          {busy ? "…" : status || "Optimiser"}
+        <button type="button" className="resources-optimize" onClick={optimize} disabled={busy || !data} title={tr("Un agent analyse et propose des optimisations. Il ne stoppe rien sans ta confirmation.")}>
+          {busy ? "…" : status || tr("Optimiser")}
         </button>
       </summary>
       {data && (
@@ -1893,34 +1895,34 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
           )}
           <div className="resources-detail__bar">
             <div className="resource-tabs" role="tablist">
-              {[["cpu", "Top CPU"], ["ram", "Top RAM"], ["swap", "Swap"], ["agents", "Sessions IA"]].map(([id, label]) => (
+              {[["cpu", tr("Top CPU")], ["ram", tr("Top RAM")], ["swap", tr("Swap")], ["agents", tr("Sessions IA")]].map(([id, label]) => (
                 <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>
               ))}
             </div>
-            <small>{data.processCount} processus · {data.cpu.cores} threads · load {data.cpu.loadAvg[0]}</small>
+            <small>{data.processCount}{" "}{tr("processus ·")}{" "}{data.cpu.cores}{" "}{tr("threads · load")}{" "}{data.cpu.loadAvg[0]}</small>
           </div>
           {tab === "swap" && (
             <div className="resource-swap-help">
               <p>
-                <b>{formatMb(memory.swapUsedMb)}</b> / {formatMb(memory.swapTotalMb)} utilisés · swappiness {memory.swappiness ?? "?"}
-                <button type="button" className="resources-optimize" onClick={(event) => optimize(event, "swap")} disabled={busy}><AppIcon name="settings" size={15}/> Optimiser le swap</button>
+                <b>{formatMb(memory.swapUsedMb)}</b> / {formatMb(memory.swapTotalMb)}{" "}{tr("utilisés · swappiness")}{" "}{memory.swappiness ?? "?"}
+                <button type="button" className="resources-optimize" onClick={(event) => optimize(event, "swap")} disabled={busy}><AppIcon name="settings" size={15}/>{" "}{tr("Optimiser le swap")}</button>
               </p>
             </div>
           )}
           <div className="resource-table" role="table">
-            <div className={`resource-row head ${tab === "agents" ? "with-action" : ""}`} role="row"><span>{tab === "agents" ? "Session" : "Processus"}</span><span>{tab === "swap" ? "Swap" : "CPU"}</span><span>RAM</span>{tab === "agents" && <span />}</div>
+            <div className={`resource-row head ${tab === "agents" ? "with-action" : ""}`} role="row"><span>{tab === "agents" ? tr("Session") : tr("Processus")}</span><span>{tab === "swap" ? tr("Swap") : "CPU"}</span><span>{tr("RAM")}</span>{tab === "agents" && <span />}</div>
             {rows.slice(0, tab === "agents" ? 20 : tab === "swap" ? 10 : 6).map((item) => (
               <div className={`resource-row ${tab === "agents" ? "with-action" : ""} ${item.kind === "external" ? "external" : ""}`} role="row" key={item.id || item.pid} title={item.command || item.name}>
                 <span className="resource-row__name">
                   <b>{item.name}</b>
                   <small>
                     {tab === "agents"
-                      ? [item.projectName ? ` ${item.projectName}` : item.kind === "session" ? "Sans projet" : null, item.assistant, `${item.processes} proc.`].filter(Boolean).join(" · ")
+                      ? [item.projectName ? ` ${item.projectName}` : item.kind === "session" ? tr("Sans projet") : null, item.assistant, `${item.processes} proc.`].filter(Boolean).join(" · ")
                       : item.agentName || `pid ${item.pid}`}
                   </small>
                   {tab === "agents" && item.detachedApps?.length > 0 && (
-                    <small className="resource-row__launched" title="Processus lancés par l'agent, détachés de sa session">
-                      ↳ a lancé : {item.detachedApps.slice(0, 3).map((app) => `${app.name} ${formatMb(app.rssMb)}${app.gui ? " " : ""}`).join(" · ")}
+                    <small className="resource-row__launched" title={tr("Processus lancés par l'agent, détachés de sa session")}>
+                      {tr("↳ a lancé :")}{" "}{item.detachedApps.slice(0, 3).map((app) => `${app.name} ${formatMb(app.rssMb)}${app.gui ? " " : ""}`).join(" · ")}
                     </small>
                   )}
                 </span>
@@ -1941,15 +1943,15 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
                 </span>
                 {tab === "agents" && (
                   item.killable ? (
-                    <button type="button" className="resource-kill" onClick={() => kill(item)} disabled={killing === item.id} title={item.kind === "session" ? "Archiver et tuer tous ses processus" : "Tuer cette session hors Noyau"}>
-                      {killing === item.id ? "…" : item.kind === "session" ? "Archiver" : "Kill"}
+                    <button type="button" className="resource-kill" onClick={() => kill(item)} disabled={killing === item.id} title={item.kind === "session" ? tr("Archiver et tuer tous ses processus") : tr("Tuer cette session hors Noyau")}>
+                      {killing === item.id ? "…" : item.kind === "session" ? tr("Archiver") : tr("Kill")}
                     </button>
-                  ) : <span className="resource-kill-locked" title="Agent de base ou d'un autre profil"><AppIcon name="lock" size={14}/></span>
+                  ) : <span className="resource-kill-locked" title={tr("Agent de base ou d'un autre profil")}><AppIcon name="lock" size={14}/></span>
                 )}
               </div>
             ))}
-            {tab === "agents" && rows.length === 0 && <p className="resource-empty">Aucune session IA détectée.</p>}
-            {tab === "swap" && rows.length === 0 && <p className="resource-empty">Aucun processus notable dans le swap.</p>}
+            {tab === "agents" && rows.length === 0 && <p className="resource-empty">{tr("Aucune session IA détectée.")}</p>}
+            {tab === "swap" && rows.length === 0 && <p className="resource-empty">{tr("Aucun processus notable dans le swap.")}</p>}
           </div>
         </div>
       )}
@@ -2030,11 +2032,11 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
       }
       let group = groupsMap.get(pId);
       if (!group) {
-        const projectObj = projects.find((p) => p.id === pId) || session.project || { id: pId, name: session.project?.name || "Projet" };
+        const projectObj = projects.find((p) => p.id === pId) || session.project || { id: pId, name: session.project?.name || tr("Projet") };
         group = {
           projectId: pId,
           project: projectObj,
-          name: projectObj.name || session.project?.name || "Projet",
+          name: projectObj.name || session.project?.name || tr("Projet"),
           sessions: [],
           hasWorking: false,
         };
@@ -2051,7 +2053,7 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
       list.push({
         projectId: "__none__",
         project: null,
-        name: "Sans projet",
+        name: tr("Sans projet"),
         sessions: noProjectSessions,
         hasWorking: noProjectSessions.some((s) => s.agentStatus?.state === "working"),
       });
@@ -2098,32 +2100,32 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
   }, []);
 
   const now = new Date();
-  const weekday = new Intl.DateTimeFormat("fr-FR", { weekday: "long" }).format(now).toLocaleUpperCase("fr-FR");
-  const greeting = now.getHours() < 12 ? "Bonjour" : now.getHours() < 18 ? "Bon après-midi" : "Bonsoir";
+  const weekday = new Intl.DateTimeFormat(LOCALE, { weekday: "long" }).format(now).toLocaleUpperCase(LOCALE);
+  const greeting = now.getHours() < 12 ? tr("Bonjour") : now.getHours() < 18 ? tr("Bon après-midi") : tr("Bonsoir");
   return (
     <div className="page dashboard">
-      <MobileDashboard sessions={sessions} projects={projects} greeting={greeting} profileName={profileName} onOpenAgent={onOpen} onOpenProject={onProject} onView={onView} onNew={onNew} projectIcon={(project) => <ProjectIcon project={project} small />} hardware={hardware} weather={weather} power={power} powerBusy={powerBusy} onTogglePower={onTogglePower} voice={voice} onVoice={onVoice} quotas={[{name:"Codex",windows:codexWindows},{name:"Claude",windows:claudeWindows},{name:"Antigravity",windows:antigravityWindows}]} onRefreshQuotas={() => onRefreshQuotas().catch((error) => window.alert(error.message))} resources={() => <><ResourcesPanel onOpen={onOpen} onSessionsChanged={onSessionsChanged}/><AgentArchives onOpen={onOpen}/></>} />
+      <MobileDashboard sessions={sessions} projects={projects} greeting={greeting} profileName={profileName} onOpenAgent={onOpen} onOpenProject={onProject} onView={onView} onNew={onNew} projectIcon={(project) => <ProjectIcon project={project} small />} hardware={hardware} weather={weather} power={power} powerBusy={powerBusy} onTogglePower={onTogglePower} voice={voice} onVoice={onVoice} quotas={[{name:tr("Codex"),windows:codexWindows},{name:tr("Claude"),windows:claudeWindows},{name:tr("Antigravity"),windows:antigravityWindows}]} onRefreshQuotas={() => onRefreshQuotas().catch((error) => window.alert(error.message))} resources={() => <><ResourcesPanel onOpen={onOpen} onSessionsChanged={onSessionsChanged}/><AgentArchives onOpen={onOpen}/></>} />
       <div className="dashboard-desktop-details">
       <section className="hero-row">
         <div>
-          <p className="eyebrow">{weekday} · CENTRE DE CONTRÔLE</p>
+          <p className="eyebrow">{weekday}{" "}{tr("· CENTRE DE CONTRÔLE")}</p>
           <div className="hero-title">
             <h1>{greeting}.</h1>
-            {isNative && <div className="native-dashboard-sensors"><span className={`weather-inline ${weather?.isDay ? "day" : "night"}`}><i /><b>{weather ? `${Math.round(weather.temperature)}°` : "—"}</b><span>{weather ? weatherLabel(weather.code) : "Météo"}</span></span><span className={`hardware-inline ${hardware?.state || "normal"}`}><i className="hardware-pulse-dot" /><b>{hardware?.cpuTemp != null ? `${hardware.cpuTemp}°` : "—"}</b><span>CPU</span></span></div>}
-            {!isNative && weather && <span className={`weather-inline ${weather.isDay ? "day" : "night"}`} title={`Ressenti ${Math.round(weather.apparentTemperature)}°C`}><i /><b>{Math.round(weather.temperature)}°</b><span>{weatherLabel(weather.code)}</span><small>Open-Meteo</small></span>}
+            {isNative && <div className="native-dashboard-sensors"><span className={`weather-inline ${weather?.isDay ? "day" : "night"}`}><i /><b>{weather ? `${Math.round(weather.temperature)}°` : "—"}</b><span>{weather ? weatherLabel(weather.code) : tr("Météo")}</span></span><span className={`hardware-inline ${hardware?.state || "normal"}`}><i className="hardware-pulse-dot" /><b>{hardware?.cpuTemp != null ? `${hardware.cpuTemp}°` : "—"}</b><span>{tr("CPU")}</span></span></div>}
+            {!isNative && weather && <span className={`weather-inline ${weather.isDay ? "day" : "night"}`} title={`Ressenti ${Math.round(weather.apparentTemperature)}°C`}><i /><b>{Math.round(weather.temperature)}°</b><span>{weatherLabel(weather.code)}</span><small>{tr("Open-Meteo")}</small></span>}
             {!isNative && hardware && (
               <span
                 className={`hardware-inline ${hardware.state || "normal"}`}
-                title={`${hardware.alertLabel || "Monitoring PC"} — CPU: ${hardware.cpuTemp || "—"}°C · Coque: ${hardware.skinTemp || "—"}°C · Ventilo: ${hardware.fanRpm ? `${hardware.fanRpm} RPM` : "inactif"}`}
+                title={`${hardware.alertLabel || tr("Monitoring PC")} — CPU: ${hardware.cpuTemp || "—"}°C · Coque: ${hardware.skinTemp || "—"}°C · Ventilo: ${hardware.fanRpm ? `${hardware.fanRpm} RPM` : "inactif"}`}
               >
                 <i className="hardware-pulse-dot" />
                 <b>{hardware.cpuTemp !== null && hardware.cpuTemp !== undefined ? `${hardware.cpuTemp}°` : "—"}</b>
-                <span>CPU</span>
+                <span>{tr("CPU")}</span>
                 {hardware.skinTemp !== null && hardware.skinTemp !== undefined && (
                   <>
                     <small className="hw-sep">·</small>
                     <b>{hardware.skinTemp}°</b>
-                    <span>Coque</span>
+                    <span>{tr("Coque")}</span>
                   </>
                 )}
                 {hardware.fanRpm ? (
@@ -2137,7 +2139,7 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
           </div>
         </div>
         <div className="system-state">
-          <div className="system-state__row"><i /><span><strong>Système opérationnel</strong><small>Connexion locale chiffrable via VPN</small></span></div>
+          <div className="system-state__row"><i /><span><strong>{tr("Système opérationnel")}</strong><small>{tr("Connexion locale chiffrable via VPN")}</small></span></div>
           <div className="system-controls">
             {onTogglePower && (
               <button
@@ -2146,15 +2148,15 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
                 onClick={onTogglePower}
                 disabled={powerBusy}
                 aria-pressed={Boolean(power?.sleeping)}
-                title={power?.sleeping ? "Mode basse consommation actif (conteneurs Docker gelés) · Cliquer pour réveiller" : "Mettre en veille basse consommation (pause conteneurs Docker)"}
+                title={power?.sleeping ? tr("Mode basse consommation actif (conteneurs Docker gelés) · Cliquer pour réveiller") : tr("Mettre en veille basse consommation (pause conteneurs Docker)")}
               >
                 <span className="system-power__icon" aria-hidden="true"><AppIcon name="settings"/></span>
                 <span>
-                  <strong>{powerBusy ? "Action en cours…" : power?.sleeping ? "Sortir de veille" : "Veille éco"}</strong>
+                  <strong>{powerBusy ? tr("Action en cours…") : power?.sleeping ? tr("Sortir de veille") : tr("Veille éco")}</strong>
                   <small>
                     {power?.sleeping
-                      ? `${power?.pausedContainers?.length || 0} conteneur${(power?.pausedContainers?.length || 0) > 1 ? "s" : ""} gelé${(power?.pausedContainers?.length || 0) > 1 ? "s" : ""}`
-                      : "Pause Docker · 0% CPU"}
+                      ? tr("{0} conteneur{1} gelé{2}", power?.pausedContainers?.length || 0, (power?.pausedContainers?.length || 0) > 1 ? "s" : "", (power?.pausedContainers?.length || 0) > 1 ? "s" : "")
+                      : tr("Pause Docker · 0% CPU")}
                   </small>
                 </span>
               </button>
@@ -2165,33 +2167,33 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
                 onClick={() => onVoice(!voice?.listening)}
                 disabled={voice?.installed === false}
                 aria-pressed={Boolean(voice?.listening)}
-                title={voice?.installed === false ? "Moteurs vocaux absents · scripts/voice-install.sh" : voice?.listening ? "Couper le micro" : "Activer le micro"}
+                title={voice?.installed === false ? tr("Moteurs vocaux absents · scripts/voice-install.sh") : voice?.listening ? tr("Couper le micro") : tr("Activer le micro")}
               >
                 <span className="system-voice__dot" aria-hidden="true" />
                 <span>
-                  <strong>{voice?.listening ? "Micro actif" : "Micro éteint"}</strong>
+                  <strong>{voice?.listening ? tr("Micro actif") : tr("Micro éteint")}</strong>
                   <small>
                     {voice?.error ? voice.error
-                      : voice?.installed === false ? "Moteurs absents"
+                      : voice?.installed === false ? tr("Moteurs absents")
                       : voice?.lastHeard ? `« ${voice.lastHeard.text} »`
-                      : voice?.listening ? "Dis « Noyau, … »" : "Pilotage vocal"}
+                      : voice?.listening ? tr("Dis « Noyau, … »") : tr("Pilotage vocal")}
                   </small>
                 </span>
               </button>
               <button
                 className={`system-voice__mute ${muted ? "muted" : ""}`}
                 onClick={() => onMuted(!muted)}
-                title={muted ? "Réactiver les sons" : "Couper les sons"}
-                aria-label={muted ? "Réactiver les sons" : "Couper les sons"}
-              ><AppIcon name="volume" size={17}/>{muted && <span className="sr-only">Sons coupés</span>}</button>
+                title={muted ? tr("Réactiver les sons") : tr("Couper les sons")}
+                aria-label={muted ? tr("Réactiver les sons") : tr("Couper les sons")}
+              ><AppIcon name="volume" size={17}/>{muted && <span className="sr-only">{tr("Sons coupés")}</span>}</button>
             </div>
           </div>
         </div>
       </section>
 
       <section className="metrics">
-        <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div className="active-agents-content"><small>AGENTS ACTIFS</small><div className="active-agents-data"><div className="active-total-block"><strong className="active-total">{sessions.length}</strong><em>en ligne</em></div><div className="agent-breakdown"><span><b>{codexCount}</b><em>Codex</em></span><span><b>{claudeCount}</b><em>Claude</em></span>{antigravityCount > 0 && <span><b>{antigravityCount}</b><em>Antigravity</em></span>}<span><b>{shellCount}</b><em>Terminal</em></span></div></div><p className="active-agents-footer"><span>{linkedProjects} projet{linkedProjects > 1 ? "s" : ""} lié{linkedProjects > 1 ? "s" : ""}</span><span>{favoriteCount} favori{favoriteCount > 1 ? "s" : ""}</span></p></div></article>
-        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">QUOTAS IA<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); setQuotaRefreshState("Actualisation…"); try { const result = await onRefreshQuotas(); const failed = Object.entries(result?.refreshed || {}).filter(([, state]) => !state.ok).map(([provider]) => provider); setQuotaRefreshState(failed.length ? `Échec: ${failed.join(", ")}` : `Actualisé ${new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`); } catch (error) { setQuotaRefreshState(error.message || "Actualisation impossible"); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label="Rafraîchir quotas" title="Rafraîchir quotas"><span aria-hidden="true">↻</span></button><em className="quota-refresh-state">{quotaRefreshState}</em></small><div className="quota-providers"><div className="quota-codex"><span>CODEX</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-antigravity"><span>ANTIGRAVITY</span>{antigravityWindows.length ? <div className="quota-dials">{antigravityWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>Relevé indisponible</em></div>}</div><div className="quota-claude"><span>CLAUDE</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? "Déconnecté" : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? "Reconnecte Claude" : "Reset inconnu"}</em></div>}</div></div></div></article>
+        <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div className="active-agents-content"><small>{tr("AGENTS ACTIFS")}</small><div className="active-agents-data"><div className="active-total-block"><strong className="active-total">{sessions.length}</strong><em>{tr("en ligne")}</em></div><div className="agent-breakdown"><span><b>{codexCount}</b><em>{tr("Codex")}</em></span><span><b>{claudeCount}</b><em>{tr("Claude")}</em></span>{antigravityCount > 0 && <span><b>{antigravityCount}</b><em>{tr("Antigravity")}</em></span>}<span><b>{shellCount}</b><em>{tr("Terminal")}</em></span></div></div><p className="active-agents-footer"><span>{linkedProjects} {tr(linkedProjects > 1 ? "projets" : "projet")}{" "}{tr(linkedProjects > 1 ? "liés" : "lié")}</span><span>{favoriteCount} {tr(favoriteCount > 1 ? "favoris" : "favori")}</span></p></div></article>
+        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">{tr("QUOTAS IA")}<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); setQuotaRefreshState(tr("Actualisation…")); try { const result = await onRefreshQuotas(); const failed = Object.entries(result?.refreshed || {}).filter(([, state]) => !state.ok).map(([provider]) => provider); setQuotaRefreshState(failed.length ? tr("Échec: {0}", failed.join(", ")) : tr("Actualisé {0}", new Date().toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit", second: "2-digit" }))); } catch (error) { setQuotaRefreshState(error.message || tr("Actualisation impossible")); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label={tr("Rafraîchir quotas")} title={tr("Rafraîchir quotas")}><span aria-hidden="true">↻</span></button><em className="quota-refresh-state">{quotaRefreshState}</em></small><div className="quota-providers"><div className="quota-codex"><span>{tr("CODEX")}</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>{tr("Relevé indisponible")}</em></div>}</div><div className="quota-antigravity"><span>{tr("ANTIGRAVITY")}</span>{antigravityWindows.length ? <div className="quota-dials">{antigravityWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>{tr("Relevé indisponible")}</em></div>}</div><div className="quota-claude"><span>{tr("CLAUDE")}</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? tr("Déconnecté") : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? tr("Reconnecte Claude") : tr("Reset inconnu")}</em></div>}</div></div></div></article>
       </section>
 
       <ResourcesPanel onOpen={onOpen} onSessionsChanged={onSessionsChanged} />
@@ -2199,25 +2201,25 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
       <section className="panel agents-panel">
         <div className="panel-head">
           <div>
-            <h3>Agents actifs</h3>
-            <p>Sessions tmux sur ce PC</p>
+            <h3>{tr("Agents actifs")}</h3>
+            <p>{tr("Sessions tmux sur ce PC")}</p>
           </div>
           <div className="panel-head-actions">
             {onSetSortMode && (
-              <div className="agent-sort-switcher" role="group" aria-label="Mode de tri des agents">
+              <div className="agent-sort-switcher" role="group" aria-label={tr("Mode de tri des agents")}>
                 <button
                   type="button"
                   className={`agent-sort-btn ${sortMode === "recent" ? "active" : ""}`}
                   onClick={() => onSetSortMode("recent")}
-                  title={AGENT_SORT_TOOLTIPS.recent || "Plus récemment utilisés"}
+                  title={AGENT_SORT_TOOLTIPS.recent || tr("Plus récemment utilisés")}
                 >
-                  Récents
+                  {tr("Récents")}
                 </button>
                 <button
                   type="button"
                   className={`agent-sort-btn ${sortMode === "alpha" ? "active" : ""}`}
                   onClick={() => onSetSortMode("alpha")}
-                  title={AGENT_SORT_TOOLTIPS.alpha || "Alphabétique A-Z"}
+                  title={AGENT_SORT_TOOLTIPS.alpha || tr("Alphabétique A-Z")}
                 >
                   A-Z
                 </button>
@@ -2225,13 +2227,13 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
                   type="button"
                   className={`agent-sort-btn ${sortMode === "project" ? "active" : ""}`}
                   onClick={() => onSetSortMode("project")}
-                  title={AGENT_SORT_TOOLTIPS.project || "Par projet (accordéons)"}
+                  title={AGENT_SORT_TOOLTIPS.project || tr("Par projet (accordéons)")}
                 >
-                  Par projet
+                  {tr("Par projet")}
                 </button>
               </div>
             )}
-            <button className="ghost" onClick={onNew}>+ Lancer</button>
+            <button className="ghost" onClick={onNew}>{tr("+ Lancer")}</button>
           </div>
         </div>
         <div className="agent-grid grouped-agent-grid">
@@ -2260,12 +2262,12 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
                   </div>
                   <div className="agent-group-meta">
                     {group.hasWorking && (
-                      <span className="agent-group-badge working" title="Un agent travaille actuellement">
-                        <i className="agent-state-dot working" /> En cours
+                      <span className="agent-group-badge working" title={tr("Un agent travaille actuellement")}>
+                        <i className="agent-state-dot working" />{" "}{tr("En cours")}
                       </span>
                     )}
                     <small className="agent-group-count">
-                      {group.sessions.length} agent{group.sessions.length > 1 ? "s" : ""}
+                      {group.sessions.length} {tr(group.sessions.length > 1 ? "agents" : "agent")}
                     </small>
                   </div>
                 </summary>
@@ -2298,8 +2300,8 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
           {!sessions.length && (
             <button className="empty-agent" onClick={onNew}>
               <span>+</span>
-              <strong>Lancer premier agent</strong>
-              <small>Codex, Claude ou terminal</small>
+              <strong>{tr("Lancer premier agent")}</strong>
+              <small>{tr("Codex, Claude ou terminal")}</small>
             </button>
           )}
         </div>
@@ -2307,18 +2309,18 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
       </section>
 
       <section className="panel project-preview">
-        <div className="panel-head"><div><h3>Projets</h3><p>Agents rattachés par travail</p></div><button className="ghost" onClick={onProjects}>Gérer</button></div>
+        <div className="panel-head"><div><h3>{tr("Projets")}</h3><p>{tr("Agents rattachés par travail")}</p></div><button className="ghost" onClick={onProjects}>{tr("Gérer")}</button></div>
         <div className="project-preview-grid">
           {projects.slice(0, 4).map((project) => {
             const count = sessions.filter((session) => session.projectId === project.id).length;
-            return <button key={project.id} onClick={onProjects}><ProjectIcon project={project} small /><span><strong>{project.name}</strong><small>{count} agent{count > 1 ? "s" : ""} actif{count > 1 ? "s" : ""}</small></span><b>›</b></button>;
+            return <button key={project.id} onClick={onProjects}><ProjectIcon project={project} small /><span><strong>{project.name}</strong><small>{count} {tr(count > 1 ? "agents" : "agent")} {tr(count > 1 ? "actifs" : "actif")}</small></span><b>›</b></button>;
           })}
-          {!projects.length && <button className="empty-project" onClick={onProjects}><span>＋</span><strong>Créer premier projet</strong></button>}
+          {!projects.length && <button className="empty-project" onClick={onProjects}><span>＋</span><strong>{tr("Créer premier projet")}</strong></button>}
         </div>
       </section>
 
       <section className="future-grid">
-        <article className="panel"><span>NOUVEAU</span><h3>Budget</h3><p>Capacité épargne, enveloppes et alertes mensuelles.</p><button onClick={onFinances}>Ouvrir</button></article>
+        <article className="panel"><span>{tr("NOUVEAU")}</span><h3>{tr("Budget")}</h3><p>{tr("Capacité épargne, enveloppes et alertes mensuelles.")}</p><button onClick={onFinances}>{tr("Ouvrir")}</button></article>
       </section>
       </div>
     </div>
@@ -2338,14 +2340,14 @@ function ModuleSchedule({ moduleId, schedule, onSave }) {
     }
   }
   const nextRun = schedule.nextRun?.match(/\d{4}-\d{2}-\d{2} (\d{2}:\d{2})/)?.[1];
-  return <label className="module-schedule"><span><strong>{schedule.label}</strong><small>{schedule.active ? `Prochain ${nextRun || time}` : "Timer arrêté"}</small></span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} /><button onClick={save} disabled={saving || time === schedule.time}>{saving ? "…" : "OK"}</button></label>;
+  return <label className="module-schedule"><span><strong>{schedule.label}</strong><small>{schedule.active ? `Prochain ${nextRun || time}` : tr("Timer arrêté")}</small></span><input type="time" value={time} onChange={(event) => setTime(event.target.value)} /><button onClick={save} disabled={saving || time === schedule.time}>{saving ? "…" : "OK"}</button></label>;
 }
 
 // Tableau lecture seule fourni par le module (cartes, images locales, liens https).
 function ModuleBoard({ module }) {
   const board = module.board;
   if (!board) return null;
-  if (board.availability !== "ready") return <small className="module-run">{board.availability === "waiting" ? "Tableau pas encore généré — lancer l'action du module." : "Tableau illisible."}</small>;
+  if (board.availability !== "ready") return <small className="module-run">{board.availability === "waiting" ? tr("Tableau pas encore généré — lancer l'action du module.") : tr("Tableau illisible.")}</small>;
   const media = (image) => `/api/modules/${encodeURIComponent(module.id)}/board/media/${encodeURIComponent(image.file)}${image.version ? `?v=${encodeURIComponent(image.version)}` : ""}`;
   return (
     <div className="module-board">
@@ -2376,7 +2378,7 @@ function ModuleBoard({ module }) {
           ))}
         </section>
       ))}
-      {board.generatedAt && <small className="module-run">Mis à jour {new Date(board.generatedAt).toLocaleString("fr-FR")}</small>}
+      {board.generatedAt && <small className="module-run">{tr("Mis à jour")}{" "}{new Date(board.generatedAt).toLocaleString(LOCALE)}</small>}
     </div>
   );
 }
@@ -2475,47 +2477,47 @@ function ModuleKnowledge({ module, onConfigured }) {
   const rootLabel = module.knowledge.status?.rootPageName
     ? `Racine : ${module.knowledge.status.rootPageName}`
     : module.knowledge.status?.rootPageId
-      ? "Page racine connectée"
+      ? tr("Page racine connectée")
       : configured
-        ? "Toutes les pages"
+        ? tr("Toutes les pages")
         : null;
 
   return <>
     <button className="primary" onClick={() => open ? setOpen(false) : (notion && !configured ? (setOpen(true), setShowConfig(true)) : load())}>
-      {open ? "Fermer contenu" : module.knowledge.label}
+      {open ? tr("Fermer contenu") : module.knowledge.label}
     </button>
     {open && <section className="module-knowledge">
       {notion && (showConfig || !configured) && <form className="module-knowledge-config" onSubmit={configureNotion}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <strong>{configured ? "Réglages Notion & Page racine" : "Connecter Notion"}</strong>
-          {configured && <button type="button" className="ghost" onClick={() => setShowConfig(false)}>Fermer</button>}
+          <strong>{configured ? tr("Réglages Notion & Page racine") : tr("Connecter Notion")}</strong>
+          {configured && <button type="button" className="ghost" onClick={() => setShowConfig(false)}>{tr("Fermer")}</button>}
         </div>
-        {!configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Token Notion ntn_…" autoComplete="off" required />}
+        {!configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={tr("Token Notion ntn_…")} autoComplete="off" required />}
         {pages.length > 0 && (
           <label style={{ display: "grid", gap: "4px" }}>
-            <span style={{ fontSize: "10px", color: "var(--c-a0aca3)" }}>Choisir la page racine :</span>
+            <span style={{ fontSize: "10px", color: "var(--c-a0aca3)" }}>{tr("Choisir la page racine :")}</span>
             <select value={selectedRoot} onChange={(event) => setSelectedRoot(event.target.value)}>
-              <option value="all">Toutes les pages partagées ({pages.length})</option>
+              <option value="all">{tr("Toutes les pages partagées (")}{pages.length})</option>
               {pages.map((page) => (
                 <option value={page.id} key={page.id}>{page.name}</option>
               ))}
             </select>
           </label>
         )}
-        <input value={pageUrl} onChange={(event) => setPageUrl(event.target.value)} placeholder="Ou coller URL de page Notion…" />
-        {configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Nouveau token Notion (optionnel)…" autoComplete="off" />}
-        <button className="primary" disabled={busy}>{busy ? "Enregistrement…" : "Enregistrer et appliquer"}</button>
+        <input value={pageUrl} onChange={(event) => setPageUrl(event.target.value)} placeholder={tr("Ou coller URL de page Notion…")} />
+        {configured && <input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder={tr("Nouveau token Notion (optionnel)…")} autoComplete="off" />}
+        <button className="primary" disabled={busy}>{busy ? tr("Enregistrement…") : tr("Enregistrer et appliquer")}</button>
       </form>}
 
       {(!notion || configured) && !showConfig && <>
         <header>
           <button disabled={!stack.length || busy} onClick={() => { const next = stack.slice(0, -1); load(next.at(-1) || null, next); }}>←</button>
-          <strong title={stack.at(-1)?.name || rootLabel || (notion ? "Pages Notion" : "Drive Octanix")}>
-            {stack.at(-1)?.name || (notion ? (rootLabel || "Pages Notion") : "Drive Octanix")}
+          <strong title={stack.at(-1)?.name || rootLabel || (notion ? tr("Pages Notion") : tr("Drive Octanix"))}>
+            {stack.at(-1)?.name || (notion ? (rootLabel || tr("Pages Notion")) : tr("Drive Octanix"))}
           </strong>
           <div style={{ display: "flex", gap: "4px", marginLeft: "auto" }}>
-            {notion && <button type="button" onClick={() => (loadPages(), setShowConfig(true))} title="Changer la page racine ou le token" aria-label="Réglages"><AppIcon name="settings" size={16}/></button>}
-            <button onClick={() => load(stack.at(-1) || null, stack)} disabled={busy} aria-label="Rafraîchir">↻</button>
+            {notion && <button type="button" onClick={() => (loadPages(), setShowConfig(true))} title={tr("Changer la page racine ou le token")} aria-label={tr("Réglages")}><AppIcon name="settings" size={16}/></button>}
+            <button onClick={() => load(stack.at(-1) || null, stack)} disabled={busy} aria-label={tr("Rafraîchir")}>↻</button>
           </div>
         </header>
         {!preview ? (
@@ -2530,18 +2532,18 @@ function ModuleKnowledge({ module, onConfigured }) {
                 <b>{item.kind === "folder" ? "›" : "↗"}</b>
               </button>
             ))}
-            {!items.length && !busy && <span>Aucun contenu visible.</span>}
+            {!items.length && !busy && <span>{tr("Aucun contenu visible.")}</span>}
           </div>
         ) : (
           <div className="module-knowledge-preview">
-            <header><strong>{preview.name}</strong><a href={preview.url} target="_blank" rel="noreferrer">Ouvrir ↗</a></header>
+            <header><strong>{preview.name}</strong><a href={preview.url} target="_blank" rel="noreferrer">{tr("Ouvrir ↗")}</a></header>
             <pre>{preview.content.slice(0, 30_000)}</pre>
-            {preview.truncated && <small>Page tronquée par Notion.</small>}
-            <button onClick={() => setPreview(null)}>← Liste</button>
+            {preview.truncated && <small>{tr("Page tronquée par Notion.")}</small>}
+            <button onClick={() => setPreview(null)}>{tr("← Liste")}</button>
           </div>
         )}
       </>}
-      {busy && <small className="module-knowledge-loading">Chargement…</small>}
+      {busy && <small className="module-knowledge-loading">{tr("Chargement…")}</small>}
       {error && <small className="module-knowledge-error">{error}</small>}
     </section>}
   </>;
@@ -2583,8 +2585,8 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
   async function startBuild(platform) {
     if (busy || isRunning) return;
     const label = platform === "ios" ? "IPA (iOS)" : "APK (Android)";
-    const executor = platform === "android" && deviceBuild.capabilities?.localAndroid ? "sur machine Noyau" : "par agent disponible";
-    if (!window.confirm(`Lancer production build ${label} ${executor} ?`)) return;
+    const executor = platform === "android" && deviceBuild.capabilities?.localAndroid ? "sur machine Noyau" : tr("par agent disponible");
+    if (!window.confirm(tr("Lancer production build {0} {1} ?", label, executor))) return;
     setBusy(platform);
     try {
       await onBuild?.(module.id, platform);
@@ -2599,9 +2601,9 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
     try {
       const res = await onRefreshBuilds?.(module.id);
       if (res?.imported) {
-        window.alert(`Nouveau build importé : ${res.imported}`);
+        window.alert(tr("Nouveau build importé : {0}", res.imported));
       } else {
-        window.alert("Builds synchronisés.");
+        window.alert(tr("Builds synchronisés."));
       }
     } finally {
       setBusy(false);
@@ -2614,7 +2616,7 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
     try {
       const access = await api(`/api/modules/${encodeURIComponent(module.id)}/builds/${encodeURIComponent(build.id)}/access`, { method: "POST" });
       const target = install ? access.installUrl : access.downloadUrl;
-      if (!target) throw new Error(install ? "Installation OTA indisponible." : "Téléchargement indisponible.");
+      if (!target) throw new Error(install ? tr("Installation OTA indisponible.") : tr("Téléchargement indisponible."));
       window.location.assign(target);
     } catch (error) {
       window.alert(error.message);
@@ -2628,24 +2630,24 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
   return (
     <section className="module-device-build">
       <div className="module-device-build-head">
-        <strong>Builds & Appareils</strong>
+        <strong>{tr("Builds & Appareils")}</strong>
         <div className="module-device-build-actions">
           <button
             className="ghost"
             onClick={refreshLatest}
             disabled={!!busy || isRunning}
-            title="Rechercher et synchroniser les derniers builds du projet"
+            title={tr("Rechercher et synchroniser les derniers builds du projet")}
           >
-            {busy === "refresh" ? "…" : "Rafraîchir"}
+            {busy === "refresh" ? "…" : tr("Rafraîchir")}
           </button>
           {hasAndroid && (
             <button
               className="primary"
               onClick={() => startBuild("android")}
               disabled={!!busy || isRunning}
-              title="Compiler APK sur machine Noyau puis tenter installation ADB"
+              title={tr("Compiler APK sur machine Noyau puis tenter installation ADB")}
             >
-              {isRunning && run?.platform === "android" ? `APK en cours… (${formatElapsed(elapsed)})` : busy === "android" ? "Lancement…" : "Construire APK"}
+              {isRunning && run?.platform === "android" ? tr("APK en cours… ({0})", formatElapsed(elapsed)) : busy === "android" ? tr("Lancement…") : tr("Construire APK")}
             </button>
           )}
           {hasIos && (
@@ -2653,9 +2655,9 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
               className={hasAndroid ? "secondary" : "primary"}
               onClick={() => startBuild("ios")}
               disabled={!!busy || isRunning}
-              title="Produire IPA via Mac/Xcode ou agent disponible"
+              title={tr("Produire IPA via Mac/Xcode ou agent disponible")}
             >
-              {isRunning && run?.platform === "ios" ? `IPA en cours… (${formatElapsed(elapsed)})` : busy === "ios" ? "Lancement…" : "Construire IPA"}
+              {isRunning && run?.platform === "ios" ? tr("IPA en cours… ({0})", formatElapsed(elapsed)) : busy === "ios" ? tr("Lancement…") : tr("Construire IPA")}
             </button>
           )}
         </div>
@@ -2664,13 +2666,13 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
         <div className={`module-device-build-status ${statusClass}`}>
           {isRunning && <span className="module-build-spinner" />}
           <span>
-            {run.state === "installed" && `✓ APK installée sur ${run.device?.serial || "l'appareil"}${run.output ? ` · ${run.output}` : ""}`}
-            {run.state === "download-ready" && `${run.platform === "ios" ? "IPA" : "APK"} prête · ${run.output || ""}`}
-            {run.state === "installation-requested" && `IPA prête · ${run.output || "Demande transmise à l'agent."}`}
-            {run.state === "building" && `Production en cours (${run.platform === "ios" ? "IPA iOS" : "APK Android"} · ${run.agent?.name || "agent"}) · ${run.output || ""}`}
-            {run.state === "queued" && `En attente (${run.platform === "ios" ? "IPA" : "APK"} · ${run.agent?.name || "agent"})…`}
-            {run.state === "installing" && `Installation en cours sur l'appareil…`}
-            {run.state === "error" && `Erreur build: ${run.output || "échec"}`}
+            {run.state === "installed" && tr("✓ APK installée sur {0}{1}", run.device?.serial || "l'appareil", run.output ? ` · ${run.output}` : "")}
+            {run.state === "download-ready" && tr("{0} prête · {1}", run.platform === "ios" ? "IPA" : "APK", run.output || "")}
+            {run.state === "installation-requested" && tr("IPA prête · {0}", run.output || tr("Demande transmise à l'agent."))}
+            {run.state === "building" && tr("Production en cours ({0} · {1}) · {2}", run.platform === "ios" ? "IPA iOS" : "APK Android", run.agent?.name || "agent", run.output || "")}
+            {run.state === "queued" && tr("En attente ({0} · {1})…", run.platform === "ios" ? "IPA" : "APK", run.agent?.name || "agent")}
+            {run.state === "installing" && tr("Installation en cours sur l'appareil…")}
+            {run.state === "error" && tr("Erreur build: {0}", run.output || tr("échec"))}
           </span>
           {isRunning && <span className="module-build-timer">{formatElapsed(elapsed)}</span>}
         </div>
@@ -2683,20 +2685,20 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
                 <div className="module-build-name" title={build.name}>{build.name}</div>
                 <div className="module-build-meta">
                   <span className={`module-build-platform ${build.platform === "ios" ? "ios" : "android"}`}>
-                    {build.platform === "ios" ? "iOS · IPA" : "Android · APK"}
+                    {build.platform === "ios" ? "iOS · IPA" : tr("Android · APK")}
                   </span>
                   {build.version && <span className="module-build-tag">{build.version}</span>}
                   {build.commit && <span className="module-build-commit">#{build.commit}</span>}
                   <small>{formatFileSize(build.size)}</small>
-                  <small>· {new Date(build.createdAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
+                  <small>· {new Date(build.createdAt).toLocaleDateString(LOCALE, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</small>
                 </div>
               </div>
               <div className="module-build-buttons">
                 {build.platform === "ios" && deviceBuild.capabilities?.iosOta && (
-                  <button onClick={() => openBuild(build, true)} disabled={!!busy}>Installer IPA</button>
+                  <button onClick={() => openBuild(build, true)} disabled={!!busy}>{tr("Installer IPA")}</button>
                 )}
                 <button onClick={() => openBuild(build, false)} disabled={!!busy}>
-                  Télécharger {build.platform === "ios" ? "IPA" : "APK"}
+                  {tr("Télécharger")}{" "}{build.platform === "ios" ? "IPA" : "APK"}
                 </button>
               </div>
             </div>
@@ -2707,7 +2709,7 @@ function ModuleDeviceBuild({ module, onBuild, onRefreshBuilds }) {
   );
 }
 
-const LONG_ACTION_COUNTS = { warmup: "bonjour", promo: "promo", skipped: "ignorés", failed: "échecs" };
+const LONG_ACTION_COUNTS = { warmup: "bonjour", promo: "promo", skipped: tr("ignorés"), failed: tr("échecs") };
 
 function waitLabel(nextAt) {
   const seconds = Math.max(0, Math.round((new Date(nextAt).getTime() - Date.now()) / 1000));
@@ -2748,11 +2750,11 @@ function ModuleLongAction({ module, action, onAction }) {
   const status = !run ? "" : run.state === "running"
     ? progress?.phase === "pause" && progress.nextAt ? `${done}/${total} faits · prochain dans ${waitLabel(progress.nextAt)}`
       : progress?.current ? `Groupe ${Math.min(done + 1, total)}/${total} · ${progress.current}${progress.phase ? ` · ${progress.phase}` : ""}`
-        : `Démarrage… ${done}/${total}`
-    : run.state === "stopping" ? `Arrêt en cours (fin du groupe actuel)… ${done}/${total}`
-      : run.state === "stopped" ? `Arrêté à ${done}/${total}`
-        : run.state === "success" ? `Terminé · ${done}/${total}`
-          : `Erreur à ${done}/${total}${run.output ? ` · ${run.output}` : ""}`;
+        : tr("Démarrage… {0}/{1}", done, total)
+    : run.state === "stopping" ? tr("Arrêt en cours (fin du groupe actuel)… {0}/{1}", done, total)
+      : run.state === "stopped" ? tr("Arrêté à {0}/{1}", done, total)
+        : run.state === "success" ? tr("Terminé · {0}/{1}", done, total)
+          : tr("Erreur à {0}/{1}{2}", done, total, run.output ? ` · ${run.output}` : "");
   const counts = Object.entries(progress?.counts || {}).filter(([, count]) => count > 0).map(([key, count]) => `${LONG_ACTION_COUNTS[key] || key} ${count}`).join(" · ");
   return (
     <div className="module-long">
@@ -2764,8 +2766,8 @@ function ModuleLongAction({ module, action, onAction }) {
           </label>
         )}
         {!active && <button className={action.tone} onClick={start} disabled={busy}>{action.label}</button>}
-        {!active && run?.resumable && <button onClick={() => send({ resume: true }, `Reprendre à ${done}/${total} ?`)} disabled={busy}>Reprendre ({done}/{total})</button>}
-        {active && <button className="danger" onClick={() => send({ stop: true }, "Arrêter ? Le groupe en cours est terminé avant l'arrêt.")} disabled={busy || run.state === "stopping"}>{run.state === "stopping" ? "Arrêt…" : "Stop"}</button>}
+        {!active && run?.resumable && <button onClick={() => send({ resume: true }, `Reprendre à ${done}/${total} ?`)} disabled={busy}>{tr("Reprendre (")}{done}/{total})</button>}
+        {active && <button className="danger" onClick={() => send({ stop: true }, "Arrêter ? Le groupe en cours est terminé avant l'arrêt.")} disabled={busy || run.state === "stopping"}>{run.state === "stopping" ? tr("Arrêt…") : tr("Stop")}</button>}
       </div>
       {run && total > 0 && <div className={`module-long-bar ${run.state}`}><i style={{ width: `${Math.round((done / total) * 100)}%` }} /></div>}
       {status && <small className={`module-run ${run.state === "success" ? "success" : run.state === "error" ? "error" : ""}`}>{action.label} · {status}{counts ? ` · ${counts}` : ""}</small>}
@@ -2773,16 +2775,16 @@ function ModuleLongAction({ module, action, onAction }) {
   );
 }
 
-const PLANNING_KIND = { publication: "Publication", preparation: "Préparation", queue: "File" };
+const PLANNING_KIND = { publication: tr("Publication"), preparation: tr("Préparation"), queue: tr("File") };
 
 function planningDayLabel(date) {
   const start = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
   const offset = Math.round((start(date) - start(new Date())) / 86_400_000);
-  const name = date.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "short" });
+  const name = date.toLocaleDateString(LOCALE, { weekday: "long", day: "numeric", month: "short" });
   return offset === 0 ? `Aujourd'hui · ${name}` : offset === -1 ? `Hier · ${name}` : offset === 1 ? `Demain · ${name}` : name;
 }
 
-const PLANNING_RESULT = { ok: "✓ fait", failed: "✗ échec", running: "en cours" };
+const PLANNING_RESULT = { ok: "✓ fait", failed: tr("✗ échec"), running: tr("en cours") };
 
 function ProjectPlanning({ project, nested = false }) {
   const [open, setOpen] = useState(false);
@@ -2801,8 +2803,8 @@ function ProjectPlanning({ project, nested = false }) {
   const [boostBusy, setBoostBusy] = useState("");
   async function toggleBoost(boost) {
     const date = boost.boostKey ? boost.boostKey.slice(0, 10) : null;
-    const when = date ? ` le ${new Date(boost.at).toLocaleString("fr-FR", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : "";
-    if (!boost.enabled && !window.confirm(`Activer le boost payé pour « ${boost.label} »${when} ?`)) return;
+    const when = date ? ` le ${new Date(boost.at).toLocaleString(LOCALE, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : "";
+    if (!boost.enabled && !window.confirm(tr("Activer le boost payé pour « {0} »{1} ?", boost.label, when))) return;
     setBoostBusy(boost.boostKey || boost.entryId);
     try {
       setData(await api(`/api/projects/${encodeURIComponent(project.id)}/planning/boost`, { method: "PATCH", body: JSON.stringify({ moduleId: boost.moduleId, entryId: boost.entryId, enabled: !boost.enabled, date }) }));
@@ -2824,29 +2826,29 @@ function ProjectPlanning({ project, nested = false }) {
   }
   const upcoming = items.filter((item) => !item.past && item.kind !== "preparation").length;
   const done = items.filter((item) => item.past && item.kind !== "preparation").length;
-  const time = (value) => new Date(value).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const time = (value) => new Date(value).toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" });
   const nowIndex = (list) => list.findIndex((item) => !item.past);
   return (
     <details className={`project-modules project-planning ${nested ? "nested" : ""}`} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary><span>{nested ? "Publications" : "Planning publications"}</span><small>{data ? `${upcoming} à venir · 3 jours · ${done} passée${done > 1 ? "s" : ""} (24 h)` : "24 h passées · 3 jours à venir"}</small><b>›</b></summary>
+      <summary><span>{nested ? tr("Publications") : tr("Planning publications")}</span><small>{data ? tr("{0} à venir · 3 jours · {1} passée{2} (24 h)", upcoming, done, done > 1 ? "s" : "") : tr("24 h passées · 3 jours à venir")}</small><b>›</b></summary>
       <div className="planning-body">
         {error && <p className="planning-empty">{error}</p>}
-        {!data && !error && <p className="planning-empty">Chargement…</p>}
-        {data && !items.length && !unscheduled.length && <p className="planning-empty">Aucune publication.</p>}
+        {!data && !error && <p className="planning-empty">{tr("Chargement…")}</p>}
+        {data && !items.length && !unscheduled.length && <p className="planning-empty">{tr("Aucune publication.")}</p>}
         {boosts.length > 0 && (
           <section className="planning-boosts">
-            <h4>Boosts payés · global</h4>
+            <h4>{tr("Boosts payés · global")}</h4>
             {boosts.map((boost) => (
               <div className="planning-boost" key={`${boost.moduleId}-${boost.entryId}`} style={{ "--module-accent": boost.accent }}>
-                <span><strong>{boost.label}</strong><small>{boost.at ? `créneau ${boost.at} · ` : ""}{boost.keys.join(" + ")}</small></span>
-                <button className={`module-toggle ${boost.enabled ? "enabled" : ""}`} role="switch" aria-checked={boost.enabled} disabled={boostBusy === boost.entryId} onClick={() => toggleBoost(boost)}><i /><span>{boost.enabled ? "Boost" : "Off"}</span></button>
+                <span><strong>{boost.label}</strong><small>{boost.at ? tr("créneau {0} · ", boost.at) : ""}{boost.keys.join(" + ")}</small></span>
+                <button className={`module-toggle ${boost.enabled ? "enabled" : ""}`} role="switch" aria-checked={boost.enabled} disabled={boostBusy === boost.entryId} onClick={() => toggleBoost(boost)}><i /><span>{boost.enabled ? tr("Boost") : tr("Off")}</span></button>
               </div>
             ))}
           </section>
         )}
         {unscheduled.length > 0 && (
           <section className="planning-day planning-unscheduled">
-            <h4>Non planifié</h4>
+            <h4>{tr("Non planifié")}</h4>
             {unscheduled.map((item) => (
               <div className="planning-item off" key={`${item.moduleId}-${item.entryId}`} style={{ "--module-accent": item.accent }}>
                 <time>—</time>
@@ -2855,7 +2857,7 @@ function ProjectPlanning({ project, nested = false }) {
                   <small>{[item.channels.join(" + "), item.moduleName, item.reason].filter(Boolean).join(" · ")}</small>
                   {item.preview && <em>{item.proposalStatus ? `${item.proposalStatus} · ` : ""}{item.preview}</em>}
                 </div>
-                <span className="planning-state">coupé</span>
+                <span className="planning-state">{tr("coupé")}</span>
               </div>
             ))}
           </section>
@@ -2867,15 +2869,15 @@ function ProjectPlanning({ project, nested = false }) {
               <React.Fragment key={`${item.entryId}-${item.at}-${index}`}>
                 {index === nowIndex(day.items) && index > 0 && <div className="planning-now">maintenant</div>}
                 <div className={`planning-item ${item.past ? `past ${item.result}` : item.active ? "" : "off"} ${item.kind}`} style={{ "--module-accent": item.accent }}>
-                  <time>{item.past ? time(item.at) : item.late ? "en retard" : `${item.randomizedMinutes ? "vers " : ""}${time(item.at)}`}</time>
+                  <time>{item.past ? time(item.at) : item.late ? tr("en retard") : `${item.randomizedMinutes ? "vers " : ""}${time(item.at)}`}</time>
                   <div>
-                    <strong>{item.label}{item.past && item.boost && <b className="planning-boost-chip">boosté</b>}</strong>
+                    <strong>{item.label}{item.past && item.boost && <b className="planning-boost-chip">{tr("boosté")}</b>}</strong>
                     <small>{[item.channels.join(" + "), PLANNING_KIND[item.kind], item.moduleName].filter(Boolean).join(" · ")}{!item.past && item.randomizedMinutes ? ` · ±${item.randomizedMinutes} min` : ""}{item.past && item.finishedAt && item.finishedAt !== item.at ? ` · fini ${time(item.finishedAt)}` : ""}</small>
                     {item.preview && <em>{item.preview}</em>}
                   </div>
                   <span className="planning-state">
-                    {item.boostable && <button type="button" className={`planning-boost-btn ${item.boost ? "on" : ""}`} aria-pressed={item.boost} disabled={boostBusy === item.boostKey} title={item.boost ? "Boost payé activé : cliquer pour l'annuler" : "Activer le boost payé pour cette publication"} onClick={() => toggleBoost({ ...item, enabled: item.boost })}>{item.boost ? "Boost" : "Off"}</button>}
-                    {item.past ? PLANNING_RESULT[item.result] || item.result : item.active ? "prévu" : "coupé"}
+                    {item.boostable && <button type="button" className={`planning-boost-btn ${item.boost ? "on" : ""}`} aria-pressed={item.boost} disabled={boostBusy === item.boostKey} title={item.boost ? tr("Boost payé activé : cliquer pour l'annuler") : tr("Activer le boost payé pour cette publication")} onClick={() => toggleBoost({ ...item, enabled: item.boost })}>{item.boost ? tr("Boost") : tr("Off")}</button>}
+                    {item.past ? PLANNING_RESULT[item.result] || item.result : item.active ? tr("prévu") : tr("coupé")}
                   </span>
                 </div>
               </React.Fragment>
@@ -2891,7 +2893,7 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
   const [busy, setBusy] = useState(false);
   const [actionNotice, setActionNotice] = useState("");
   async function toggle() {
-    if (module.enabled && !window.confirm(`Désactiver ${module.name} et ses horaires ?`)) return;
+    if (module.enabled && !window.confirm(tr("Désactiver {0} et ses horaires ?", module.name))) return;
     setBusy(true);
     try {
       await onToggle(module.id, !module.enabled);
@@ -2910,10 +2912,10 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
   async function actionRun(action) {
     if (action.confirm && !window.confirm(action.confirm)) return;
     setBusy(true);
-    setActionNotice(`${action.label} · lancement…`);
+    setActionNotice(tr("{0} · lancement…", action.label));
     try {
       const response = await onAction(module.id, action.id);
-      setActionNotice(response?.run ? `${action.label} · action lancée` : `${action.label} · lancement échoué`);
+      setActionNotice(response?.run ? tr("{0} · action lancée", action.label) : tr("{0} · lancement échoué", action.label));
     } finally {
       setBusy(false);
     }
@@ -2922,17 +2924,17 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
   const latestRun = latestAction?.run;
   const chatRun = (module.actions || []).find((action) => action.longRunning && action.run)?.run;
   const runLabel = latestRun?.state === "running"
-    ? `${latestAction.label} · exécution en cours…`
+    ? tr("{0} · exécution en cours…", latestAction.label)
     : latestRun?.state === "success"
-      ? `${latestAction.label} · terminé${latestRun.output ? ` · ${latestRun.output}` : ""}`
-      : latestRun ? `${latestAction.label} · erreur: ${latestRun.output || "échec"}` : actionNotice;
+      ? tr("{0} · terminé{1}", latestAction.label, latestRun.output ? ` · ${latestRun.output}` : "")
+      : latestRun ? `${latestAction.label} · erreur: ${latestRun.output || tr("échec")}` : actionNotice;
   return (
     <details className="project-module" style={{ "--module-accent": module.accent }}>
       <summary>
         <span className="module-glyph">{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span>
         <div>
           <strong>{module.name}</strong>
-          <small>{module.environment === "production" ? `${module.executionHost || "Ce PC"} · ${{ active: "Actif", inactive: "Arrêté", failed: "En échec", activating: "Démarrage", deactivating: "Arrêt en cours", unknown: "État inconnu" }[module.state] || module.state} · ` : ""}{module.description}</small>
+          <small>{module.environment === "production" ? `${module.executionHost || tr("Ce PC")} · ${{ active: tr("Actif"), inactive: tr("Arrêté"), failed: tr("En échec"), activating: tr("Démarrage"), deactivating: tr("Arrêt en cours"), unknown: tr("État inconnu") }[module.state] || module.state} · ` : ""}{module.description}</small>
         </div>
         {module.controllable ? (
           <button
@@ -2943,23 +2945,23 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
             aria-checked={module.enabled}
           >
             <i />
-            <span>{module.enabled ? "Actif" : "Arrêté"}</span>
+            <span>{module.enabled ? tr("Actif") : tr("Arrêté")}</span>
           </button>
         ) : (
           <span className={`module-status ${module.setup?.status === "required" ? "required" : "ready"}`}>
-            {module.setup?.status === "required" ? "À configurer" : "Prêt"}
+            {module.setup?.status === "required" ? tr("À configurer") : tr("Prêt")}
           </span>
         )}
         <b className="module-chevron">›</b>
       </summary>
       <div className="project-module-body">
         <div className="module-config">
-          <label title={`Manifest : ${module.defaultEnvironment === "production" ? "Production" : "Modules"}`}>
+          <label title={`Manifest : ${module.defaultEnvironment === "production" ? tr("Production") : tr("Modules")}`}>
             <input type="checkbox" checked={module.environment === "production"} disabled={busy} onChange={(event) => configure(() => onEnvironment?.(module.id, event.target.checked ? "production" : "development"))} />
-            <span>Production</span>
+            <span>{tr("Production")}</span>
           </label>
-          {module.environment !== module.defaultEnvironment && <button className="module-config-reset" disabled={busy} onClick={() => configure(() => onEnvironment?.(module.id, null))}>Valeur du manifest</button>}
-          <button className="module-config-remove" disabled={busy} onClick={() => { if (window.confirm(`Retirer ${module.name} de Noyau ? Le manifest et les services ne sont pas touchés.`)) configure(() => onRemove?.(module.id)); }}>Retirer</button>
+          {module.environment !== module.defaultEnvironment && <button className="module-config-reset" disabled={busy} onClick={() => configure(() => onEnvironment?.(module.id, null))}>{tr("Valeur du manifest")}</button>}
+          <button className="module-config-remove" disabled={busy} onClick={() => { if (window.confirm(tr("Retirer {0} de Noyau ? Le manifest et les services ne sont pas touchés.", module.name))) configure(() => onRemove?.(module.id)); }}>{tr("Retirer")}</button>
         </div>
         {module.setup && (
           <p className={`module-setup ${module.setup.status}`}>
@@ -2984,7 +2986,7 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
             ))}
             {(module.actions || []).filter((action) => !action.longRunning).map((action) => (
               <button key={action.id} className={action.tone} onClick={() => actionRun(action)} disabled={busy || action.run?.state === "running"}>
-                {action.run?.state === "running" ? "Exécution…" : action.label}
+                {action.run?.state === "running" ? tr("Exécution…") : action.label}
               </button>
             ))}
           </div>
@@ -3006,20 +3008,20 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
             nextAt={chatRun?.progress?.nextAt}
           />
           <small className="module-run" role="status">
-            {module.chat.availability === "unavailable" ? "Historique indisponible — nouvelle tentative automatique."
-              : module.chat.availability === "waiting" ? "En attente du premier export de messages."
-                : `Actualisation toutes les 5 s${module.chat.updatedAt ? ` · Export du ${new Date(module.chat.updatedAt).toLocaleString("fr-FR")}` : ""}`}
+            {module.chat.availability === "unavailable" ? tr("Historique indisponible — nouvelle tentative automatique.")
+              : module.chat.availability === "waiting" ? tr("En attente du premier export de messages.")
+                : tr("Actualisation toutes les 5 s{0}", module.chat.updatedAt ? ` · Export du ${new Date(module.chat.updatedAt).toLocaleString(LOCALE)}` : "")}
           </small>
         </>}
         {module.deviceBuild && <ModuleDeviceBuild module={module} onBuild={onBuild} onRefreshBuilds={onRefreshBuilds} />}
-        {runLabel && (module.chat ? <details className="tgc-technical"><summary>Journal technique · {latestAction?.label || "Action"}</summary><pre>{runLabel}</pre></details>
+        {runLabel && (module.chat ? <details className="tgc-technical"><summary>{tr("Journal technique ·")}{" "}{latestAction?.label || tr("Action")}</summary><pre>{runLabel}</pre></details>
           : <small className={`module-run ${latestRun?.state || "running"}`}>{runLabel}</small>)}
       </div>
     </details>
   );
 }
 
-function TodoInlineText({ text, onSave, disabled, expanded = false, onOverflow = null, placeholder = "Tâche sans titre…" }) {
+function TodoInlineText({ text, onSave, disabled, expanded = false, onOverflow = null, placeholder = tr("Tâche sans titre…") }) {
   const [val, setVal] = useState(text || "");
   const [editing, setEditing] = useState(false);
   const field = React.useRef(null);
@@ -3068,8 +3070,8 @@ function TodoInlineText({ text, onSave, disabled, expanded = false, onOverflow =
       value={val}
       disabled={disabled}
       placeholder={placeholder}
-      title="Cliquer pour modifier le texte"
-      aria-label="Modifier le texte de la tâche"
+      title={tr("Cliquer pour modifier le texte")}
+      aria-label={tr("Modifier le texte de la tâche")}
       maxLength={300}
       onFocus={() => setEditing(true)}
       onChange={(e) => setVal(e.target.value)}
@@ -3105,12 +3107,12 @@ function ProjectReporting({ project, agents, todos, onRefresh }) {
   return (
     <details className="project-reporting">
       <summary>
-        <span>Suivi évolutions / bugs</span>
-        <small>{projectOn ? `${activeAgents}/${agents.length} agent${agents.length > 1 ? "s" : ""} · ${pending} à valider` : "désactivé"}</small>
+        <span>{tr("Suivi évolutions / bugs")}</span>
+        <small>{projectOn ? tr("{0}/{1} agent{2} · {3} à valider", activeAgents, agents.length, agents.length > 1 ? "s" : "", pending) : tr("désactivé")}</small>
         <b>›</b>
       </summary>
       <div className="project-reporting-body">
-        <p className="project-reporting-hint">Chaque demande envoyée à un agent suivi crée un to-do du projet, ou commente celui qui existe déjà. L'agent le passe ensuite en « À tester / valider » — jamais en « Terminé », c'est toi qui valides.</p>
+        <p className="project-reporting-hint">{tr("Chaque demande envoyée à un agent suivi crée un to-do du projet, ou commente celui qui existe déjà. L'agent le passe ensuite en « À tester / valider » — jamais en « Terminé », c'est toi qui valides.")}</p>
         <label className="reporting-switch">
           <input
             type="checkbox"
@@ -3118,7 +3120,7 @@ function ProjectReporting({ project, agents, todos, onRefresh }) {
             disabled={busy === "project" || project.canEdit === false}
             onChange={(event) => toggle("project", () => api(`/api/projects/${project.id}`, { method: "PATCH", body: JSON.stringify({ name: project.name, shared: Boolean(project.shared), todoTracking: event.target.checked }) }))}
           />
-          <span><strong>Projet {project.name}</strong><small>Coupe le suivi pour tous ses agents</small></span>
+          <span><strong>{tr("Projet")}{" "}{project.name}</strong><small>{tr("Coupe le suivi pour tous ses agents")}</small></span>
         </label>
         {agents.map((session) => (
           <label className="reporting-switch agent" key={session.id}>
@@ -3131,7 +3133,7 @@ function ProjectReporting({ project, agents, todos, onRefresh }) {
             <span><strong>{session.name}</strong><small>{assistantMeta[session.assistant]?.label || session.assistant}</small></span>
           </label>
         ))}
-        {!agents.length && <span className="project-empty">Aucun agent rattaché à suivre.</span>}
+        {!agents.length && <span className="project-empty">{tr("Aucun agent rattaché à suivre.")}</span>}
         {error && <p className="form-error">{error}</p>}
       </div>
     </details>
@@ -3179,7 +3181,7 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
     if (!file) return;
     const maxBytes = 500 * 1024 * 1024;
     if (file.size > maxBytes) {
-      window.alert(`Fichier trop volumineux (${formatFileBytes(file.size)}). La taille maximale autorisée est de 500 Mo.`);
+      window.alert(tr("Fichier trop volumineux ({0}). La taille maximale autorisée est de 500 Mo.", formatFileBytes(file.size)));
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -3195,8 +3197,8 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
       await loadFiles();
     } catch (err) {
       const msg = err.message === "File too large"
-        ? "Fichier trop volumineux (taille maximale autorisée : 500 Mo)."
-        : (err.message || "Erreur upload");
+        ? tr("Fichier trop volumineux (taille maximale autorisée : 500 Mo).")
+        : (err.message || tr("Erreur upload"));
       window.alert(msg);
     } finally {
       setUploading(false);
@@ -3228,14 +3230,14 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
           return;
         }
       }
-      window.alert("Aucune image trouvée dans le presse-papiers.");
+      window.alert(tr("Aucune image trouvée dans le presse-papiers."));
     } catch {
-      window.alert("Impossible d'accéder au presse-papiers (vérifie les permissions ou utilise Ctrl+V).");
+      window.alert(tr("Impossible d'accéder au presse-papiers (vérifie les permissions ou utilise Ctrl+V)."));
     }
   }
 
   async function handleDelete(filename) {
-    if (!window.confirm(`Supprimer définitivement « ${filename} » de l'espace partagé ?`)) return;
+    if (!window.confirm(tr("Supprimer définitivement « {0} » de l'espace partagé ?", filename))) return;
     try {
       await api(`/api/projects/${encodeURIComponent(project.id)}/files/${encodeURIComponent(filename)}`, { method: "DELETE" });
       window.dispatchEvent(new Event("noyau:files"));
@@ -3275,13 +3277,13 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
         a.remove();
       }, 1000);
     } catch (error) {
-      window.alert(`Téléchargement impossible : ${error.message}`);
+      window.alert(tr("Téléchargement impossible : {0}", error.message));
     }
   }
 
   async function submitAgentAction() {
     if (!targetAgent) {
-      window.alert("Sélectionnez un agent destinataire.");
+      window.alert(tr("Sélectionnez un agent destinataire."));
       return;
     }
     setSendingAgent(true);
@@ -3296,7 +3298,7 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
         }),
       });
       window.dispatchEvent(new CustomEvent("noyau:agent-interact", { detail: { id: targetAgent } }));
-      window.alert("Demande transmise avec succès à l'agent.");
+      window.alert(tr("Demande transmise avec succès à l'agent."));
       setDialogMode(null);
       setSelectedFile(null);
       setCustomPrompt("");
@@ -3310,8 +3312,8 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
   return (
     <details className="project-files">
       <summary>
-        <span>Fichiers partagés</span>
-        <small>{sort?.status === "running" ? "tri en cours…" : loading ? "chargement…" : `${files.length} fichier${files.length > 1 ? "s" : ""}`}</small>
+        <span>{tr("Fichiers partagés")}</span>
+        <small>{sort?.status === "running" ? tr("tri en cours…") : loading ? tr("chargement…") : `${files.length} fichier${files.length > 1 ? "s" : ""}`}</small>
         <b>›</b>
       </summary>
       <div
@@ -3337,8 +3339,8 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
             className="project-files-icon-btn upload"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
-            title={uploading ? "Upload en cours…" : "Uploader / Téléverser un fichier"}
-            aria-label="Uploader un fichier"
+            title={uploading ? tr("Upload en cours…") : tr("Uploader / Téléverser un fichier")}
+            aria-label={tr("Uploader un fichier")}
           >
             {uploading ? "…" : <AppIcon name="paperclip" size={16} />}
           </button>
@@ -3347,8 +3349,8 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
             className="project-files-icon-btn paste"
             onClick={handlePasteImage}
             disabled={uploading}
-            title="Coller une image ou capture d'écran du presse-papiers (Ctrl+V)"
-            aria-label="Coller image du presse-papiers"
+            title={tr("Coller une image ou capture d'écran du presse-papiers (Ctrl+V)")}
+            aria-label={tr("Coller image du presse-papiers")}
           ><AppIcon name="paperclip" size={16}/></button>
           {agents.length > 0 && (
             <button
@@ -3360,22 +3362,22 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
                 setCustomPrompt("");
                 setTargetAgent(agents[0]?.id || "");
               }}
-              title="Demander à un agent de déposer un fichier"
-              aria-label="Demander à un agent de déposer un fichier"
+              title={tr("Demander à un agent de déposer un fichier")}
+              aria-label={tr("Demander à un agent de déposer un fichier")}
             ><AppIcon name="people" size={16}/></button>
           )}
           <FileSortButton project={project} api={api} sort={sort} onStarted={loadFiles} onOpenAgent={onOpenAgent} />
-          <span className="project-files-upload-hint">Glisser-déposer ou coller une image (Ctrl+V)</span>
+          <span className="project-files-upload-hint">{tr("Glisser-déposer ou coller une image (Ctrl+V)")}</span>
         </div>
         <FileSortPanel project={project} api={api} sort={sort} onChanged={loadFiles} />
 
         {dialogMode && (
           <div className="project-files-dialog">
             <strong>
-              {dialogMode === "ask" ? " Demander à un agent de déposer un fichier" : ` Partager « ${selectedFile?.name} » avec un agent`}
+              {dialogMode === "ask" ? tr(" Demander à un agent de déposer un fichier") : tr(" Partager « {0} » avec un agent", selectedFile?.name)}
             </strong>
             <label>
-              <small>Agent cible :</small>
+              <small>{tr("Agent cible :")}</small>
               <select value={targetAgent} onChange={(e) => setTargetAgent(e.target.value)}>
                 {agents.map((agent) => (
                   <option key={agent.id} value={agent.id}>
@@ -3385,7 +3387,7 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
               </select>
             </label>
             <label>
-              <small>Instructions / Message personnalisé (optionnel) :</small>
+              <small>{tr("Instructions / Message personnalisé (optionnel) :")}</small>
               <input
                 type="text"
                 placeholder={dialogMode === "ask" ? "Ex: Génère un CSV récapitulatif des données" : "Ex: Lis ce fichier pour analyser les erreurs"}
@@ -3395,10 +3397,10 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
             </label>
             <div className="project-files-dialog-actions">
               <button type="button" className="ghost" onClick={() => setDialogMode(null)} disabled={sendingAgent}>
-                Annuler
+                {tr("Annuler")}
               </button>
               <button type="button" className="primary" onClick={submitAgentAction} disabled={sendingAgent}>
-                {sendingAgent ? "Envoi…" : "Envoyer à l'agent"}
+                {sendingAgent ? tr("Envoi…") : tr("Envoyer à l'agent")}
               </button>
             </div>
           </div>
@@ -3418,7 +3420,7 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
                   setPreviewFile(file);
                 }
               }}
-              title="Cliquer pour prévisualiser dans le navigateur"
+              title={tr("Cliquer pour prévisualiser dans le navigateur")}
             >
               <span className="project-file-icon">{getFileIcon(file.extension)}</span>
               <div className="project-file-info">
@@ -3433,8 +3435,8 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
                     e.stopPropagation();
                     setPreviewFile(file);
                   }}
-                  title="Aperçu dans le navigateur (sans télécharger)"
-                  aria-label="Aperçu"
+                  title={tr("Aperçu dans le navigateur (sans télécharger)")}
+                  aria-label={tr("Aperçu")}
                 >
                   <UiIcon name="eye" />
                 </button>
@@ -3446,8 +3448,8 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
                     e.preventDefault();
                     downloadFile(file.name);
                   }}
-                  title="Télécharger sur l'appareil"
-                  aria-label="Télécharger"
+                  title={tr("Télécharger sur l'appareil")}
+                  aria-label={tr("Télécharger")}
                 >
                   <UiIcon name="download" />
                 </a>
@@ -3461,8 +3463,8 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
                       setCustomPrompt("");
                       setTargetAgent(agents[0]?.id || "");
                     }}
-                    title="Transmettre le lien et chemin du fichier à un agent"
-                    aria-label="Transmettre à un agent"
+                    title={tr("Transmettre le lien et chemin du fichier à un agent")}
+                    aria-label={tr("Transmettre à un agent")}
                   >
                     <UiIcon name="send" />
                   </button>
@@ -3471,8 +3473,8 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
                   type="button"
                   className="project-file-btn danger"
                   onClick={() => handleDelete(file.name)}
-                  title="Supprimer définitivement ce fichier"
-                  aria-label="Supprimer"
+                  title={tr("Supprimer définitivement ce fichier")}
+                  aria-label={tr("Supprimer")}
                 >
                   <UiIcon name="trash" />
                 </button>
@@ -3480,7 +3482,7 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
             </div>
           ))}
           {!files.length && !loading && (
-            <span className="project-empty">Aucun fichier partagé dans ce projet pour le moment.</span>
+            <span className="project-empty">{tr("Aucun fichier partagé dans ce projet pour le moment.")}</span>
           )}
         </div>
       </div>
@@ -3557,7 +3559,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
   }
 
   async function handleDelete(item) {
-    if (!confirmAction(`Supprimer la dépense « ${item.name} » ?`)) return;
+    if (!confirmAction(tr("Supprimer la dépense « {0} » ?", item.name))) return;
     setBusyItem(item.id);
     setBudget((prev) => ({
       items: (prev.items || []).filter((i) => i.id !== item.id),
@@ -3579,7 +3581,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
   async function handleAdd(e) {
     e.preventDefault();
     if (!formData.name.trim() || !formData.amount) {
-      window.alert("Veuillez renseigner au moins le nom et le montant.");
+      window.alert(tr("Veuillez renseigner au moins le nom et le montant."));
       return;
     }
     setLoading(true);
@@ -3628,31 +3630,31 @@ function ProjectBudgetSection({ project, onRefresh }) {
   return (
     <details className="project-budget">
       <summary>
-        <span>Budget & Abonnements</span>
+        <span>{tr("Budget & Abonnements")}</span>
         <small>
           {euro(totalMonthly)}/mois
-          {items.length ? ` · ${items.length} dépense${items.length > 1 ? "s" : ""}` : ""}
+          {items.length ? tr(" · {0} dépense{1}", items.length, items.length > 1 ? "s" : "") : ""}
         </small>
         <b>›</b>
       </summary>
       <div className="project-budget-body">
         <div className="project-budget-kpis">
           <div className="project-budget-kpi">
-            <span className="project-budget-kpi-label">Coût mensuel</span>
+            <span className="project-budget-kpi-label">{tr("Coût mensuel")}</span>
             <strong className="project-budget-kpi-value">{euro(totalMonthly)}</strong>
-            <small>estimé / mois</small>
+            <small>{tr("estimé / mois")}</small>
           </div>
           <div className="project-budget-kpi">
-            <span className="project-budget-kpi-label">Projection annuelle</span>
+            <span className="project-budget-kpi-label">{tr("Projection annuelle")}</span>
             <strong className="project-budget-kpi-value">{euro(totalYearly)}</strong>
-            <small>sur 12 mois</small>
+            <small>{tr("sur 12 mois")}</small>
           </div>
           <div className="project-budget-kpi">
-            <span className="project-budget-kpi-label">Détail actifs</span>
+            <span className="project-budget-kpi-label">{tr("Détail actifs")}</span>
             <strong className="project-budget-kpi-value">
-              {subscriptionsCount} abo{subscriptionsCount > 1 ? "s" : ""}
+              {subscriptionsCount} {tr(subscriptionsCount > 1 ? "abos" : "abo")}
             </strong>
-            <small>{recurringCount} récurrente{recurringCount > 1 ? "s" : ""}</small>
+            <small>{recurringCount}{" "}{tr("récurrente")}{recurringCount > 1 ? "s" : ""}</small>
           </div>
         </div>
 
@@ -3663,7 +3665,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
             onClick={() => setShowAddForm((v) => !v)}
           >
             <span>{showAddForm ? "−" : "＋"}</span>
-            {showAddForm ? "Fermer le formulaire" : "Ajouter un abonnement ou dépense"}
+            {showAddForm ? tr("Fermer le formulaire") : tr("Ajouter un abonnement ou dépense")}
           </button>
         </div>
 
@@ -3671,7 +3673,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
           <form className="project-budget-form" onSubmit={handleAdd}>
             <div className="budget-form-row">
               <label>
-                <span>Type</span>
+                <span>{tr("Type")}</span>
                 <select
                   value={formData.kind}
                   onChange={(e) => {
@@ -3679,17 +3681,17 @@ function ProjectBudgetSection({ project, onRefresh }) {
                     setFormData((prev) => ({
                       ...prev,
                       kind: nextKind,
-                      category: nextKind === "subscription" ? "SaaS / API" : "Hébergement / Cloud",
+                      category: nextKind === "subscription" ? "SaaS / API" : tr("Hébergement / Cloud"),
                     }));
                   }}
                 >
-                  <option value="subscription">Abonnement</option>
-                  <option value="recurring">Dépense récurrente</option>
+                  <option value="subscription">{tr("Abonnement")}</option>
+                  <option value="recurring">{tr("Dépense récurrente")}</option>
                 </select>
               </label>
 
               <label className="flex-2">
-                <span>Nom</span>
+                <span>{tr("Nom")}</span>
                 <input
                   type="text"
                   placeholder="ex: OpenAI, Hetzner, Vercel, Domaine..."
@@ -3700,7 +3702,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
               </label>
 
               <label>
-                <span>Montant (€)</span>
+                <span>{tr("Montant (€)")}</span>
                 <input
                   type="number"
                   step="0.01"
@@ -3713,22 +3715,22 @@ function ProjectBudgetSection({ project, onRefresh }) {
               </label>
 
               <label>
-                <span>Cadence</span>
+                <span>{tr("Cadence")}</span>
                 <select
                   value={formData.cadence}
                   onChange={(e) => setFormData({ ...formData, cadence: e.target.value })}
                 >
-                  <option value="monthly">Mensuel</option>
-                  <option value="yearly">Annuel</option>
-                  <option value="weekly">Hebdomadaire</option>
-                  <option value="once">Ponctuel</option>
+                  <option value="monthly">{tr("Mensuel")}</option>
+                  <option value="yearly">{tr("Annuel")}</option>
+                  <option value="weekly">{tr("Hebdomadaire")}</option>
+                  <option value="once">{tr("Ponctuel")}</option>
                 </select>
               </label>
             </div>
 
             <div className="budget-form-row">
               <label className="flex-2">
-                <span>Catégorie</span>
+                <span>{tr("Catégorie")}</span>
                 <input
                   type="text"
                   list="budget-categories-list"
@@ -3747,7 +3749,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
               </label>
 
               <label>
-                <span>Jour de prélèvement</span>
+                <span>{tr("Jour de prélèvement")}</span>
                 <input
                   type="number"
                   min="1"
@@ -3759,7 +3761,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
               </label>
 
               <label className="flex-2">
-                <span>Notes (optionnel)</span>
+                <span>{tr("Notes (optionnel)")}</span>
                 <input
                   type="text"
                   placeholder="ex: Facturé sur carte bancaire pro"
@@ -3771,14 +3773,14 @@ function ProjectBudgetSection({ project, onRefresh }) {
 
             <div className="budget-form-submit-row">
               <button type="submit" className="budget-submit-btn" disabled={loading}>
-                {loading ? "Ajout…" : "Enregistrer la dépense"}
+                {loading ? tr("Ajout…") : tr("Enregistrer la dépense")}
               </button>
               <button
                 type="button"
                 className="budget-cancel-btn"
                 onClick={() => setShowAddForm(false)}
               >
-                Annuler
+                {tr("Annuler")}
               </button>
             </div>
           </form>
@@ -3799,13 +3801,13 @@ function ProjectBudgetSection({ project, onRefresh }) {
                   className={`budget-toggle-btn ${item.active !== false ? "active" : ""}`}
                   onClick={() => handleToggle(item)}
                   disabled={busyItem === item.id}
-                  title={item.active !== false ? "Dépense active (cliquer pour suspendre)" : "Dépense en pause (cliquer pour réactiver)"}
+                  title={item.active !== false ? tr("Dépense active (cliquer pour suspendre)") : tr("Dépense en pause (cliquer pour réactiver)")}
                 >
                   <span className="budget-toggle-dot" />
                 </button>
 
                 <span className={`budget-kind-badge ${isSub ? "subscription" : "recurring"}`}>
-                  {isSub ? "Abonnement" : "Récurrent"}
+                  {isSub ? tr("Abonnement") : tr("Récurrent")}
                 </span>
 
                 <div className="project-budget-item-main">
@@ -3813,7 +3815,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
                     <strong>{item.name}</strong>
                     {item.category && <span className="budget-category-pill">{item.category}</span>}
                     {item.billingDay && (
-                      <span className="budget-day-pill" title={`Prélèvement le ${item.billingDay} du mois`}>
+                      <span className="budget-day-pill" title={tr("Prélèvement le {0} du mois", item.billingDay)}>
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ verticalAlign: "-1px", marginRight: "3px" }}>
                           <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
                           <line x1="16" y1="2" x2="16" y2="6" />
@@ -3834,7 +3836,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
                   {item.cadence !== "monthly" && item.cadence !== "once" && (
                     <small className="budget-equiv">~{euro(equiv)}/m</small>
                   )}
-                  {isPaused && <small className="budget-paused-badge">en pause</small>}
+                  {isPaused && <small className="budget-paused-badge">{tr("en pause")}</small>}
                 </div>
 
                 {project.canEdit !== false && (
@@ -3843,7 +3845,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
                     className="project-budget-delete-btn"
                     onClick={() => handleDelete(item)}
                     disabled={busyItem === item.id}
-                    title="Supprimer cette dépense"
+                    title={tr("Supprimer cette dépense")}
                   >
                     ×
                   </button>
@@ -3854,13 +3856,13 @@ function ProjectBudgetSection({ project, onRefresh }) {
 
           {!items.length && !showAddForm && (
             <div className="project-empty-budget">
-              <span>Aucun abonnement ni dépense récurrente enregistrée.</span>
+              <span>{tr("Aucun abonnement ni dépense récurrente enregistrée.")}</span>
               <button
                 type="button"
                 className="project-budget-quick-add"
                 onClick={() => setShowAddForm(true)}
               >
-                ＋ Ajouter le premier abonnement
+                {tr("＋ Ajouter le premier abonnement")}
               </button>
             </div>
           )}
@@ -3983,7 +3985,7 @@ function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, s
 
   return (
     <div className={`page projects-page ${selectedProjectId ? "single-project" : ""}`}>
-      <section className="hero-row"><div><p className="eyebrow">ORGANISATION</p><h1>{selectedProjectId ? projects.find((project) => project.id === selectedProjectId)?.name || "Projet" : "Projets."}</h1><p className="muted">{selectedProjectId ? "Agents, tâches et fichiers du projet." : "Regroupe agents liés au même travail, sans imposer dossier."}</p>{selectedProjectId ? <span className="mobile-project-switch-actions"><button type="button" className="ghost" onClick={onShowAllProjects}>← Tous les projets</button><button type="button" className="ghost mobile-project-switch" onClick={() => window.dispatchEvent(new Event("noyau:choose-project"))}>Changer de projet</button></span> : <button type="button" className="ghost mobile-project-create" onClick={onNew}>+ Nouveau projet</button>}</div></section>
+      <section className="hero-row"><div><p className="eyebrow">{tr("ORGANISATION")}</p><h1>{selectedProjectId ? projects.find((project) => project.id === selectedProjectId)?.name || tr("Projet") : tr("Projets.")}</h1><p className="muted">{selectedProjectId ? tr("Agents, tâches et fichiers du projet.") : tr("Regroupe agents liés au même travail, sans imposer dossier.")}</p>{selectedProjectId ? <span className="mobile-project-switch-actions"><button type="button" className="ghost" onClick={onShowAllProjects}>{tr("← Tous les projets")}</button><button type="button" className="ghost mobile-project-switch" onClick={() => window.dispatchEvent(new Event("noyau:choose-project"))}>{tr("Changer de projet")}</button></span> : <button type="button" className="ghost mobile-project-create" onClick={onNew}>{tr("+ Nouveau projet")}</button>}</div></section>
       <div className={`projects-grid ${selectedProjectId ? "single-project" : ""}`}>
         {projects.filter((project) => !selectedProjectId || project.id === selectedProjectId).map((project) => {
           const agents = sessions.filter((session) => session.projectId === project.id);
@@ -4007,10 +4009,10 @@ function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, s
               key={project.id}
               ref={(node) => { if (node) cardRefs.current.set(project.id, node); else cardRefs.current.delete(project.id); }}
             >
-              <header>{!selectedProjectId && <button className="project-drag" onPointerDown={(event) => startDrag(event, project)} onPointerMove={dragOver} onPointerUp={endDrag} onPointerCancel={endDrag} title="Glisser pour changer ordre" aria-label={`Déplacer ${project.name}`}>⠿</button>}<ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={`Projet partagé par ${project.owner?.name || "autre profil"}`}>⇄ {project.owner?.name || "partagé"}</b> : project.shared ? <b className="shared-chip own" title="Projet partagé avec les autres profils">⇄ partagé</b> : null}</strong><small>{project.rootPath || "Dossiers propres aux agents"}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>Éditer</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
-              <nav className="project-mobile-tabs" aria-label={`Sections de ${project.name}`}>{[["overview", "Vue d’ensemble"], ["agents", "Agents"], ["modules", "Modules"], ["files", "Fichiers"]].map(([id, label]) => <button type="button" key={id} aria-pressed={(mobileProjectSections[project.id] || "overview") === id} onClick={() => openMobileProjectSection(project.id, id)}>{label}</button>)}</nav>
+              <header>{!selectedProjectId && <button className="project-drag" onPointerDown={(event) => startDrag(event, project)} onPointerMove={dragOver} onPointerUp={endDrag} onPointerCancel={endDrag} title={tr("Glisser pour changer ordre")} aria-label={tr("Déplacer {0}", project.name)}>⠿</button>}<ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={tr("Projet partagé par {0}", project.owner?.name || "autre profil")}>⇄ {project.owner?.name || tr("partagé")}</b> : project.shared ? <b className="shared-chip own" title={tr("Projet partagé avec les autres profils")}>{tr("⇄ partagé")}</b> : null}</strong><small>{project.rootPath || tr("Dossiers propres aux agents")}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>{tr("Éditer")}</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
+              <nav className="project-mobile-tabs" aria-label={tr("Sections de {0}", project.name)}>{[["overview", tr("Vue d’ensemble")], ["agents", tr("Agents")], ["modules", tr("Modules")], ["files", tr("Fichiers")]].map(([id, label]) => <button type="button" key={id} aria-pressed={(mobileProjectSections[project.id] || "overview") === id} onClick={() => openMobileProjectSection(project.id, id)}>{label}</button>)}</nav>
               <div className="project-mobile-section" data-section="overview" data-selected={(mobileProjectSections[project.id] || "overview") === "overview"}>
-              <button className="project-map-tab" onClick={() => onOpenMap?.(project.id)}><span className="nav-icon"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="2.5" /><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="7" r="1.8" /><circle cx="6" cy="18.5" r="1.8" /><circle cx="18.5" cy="18" r="1.8" /><path d="M6.5 7.2l3.6 3.3M17.4 8l-3.5 2.6M7.4 17.4l2.8-3.6M16.9 16.8l-3-3" /></svg></span><span>Carte</span><small>agents, services, timers et échanges</small><b>›</b></button>
+              <button className="project-map-tab" onClick={() => onOpenMap?.(project.id)}><span className="nav-icon"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="2.5" /><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="7" r="1.8" /><circle cx="6" cy="18.5" r="1.8" /><circle cx="18.5" cy="18" r="1.8" /><path d="M6.5 7.2l3.6 3.3M17.4 8l-3.5 2.6M7.4 17.4l2.8-3.6M16.9 16.8l-3-3" /></svg></span><span>{tr("Carte")}</span><small>{tr("agents, services, timers et échanges")}</small><b>›</b></button>
               <ProjectTracking project={project} api={api} onOpenAgent={onOpenAgent} storageKey={profileCacheKey(`planification-open-${project.id}`)} publications={hasPlanning ? <ProjectPlanning project={project} nested /> : null} />
               <ProjectReporting project={project} agents={agents} todos={projectTodos} onRefresh={onRefresh} />
               <ProjectBudgetSection project={project} onRefresh={onRefresh} />
@@ -4022,21 +4024,21 @@ function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, s
                 onToggle={(e) => toggleProjectAgents(project.id, e.currentTarget.open)}
               >
                 <summary>
-                  <span>Agents</span>
-                  <small>{agents.length} actif{agents.length > 1 ? "s" : ""}{agents.some((s) => s.agentStatus?.state === "working") ? " · en cours" : ""}</small>
+                  <span>{tr("Agents")}</span>
+                  <small>{agents.length} {tr(agents.length > 1 ? "actifs" : "actif")}{agents.some((s) => s.agentStatus?.state === "working") ? " · en cours" : ""}</small>
                   <b>›</b>
                 </summary>
                 <div className="project-agents">
-                  {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {session.agentStatus?.label || "Disponible"}</small></span><b>›</b></button>)}
-                  {!agents.length && <span className="project-empty">Aucun agent rattaché.</span>}
+                  {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {tr(session.agentStatus?.label || "Disponible")}</small></span><b>›</b></button>)}
+                  {!agents.length && <span className="project-empty">{tr("Aucun agent rattaché.")}</span>}
                 </div>
               </details>
               </div>
               <div className="project-mobile-section" data-section="modules" data-selected={mobileProjectSections[project.id] === "modules"}>
-              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>Modules</span><small>{projectModules.length} installé{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onEnvironment={onModuleEnvironment} onRemove={onModuleRemove} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
-              {(prodModules.length > 0 || prodProposals.length > 0) && <details className="project-modules project-production"><summary><span>Production</span><small className={prodAlerts ? "warn" : ""}>{prodModules.length} service{prodModules.length > 1 ? "s" : ""} · {prodActive} actif{prodActive > 1 ? "s" : ""}{prodAlerts ? ` · ${prodAlerts} à vérifier` : ""}{prodHosts.length ? ` · ${prodHosts.join(", ")}` : ""}</small><b>›</b></summary><div className="project-module-list">{prodModules.map((module) => <ProjectModule key={module.id} module={module} onEnvironment={onModuleEnvironment} onRemove={onModuleRemove} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{prodProposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>Ajouter {module.name}</strong><small>{module.executionHost ? `${module.executionHost} · ` : ""}{module.description}</small></div><b>＋</b></button>)}</div></details>}
+              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>{tr("Modules")}</span><small>{projectModules.length}{" "}{tr("installé")}{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onEnvironment={onModuleEnvironment} onRemove={onModuleRemove} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>{tr("Ajouter")}{" "}{module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
+              {(prodModules.length > 0 || prodProposals.length > 0) && <details className="project-modules project-production"><summary><span>{tr("Production")}</span><small className={prodAlerts ? "warn" : ""}>{prodModules.length} {tr(prodModules.length > 1 ? "services" : "service")} · {prodActive} {tr(prodActive > 1 ? "actifs" : "actif")}{prodAlerts ? tr(" · {0} à vérifier", prodAlerts) : ""}{prodHosts.length ? ` · ${prodHosts.join(", ")}` : ""}</small><b>›</b></summary><div className="project-module-list">{prodModules.map((module) => <ProjectModule key={module.id} module={module} onEnvironment={onModuleEnvironment} onRemove={onModuleRemove} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{prodProposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>{tr("Ajouter")}{" "}{module.name}</strong><small>{module.executionHost ? `${module.executionHost} · ` : ""}{module.description}</small></div><b>＋</b></button>)}</div></details>}
 
-              {projectModules.length + proposals.length + prodModules.length + prodProposals.length === 0 && <p className="project-mobile-empty">Aucun module installé pour ce projet.</p>}
+              {projectModules.length + proposals.length + prodModules.length + prodProposals.length === 0 && <p className="project-mobile-empty">{tr("Aucun module installé pour ce projet.")}</p>}
               </div>
               <div className="project-mobile-section" data-section="files" data-selected={mobileProjectSections[project.id] === "files"}>
               <ProjectFilesSection project={project} agents={agents} onOpenAgent={onOpenAgent} />
@@ -4044,7 +4046,7 @@ function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, s
             </article>
           );
         })}
-        {!projects.length && <button className="panel empty-project-card" onClick={onNew}><span>＋</span><strong>Créer premier projet</strong><small>Nom uniquement</small></button>}
+        {!projects.length && <button className="panel empty-project-card" onClick={onNew}><span>＋</span><strong>{tr("Créer premier projet")}</strong><small>{tr("Nom uniquement")}</small></button>}
       </div>
     </div>
   );
@@ -4099,7 +4101,7 @@ function BankingPanel({ banks, month, onSynced }) {
     const file = event.target.files?.[0];
     if (!file) return;
     if (file.size > 16_384) {
-      setError("Clé PEM trop grande.");
+      setError(tr("Clé PEM trop grande."));
       event.target.value = "";
       return;
     }
@@ -4108,7 +4110,7 @@ function BankingPanel({ banks, month, onSynced }) {
       const value = await file.text();
       setConfig((current) => ({ ...current, privateKey: value }));
     } catch {
-      setError("Lecture clé PEM impossible.");
+      setError(tr("Lecture clé PEM impossible."));
     }
   }
 
@@ -4140,7 +4142,7 @@ function BankingPanel({ banks, month, onSynced }) {
   }
 
   async function disconnect(bankId) {
-    if (!window.confirm("Délier cette banque ? Opérations déjà importées restent locales.")) return;
+    if (!window.confirm(tr("Délier cette banque ? Opérations déjà importées restent locales."))) return;
     setBusy(bankId);
     try {
       await api(`/api/finance/banking/connections/${encodeURIComponent(bankId)}`, { method: "DELETE" });
@@ -4154,24 +4156,24 @@ function BankingPanel({ banks, month, onSynced }) {
 
   return (
     <section className="panel bank-connectors">
-      <div className="panel-head"><div><h3>Connexions bancaires</h3><p>Enable Banking · clé privée protégée localement par fichier 0600</p></div><span className={status?.configured ? "ready" : "pending"}>{status?.configured ? "PRÊT" : "À CONFIGURER"}</span></div>
+      <div className="panel-head"><div><h3>{tr("Connexions bancaires")}</h3><p>{tr("Enable Banking · clé privée protégée localement par fichier 0600")}</p></div><span className={status?.configured ? "ready" : "pending"}>{status?.configured ? tr("PRÊT") : tr("À CONFIGURER")}</span></div>
       {error && <p className="bank-error">{error}</p>}
       <details className="bank-config" open={!status?.configured}>
-        <summary><span><i aria-hidden="true"><AppIcon name="settings" size={16}/></i>Réglages Enable Banking</span><small>{status?.configured ? (status?.keyStored ? "Clé stockée" : "Clé à charger") : "À configurer"}</small><b>›</b></summary>
+        <summary><span><i aria-hidden="true"><AppIcon name="settings" size={16}/></i>{tr("Réglages Enable Banking")}</span><small>{status?.configured ? (status?.keyStored ? tr("Clé stockée") : tr("Clé à charger")) : tr("À configurer")}</small><b>›</b></summary>
         <form onSubmit={saveConfig}>
-          <p>URL VPN HTTPS fonctionne directement: retour bancaire arrive dans navigateur du téléphone connecté au VPN. Aucun relais public ni exposition dashboard. Enregistre URL exacte, puis charge clé privée RSA PEM.</p>
-          <label><span>Application ID</span><input value={config.appId} onChange={(event) => setConfig({ ...config, appId: event.target.value })} required autoComplete="off" placeholder="ID application" /></label>
-          <label className="wide"><span>URL retour à enregistrer</span><input value={config.redirectUrl} onChange={(event) => setConfig({ ...config, redirectUrl: event.target.value })} required inputMode="url" /></label>
-          <label className="wide bank-key-file"><span>Clé privée RSA (.pem)</span><input type="file" accept=".pem,.key,text/plain" onChange={readKey} required={!status?.keyStored} /><small>{config.privateKey ? "Clé chargée, prête à enregistrer" : status?.keyStored ? "Clé déjà stockée; laisse vide pour conserver" : "Clé requise"}</small></label>
-          <a className="ghost bank-account-link" href="https://enablebanking.com/sign-in/" target="_blank" rel="noreferrer">Ouvrir Enable Banking</a>
-          <button className="primary" disabled={busy === "config"}>{busy === "config" ? "Vérification…" : "Enregistrer et vérifier"}</button>
+          <p>{tr("URL VPN HTTPS fonctionne directement: retour bancaire arrive dans navigateur du téléphone connecté au VPN. Aucun relais public ni exposition dashboard. Enregistre URL exacte, puis charge clé privée RSA PEM.")}</p>
+          <label><span>{tr("Application ID")}</span><input value={config.appId} onChange={(event) => setConfig({ ...config, appId: event.target.value })} required autoComplete="off" placeholder="ID application" /></label>
+          <label className="wide"><span>{tr("URL retour à enregistrer")}</span><input value={config.redirectUrl} onChange={(event) => setConfig({ ...config, redirectUrl: event.target.value })} required inputMode="url" /></label>
+          <label className="wide bank-key-file"><span>{tr("Clé privée RSA (.pem)")}</span><input type="file" accept=".pem,.key,text/plain" onChange={readKey} required={!status?.keyStored} /><small>{config.privateKey ? tr("Clé chargée, prête à enregistrer") : status?.keyStored ? "Clé déjà stockée; laisse vide pour conserver" : tr("Clé requise")}</small></label>
+          <a className="ghost bank-account-link" href="https://enablebanking.com/sign-in/" target="_blank" rel="noreferrer">{tr("Ouvrir Enable Banking")}</a>
+          <button className="primary" disabled={busy === "config"}>{busy === "config" ? tr("Vérification…") : tr("Enregistrer et vérifier")}</button>
         </form>
       </details>
-      {status?.configured && <div className="bank-toolbar"><small>{status.connections.length} banque{status.connections.length > 1 ? "s" : ""} liée{status.connections.length > 1 ? "s" : ""}{cooldown > 0 ? ` · attente ${cooldown}s` : ""}</small>{status.connections.length > 0 && <button className="ghost" onClick={() => sync()} disabled={Boolean(busy) || cooldown > 0}>{busy === "sync" ? "Synchronisation…" : cooldown > 0 ? `Réessayer dans ${cooldown}s` : "Tout synchroniser"}</button>}</div>}
+      {status?.configured && <div className="bank-toolbar"><small>{status.connections.length} {tr(status.connections.length > 1 ? "banques" : "banque")}{" "}{tr("liée")}{status.connections.length > 1 ? "s" : ""}{cooldown > 0 ? ` · attente ${cooldown}s` : ""}</small>{status.connections.length > 0 && <button className="ghost" onClick={() => sync()} disabled={Boolean(busy) || cooldown > 0}>{busy === "sync" ? tr("Synchronisation…") : cooldown > 0 ? tr("Réessayer dans {0}s", cooldown) : tr("Tout synchroniser")}</button>}</div>}
       <div className="bank-list">{banks.map((bank) => {
         const connection = status?.connections.find(({ bankId }) => bankId === bank.id);
         const options = institutions[bank.id] || [];
-        return <article key={bank.id}><i>{bank.name[0]}</i><span><strong>{bank.name}</strong><small>{connection ? `${connection.accountCount} compte · synchro ${connection.lastSyncAt ? new Date(connection.lastSyncAt).toLocaleDateString("fr-FR") : "jamais"}` : bank.access}</small></span>{options.length > 1 && !connection && <select value={selected[bank.id] || ""} onChange={(event) => setSelected({ ...selected, [bank.id]: event.target.value })}>{options.map((option) => <option key={option.name}>{option.name}</option>)}</select>}{connection ? <div className="bank-actions"><button onClick={() => sync(bank.id)} disabled={Boolean(busy) || cooldown > 0}>Synchroniser</button><button onClick={() => disconnect(bank.id)} disabled={Boolean(busy)}>Délier</button></div> : <button onClick={() => connect(bank.id)} disabled={Boolean(busy) || !options.length}>{busy === bank.id ? "Ouverture…" : options.length ? "Lier cette banque" : "Indisponible"}</button>}</article>;
+        return <article key={bank.id}><i>{bank.name[0]}</i><span><strong>{bank.name}</strong><small>{connection ? `${connection.accountCount} compte · synchro ${connection.lastSyncAt ? new Date(connection.lastSyncAt).toLocaleDateString(LOCALE) : "jamais"}` : bank.access}</small></span>{options.length > 1 && !connection && <select value={selected[bank.id] || ""} onChange={(event) => setSelected({ ...selected, [bank.id]: event.target.value })}>{options.map((option) => <option key={option.name}>{option.name}</option>)}</select>}{connection ? <div className="bank-actions"><button onClick={() => sync(bank.id)} disabled={Boolean(busy) || cooldown > 0}>{tr("Synchroniser")}</button><button onClick={() => disconnect(bank.id)} disabled={Boolean(busy)}>{tr("Délier")}</button></div> : <button onClick={() => connect(bank.id)} disabled={Boolean(busy) || !options.length}>{busy === bank.id ? tr("Ouverture…") : options.length ? tr("Lier cette banque") : tr("Indisponible")}</button>}</article>;
       })}</div>
     </section>
   );
@@ -4180,11 +4182,11 @@ function BankingPanel({ banks, month, onSynced }) {
 function BudgetMenu({ onView }) {
   return (
     <details className="finance-more">
-      <summary aria-label="Ouvrir menu Budget" title="Menu Budget">＋</summary>
+      <summary aria-label={tr("Ouvrir menu Budget")} title={tr("Menu Budget")}>＋</summary>
       <nav>
-        <button onClick={() => onView("finance-transactions")}><span>±</span><b>Opérations</b><small>Saisie et historique</small></button>
-        <button onClick={() => onView("finance-modules")}><span>◇</span><b>Modules financiers</b><small>Actifs, charges, enveloppes</small></button>
-        <button onClick={() => onView("finance-banking")}><span>⌁</span><b>Connexions bancaires</b><small>Comptes, Enable Banking, synchronisation</small></button>
+        <button onClick={() => onView("finance-transactions")}><span>±</span><b>{tr("Opérations")}</b><small>{tr("Saisie et historique")}</small></button>
+        <button onClick={() => onView("finance-modules")}><span>◇</span><b>{tr("Modules financiers")}</b><small>{tr("Actifs, charges, enveloppes")}</small></button>
+        <button onClick={() => onView("finance-banking")}><span>⌁</span><b>{tr("Connexions bancaires")}</b><small>{tr("Comptes, Enable Banking, synchronisation")}</small></button>
       </nav>
     </details>
   );
@@ -4199,7 +4201,7 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
     const content = message.trim();
     if (!content || sending) return;
     setSending(true);
-    setReply("Codex analyse budget et historique…");
+    setReply(tr("Codex analyse budget et historique…"));
     try {
       const response = await api("/api/finance/agent/message", { method: "POST", body: JSON.stringify({ message: content, month }) });
       setReply(response.reply);
@@ -4213,9 +4215,9 @@ function FinanceAgentDock({ month, onExpand, onChanged }) {
   }
   return createPortal(
     <aside className="finance-agent-dock">
-      <header><span><i />Agent finances · Codex</span><button onClick={onExpand} aria-label="Agrandir Agent finances" title="Agrandir">↗</button></header>
+      <header><span><i />{tr("Agent finances · Codex")}</span><button onClick={onExpand} aria-label={tr("Agrandir Agent finances")} title={tr("Agrandir")}>↗</button></header>
       {reply && <p>{reply}</p>}
-      <form onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Parler budget, charges, prévisions…" maxLength="1000" enterKeyHint="send" /><button disabled={sending || !message.trim()}>{sending ? "…" : "↑"}</button></form>
+      <form onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder={tr("Parler budget, charges, prévisions…")} maxLength="1000" enterKeyHint="send" /><button disabled={sending || !message.trim()}>{sending ? "…" : "↑"}</button></form>
     </aside>,
     document.body,
   );
@@ -4257,12 +4259,12 @@ function FinanceAdvicePanel({ month }) {
     }
   }
 
-  const providerLabel = state.provider === "claude" ? "Claude" : state.provider === "codex" ? "Codex" : null;
+  const providerLabel = state.provider === "claude" ? tr("Claude") : state.provider === "codex" ? tr("Codex") : null;
   return (
     <section className="panel finance-advice">
       <div className="panel-head">
-        <div><h3>Conseils IA</h3><p>{state.generatedAt ? `${providerLabel} · ${new Date(state.generatedAt).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "Analyse à la demande, agent selon quota disponible"}</p></div>
-        <button className="ghost" onClick={refresh} disabled={busy}>{busy ? "Analyse…" : state.generatedAt ? "Actualiser" : "Analyser"}</button>
+        <div><h3>{tr("Conseils IA")}</h3><p>{state.generatedAt ? `${providerLabel} · ${new Date(state.generatedAt).toLocaleString(LOCALE, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : tr("Analyse à la demande, agent selon quota disponible")}</p></div>
+        <button className="ghost" onClick={refresh} disabled={busy}>{busy ? tr("Analyse…") : state.generatedAt ? tr("Actualiser") : tr("Analyser")}</button>
       </div>
       {error && <p className="finance-error">{error}</p>}
       {state.headline && <p className="advice-headline">{state.headline}</p>}
@@ -4274,8 +4276,8 @@ function FinanceAdvicePanel({ month }) {
             <small>→ {item.action}</small>
           </article>
         ))}
-        {!state.insights.length && !busy && <p className="finance-empty">Aucune analyse encore. Lance-la quand tu veux un vrai avis chiffré.</p>}
-        {busy && <p className="finance-empty">L'agent lit le mois complet, compte 30 à 60 secondes.</p>}
+        {!state.insights.length && !busy && <p className="finance-empty">{tr("Aucune analyse encore. Lance-la quand tu veux un vrai avis chiffré.")}</p>}
+        {busy && <p className="finance-empty">{tr("L'agent lit le mois complet, compte 30 à 60 secondes.")}</p>}
       </div>
     </section>
   );
@@ -4370,8 +4372,8 @@ function FinanceView({ onView }) {
     }));
   }
 
-  const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
-  if (!data || !settings) return <div className="page finance-page"><section className="hero-row"><div><p className="eyebrow">ARGENT</p><h1>Finances.</h1><p className="muted">{error || "Chargement données locales…"}</p></div></section></div>;
+  const monthName = new Intl.DateTimeFormat(LOCALE, { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
+  if (!data || !settings) return <div className="page finance-page"><section className="hero-row"><div><p className="eyebrow">{tr("ARGENT")}</p><h1>{tr("Finances.")}</h1><p className="muted">{error || tr("Chargement données locales…")}</p></div></section></div>;
   const { summary } = data;
   const confidenceLabel = { low: "provisoire", medium: "correcte", high: "solide" }[summary.dataConfidence] || "provisoire";
   const plannedCategories = data.categories.map((category) => ({ ...category, ...summary.categoryPlans[category.id] })).filter(({ remaining }) => remaining > 0).sort((a, b) => b.remaining - a.remaining);
@@ -4384,122 +4386,122 @@ function FinanceView({ onView }) {
   return (
     <div className="page finance-page has-finance-dock">
       <section className="hero-row finance-hero">
-        <div><p className="eyebrow">ARGENT · DONNÉES LOCALES</p><h1>Budget.</h1><p className="muted">Objectif: épargner sans perdre vue du reste à vivre.</p><p className="finance-sync-line">{bankSyncLabel(data.banking)}</p></div>
-        <div className="finance-hero-actions"><BudgetMenu onView={onView} /><button className={`finance-refresh ${updating ? "updating" : ""}`} onClick={updateBudget} disabled={updating || syncCooldown > 0} aria-label={syncCooldown > 0 ? `Synchronisation disponible dans ${syncCooldown} secondes` : "Mettre à jour depuis banques"} title={syncCooldown > 0 ? `Réessayer dans ${syncCooldown}s` : updatedAt ? `À jour à ${updatedAt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}` : "Mettre à jour depuis banques"}><span aria-hidden="true">↻</span>{syncCooldown > 0 && <small>{syncCooldown}</small>}</button><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label="Mois précédent">‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label="Mois suivant">›</button></div></div>
+        <div><p className="eyebrow">{tr("ARGENT · DONNÉES LOCALES")}</p><h1>{tr("Budget.")}</h1><p className="muted">{tr("Objectif: épargner sans perdre vue du reste à vivre.")}</p><p className="finance-sync-line">{bankSyncLabel(data.banking)}</p></div>
+        <div className="finance-hero-actions"><BudgetMenu onView={onView} /><button className={`finance-refresh ${updating ? "updating" : ""}`} onClick={updateBudget} disabled={updating || syncCooldown > 0} aria-label={syncCooldown > 0 ? tr("Synchronisation disponible dans {0} secondes", syncCooldown) : tr("Mettre à jour depuis banques")} title={syncCooldown > 0 ? tr("Réessayer dans {0}s", syncCooldown) : updatedAt ? tr("À jour à {0}", updatedAt.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" })) : tr("Mettre à jour depuis banques")}><span aria-hidden="true">↻</span>{syncCooldown > 0 && <small>{syncCooldown}</small>}</button><div className="month-switch"><button onClick={() => shiftMonth(-1)} aria-label={tr("Mois précédent")}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)} aria-label={tr("Mois suivant")}>›</button></div></div>
       </section>
 
       {error && <p className="finance-error">{error}</p>}
 
-      <nav className="finance-shortcuts" aria-label="Navigation Budget">
-        <button onClick={() => onView("finance-modules")}><span>◇</span><b>Modules financiers</b><small>{data.modules.length} actifs/configurables · LEP, PEA, loyer, transferts</small><i>›</i></button>
-        <button onClick={() => onView("finance-transactions")}><span>±</span><b>Opérations</b><small>{data.transactions.length} ce mois · détail et saisie</small><i>›</i></button>
+      <nav className="finance-shortcuts" aria-label={tr("Navigation Budget")}>
+        <button onClick={() => onView("finance-modules")}><span>◇</span><b>{tr("Modules financiers")}</b><small>{data.modules.length}{" "}{tr("actifs/configurables · LEP, PEA, loyer, transferts")}</small><i>›</i></button>
+        <button onClick={() => onView("finance-transactions")}><span>±</span><b>{tr("Opérations")}</b><small>{data.transactions.length}{" "}{tr("ce mois · détail et saisie")}</small><i>›</i></button>
       </nav>
 
       <section className="finance-metrics">
-        <article className={summary.currentCash >= 0 ? "positive cash-metric" : "negative cash-metric"}><small>SOLDE COMPTES COURANTS</small><strong>{euro(summary.currentCash)}</strong><span>{summary.currentAccounts.length} compte{summary.currentAccounts.length > 1 ? "s" : ""} bancaire{summary.currentAccounts.length > 1 ? "s" : ""}</span></article>
-        <button className="planned-metric" onClick={() => setShowPlanned((value) => !value)} aria-expanded={showPlanned}><small>ENCORE PRÉVU</small><strong>{euro(summary.remainingPlannedExpenses)}</strong><span>Détail par catégorie {showPlanned ? "↑" : "↓"}</span></button>
-        <button className="budget-month-metric" aria-controls="current-accounts-panel" onClick={() => { const panel = document.getElementById("current-accounts-panel"); if (!panel) return; panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "start" }); }}><small>BUDGET DU MOIS</small><strong>{euro(summary.expenses)}</strong><span>Payés · {euro(summary.projectedExpenses)} prévus ›</span></button>
-        <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>ENCORE DÉPENSABLE</small><strong>{euro(summary.safeToSpend)}</strong><span>{euro(summary.dailyAllowance)} / jour sans toucher réserves</span></article>
+        <article className={summary.currentCash >= 0 ? "positive cash-metric" : "negative cash-metric"}><small>{tr("SOLDE COMPTES COURANTS")}</small><strong>{euro(summary.currentCash)}</strong><span>{summary.currentAccounts.length} {tr(summary.currentAccounts.length > 1 ? "comptes" : "compte")} {tr(summary.currentAccounts.length > 1 ? "bancaires" : "bancaire")}</span></article>
+        <button className="planned-metric" onClick={() => setShowPlanned((value) => !value)} aria-expanded={showPlanned}><small>{tr("ENCORE PRÉVU")}</small><strong>{euro(summary.remainingPlannedExpenses)}</strong><span>{tr("Détail par catégorie")}{" "}{showPlanned ? "↑" : "↓"}</span></button>
+        <button className="budget-month-metric" aria-controls="current-accounts-panel" onClick={() => { const panel = document.getElementById("current-accounts-panel"); if (!panel) return; panel.open = true; panel.scrollIntoView({ behavior: "smooth", block: "start" }); }}><small>{tr("BUDGET DU MOIS")}</small><strong>{euro(summary.expenses)}</strong><span>{tr("Payés ·")}{" "}{euro(summary.projectedExpenses)}{" "}{tr("prévus ›")}</span></button>
+        <article className={summary.safeToSpend > 0 ? "positive safe-metric" : "negative safe-metric"}><small>{tr("ENCORE DÉPENSABLE")}</small><strong>{euro(summary.safeToSpend)}</strong><span>{euro(summary.dailyAllowance)}{" "}{tr("/ jour sans toucher réserves")}</span></article>
       </section>
 
       {showPlanned && <section className="panel planned-breakdown">
-        <div className="panel-head"><div><h3>Dépenses encore prévues</h3><p>Projection restante, jamais déjà dépensée</p></div><b>{euro(summary.remainingPlannedExpenses)}</b></div>
-        <div>{plannedCategories.map((category) => <article key={category.id}><span><strong>{category.label}</strong><small>{euro(category.spent)} déjà dépensés · {category.budget ? `budget ${euro(category.budget)}` : category.recurringExpected > category.spent ? `charge connue ${euro(category.recurringExpected)}` : category.essential ? `historique ${euro(category.historicalAverage)} + rythme réel` : "rythme réel du mois"}</small></span><b>+ {euro(category.remaining)}</b></article>)}{!plannedCategories.length && <p className="finance-empty">Aucune dépense supplémentaire projetée.</p>}</div>
-        <footer>Total mois probable: {euro(summary.projectedExpenses)} = réel {euro(summary.expenses)} + encore prévu {euro(summary.remainingPlannedExpenses)}.</footer>
+        <div className="panel-head"><div><h3>{tr("Dépenses encore prévues")}</h3><p>{tr("Projection restante, jamais déjà dépensée")}</p></div><b>{euro(summary.remainingPlannedExpenses)}</b></div>
+        <div>{plannedCategories.map((category) => <article key={category.id}><span><strong>{category.label}</strong><small>{euro(category.spent)}{" "}{tr("déjà dépensés ·")}{" "}{category.budget ? `budget ${euro(category.budget)}` : category.recurringExpected > category.spent ? tr("charge connue {0}", euro(category.recurringExpected)) : category.essential ? tr("historique {0} + rythme réel", euro(category.historicalAverage)) : tr("rythme réel du mois")}</small></span><b>+ {euro(category.remaining)}</b></article>)}{!plannedCategories.length && <p className="finance-empty">{tr("Aucune dépense supplémentaire projetée.")}</p>}</div>
+        <footer>{tr("Total mois probable:")}{" "}{euro(summary.projectedExpenses)}{" "}{tr("= réel")}{" "}{euro(summary.expenses)}{" "}{tr("+ encore prévu")}{" "}{euro(summary.remainingPlannedExpenses)}.</footer>
       </section>}
 
       <details className="panel current-accounts foldable" id="current-accounts-panel">
-        <summary className="panel-head"><div><h3>Comptes courants</h3><p>Soldes bancaires réels · placements exclus</p></div><b>{euro(summary.currentCash)}</b><i>›</i></summary>
-        <div className="current-account-grid">{summary.currentAccounts.map((account) => <article key={`${account.bank}-${account.name}`}><span><strong>{account.bank}</strong><small>{account.name} · actualisé {account.balanceAt ? new Date(account.balanceAt).toLocaleDateString("fr-FR") : "date inconnue"}</small></span><b className={account.balance >= 0 ? "positive" : "negative"}>{euro(account.balance)}</b></article>)}{!summary.currentAccounts.length && <p className="finance-empty">Aucun solde bancaire disponible.</p>}</div>
+        <summary className="panel-head"><div><h3>{tr("Comptes courants")}</h3><p>{tr("Soldes bancaires réels · placements exclus")}</p></div><b>{euro(summary.currentCash)}</b><i>›</i></summary>
+        <div className="current-account-grid">{summary.currentAccounts.map((account) => <article key={`${account.bank}-${account.name}`}><span><strong>{account.bank}</strong><small>{account.name}{" "}{tr("· actualisé")}{" "}{account.balanceAt ? new Date(account.balanceAt).toLocaleDateString(LOCALE) : tr("date inconnue")}</small></span><b className={account.balance >= 0 ? "positive" : "negative"}>{euro(account.balance)}</b></article>)}{!summary.currentAccounts.length && <p className="finance-empty">{tr("Aucun solde bancaire disponible.")}</p>}</div>
         <section className="account-month-budget">
-          <header><span><strong>Budget du mois</strong><small>{monthExpenseTransactions.length} paiement{monthExpenseTransactions.length > 1 ? "s" : ""} · transferts exclus</small></span><div><b>{euro(summary.expenses)} payés</b><button className="ghost" onClick={useRealisticBudgets}>Limites réalistes</button></div></header>
+          <header><span><strong>{tr("Budget du mois")}</strong><small>{monthExpenseTransactions.length} {tr(monthExpenseTransactions.length > 1 ? "paiements" : "paiement")}{" "}{tr("· transferts exclus")}</small></span><div><b>{euro(summary.expenses)}{" "}{tr("payés")}</b><button className="ghost" onClick={useRealisticBudgets}>{tr("Limites réalistes")}</button></div></header>
           <div className="budget-list">
             {spentCategories.map(({ category, spent, transactions: categoryTransactions }) => {
               const budget = Number(settings.budgets[category.id] || 0);
               const plan = summary.categoryPlans[category.id];
               const limit = budget || summary.monthlyPlan.categoryLimits[category.id];
               const ratio = limit ? Math.round((spent / limit) * 100) : 0;
-              return <details className="budget-category" key={category.id}><summary className="budget-row"><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)} payé · {euro(plan.projected)} prévu · {limit ? `${euro(limit)} limite` : "sans limite"}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{categoryTransactions.length} ›</b></summary><div className="category-transactions">{categoryTransactions.map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account}</small></span><b>− {euro(Math.abs(transaction.amount))}</b></article>)}</div></details>;
+              return <details className="budget-category" key={category.id}><summary className="budget-row"><span><strong>{category.label}{plan.essential && <em>essentiel</em>}</strong><small>{euro(spent)}{" "}{tr("payé ·")}{" "}{euro(plan.projected)}{" "}{tr("prévu ·")}{" "}{limit ? `${euro(limit)} limite` : tr("sans limite")}</small></span><div><i style={{ width: `${Math.min(100, ratio)}%` }} className={ratio >= 100 ? "over" : ratio >= 80 ? "near" : ""} /></div><b>{categoryTransactions.length} ›</b></summary><div className="category-transactions">{categoryTransactions.map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account}</small></span><b>− {euro(Math.abs(transaction.amount))}</b></article>)}</div></details>;
             })}
-            {!spentCategories.length && <p className="finance-empty">Aucune dépense payée ce mois.</p>}
+            {!spentCategories.length && <p className="finance-empty">{tr("Aucune dépense payée ce mois.")}</p>}
           </div>
         </section>
       </details>
 
       <details className="panel monthly-targets foldable">
-        <summary className="panel-head"><div><h3>Plan mensuel conseillé</h3><p>Répartition du salaire {euro(summary.monthlyPlan.income)}</p></div><b>ÉPARGNER {euro(summary.monthlyPlan.recommendedSavings)}</b><i>›</i></summary>
-        <p className="plan-equation">{euro(summary.monthlyPlan.fixedCosts)} charges + {euro(summary.monthlyPlan.flexibleLimit)} dépenses courantes + {euro(summary.monthlyPlan.recommendedSavings)} épargne + {euro(summary.monthlyPlan.unallocated)} libre = {euro(summary.monthlyPlan.income)} de salaire. Le coussin de {euro(summary.monthlyPlan.safetyBuffer)} est un stock déjà en banque, il ne se prélève pas chaque mois.</p>
+        <summary className="panel-head"><div><h3>{tr("Plan mensuel conseillé")}</h3><p>{tr("Répartition du salaire")}{" "}{euro(summary.monthlyPlan.income)}</p></div><b>{tr("ÉPARGNER")}{" "}{euro(summary.monthlyPlan.recommendedSavings)}</b><i>›</i></summary>
+        <p className="plan-equation">{euro(summary.monthlyPlan.fixedCosts)}{" "}{tr("charges +")}{" "}{euro(summary.monthlyPlan.flexibleLimit)}{" "}{tr("dépenses courantes +")}{" "}{euro(summary.monthlyPlan.recommendedSavings)}{" "}{tr("épargne +")}{" "}{euro(summary.monthlyPlan.unallocated)}{" "}{tr("libre =")}{" "}{euro(summary.monthlyPlan.income)}{" "}{tr("de salaire. Le coussin de")}{" "}{euro(summary.monthlyPlan.safetyBuffer)}{" "}{tr("est un stock déjà en banque, il ne se prélève pas chaque mois.")}</p>
         <div className="monthly-target-grid">
-          <article><small>CHARGES FIXES</small><strong>{euro(summary.monthlyPlan.fixedCosts)}</strong><span>Logement, contrats, taxes</span></article>
-          <article><small>VIREMENT {summary.monthlyPlan.flexibleAccount.toUpperCase()}</small><strong>{euro(summary.monthlyPlan.flexibleLimit)}</strong><span>Plafond dépenses courantes</span></article>
-          <article className="positive"><small>ÉPARGNE AUTOMATIQUE</small><strong>{euro(summary.monthlyPlan.recommendedSavings)}</strong><span>Objectif soutenable calculé</span></article>
-          <article><small>NON ALLOUÉ</small><strong>{euro(summary.monthlyPlan.unallocated)}</strong><span>Marge restante du salaire</span></article>
+          <article><small>{tr("CHARGES FIXES")}</small><strong>{euro(summary.monthlyPlan.fixedCosts)}</strong><span>{tr("Logement, contrats, taxes")}</span></article>
+          <article><small>{tr("VIREMENT")}{" "}{summary.monthlyPlan.flexibleAccount.toUpperCase()}</small><strong>{euro(summary.monthlyPlan.flexibleLimit)}</strong><span>{tr("Plafond dépenses courantes")}</span></article>
+          <article className="positive"><small>{tr("ÉPARGNE AUTOMATIQUE")}</small><strong>{euro(summary.monthlyPlan.recommendedSavings)}</strong><span>{tr("Objectif soutenable calculé")}</span></article>
+          <article><small>{tr("NON ALLOUÉ")}</small><strong>{euro(summary.monthlyPlan.unallocated)}</strong><span>{tr("Marge restante du salaire")}</span></article>
         </div>
-        <details><summary>Charges fixes retenues · {euro(summary.monthlyPlan.fixedCosts)} <b>›</b></summary><div className="monthly-limit-list fixed-charge-list">{summary.monthlyPlan.fixedChargeBreakdown.map((item) => {
+        <details><summary>{tr("Charges fixes retenues ·")}{" "}{euro(summary.monthlyPlan.fixedCosts)} <b>›</b></summary><div className="monthly-limit-list fixed-charge-list">{summary.monthlyPlan.fixedChargeBreakdown.map((item) => {
           const category = data.categories.find(({ id }) => id === item.category);
-          const basis = item.basis === "budget" ? "budget configuré" : item.basis === "configured" ? "charge configurée" : "médiane 3 mois";
-          return <article key={item.category}><span><strong>{category?.label || item.category}</strong><small>{basis} · ce mois {euro(item.current)}{item.contracts.length ? ` · ${item.contracts.map(({ name }) => name).join(", ")}` : ""}</small></span><b>{euro(item.amount)}</b></article>;
+          const basis = item.basis === "budget" ? tr("budget configuré") : item.basis === "configured" ? tr("charge configurée") : tr("médiane 3 mois");
+          return <article key={item.category}><span><strong>{category?.label || item.category}</strong><small>{basis}{" "}{tr("· ce mois")}{" "}{euro(item.current)}{item.contracts.length ? ` · ${item.contracts.map(({ name }) => name).join(", ")}` : ""}</small></span><b>{euro(item.amount)}</b></article>;
         })}</div></details>
-        <details><summary>Voir limites fixes + enveloppe <b>›</b></summary><div className="monthly-limit-list">{data.categories.filter(({ id }) => summary.monthlyPlan.categoryLimits[id] > 0).map((category) => <article key={category.id}><span>{category.label}</span><b>{euro(summary.monthlyPlan.categoryLimits[category.id])}</b></article>)}</div></details>
-        <details><summary>Récurrents détectés · {summary.detectedRecurring.length} <b>›</b></summary><div className="monthly-limit-list">{summary.detectedRecurring.map((item) => <article key={item.id}><span>{item.name}<small>{data.categories.find(({ id }) => id === item.category)?.label || "Autres"} · {item.months} mois</small></span><b>{euro(item.monthlyNet)} / mois</b></article>)}</div></details>
-        {summary.spendingEnvelopes[0] && <footer>{summary.spendingEnvelopes[0].name}: médiane historique {euro(summary.spendingEnvelopes[0].historicalMedian)} · plafond conseillé −10% {euro(summary.spendingEnvelopes[0].recommendedFunding)} · toutes dépenses variables passent ici; achat ailleurs s’ajoute au plafond.</footer>}
+        <details><summary>{tr("Voir limites fixes + enveloppe")}{" "}<b>›</b></summary><div className="monthly-limit-list">{data.categories.filter(({ id }) => summary.monthlyPlan.categoryLimits[id] > 0).map((category) => <article key={category.id}><span>{category.label}</span><b>{euro(summary.monthlyPlan.categoryLimits[category.id])}</b></article>)}</div></details>
+        <details><summary>{tr("Récurrents détectés ·")}{" "}{summary.detectedRecurring.length} <b>›</b></summary><div className="monthly-limit-list">{summary.detectedRecurring.map((item) => <article key={item.id}><span>{item.name}<small>{data.categories.find(({ id }) => id === item.category)?.label || tr("Autres")} · {item.months} mois</small></span><b>{euro(item.monthlyNet)}{" "}{tr("/ mois")}</b></article>)}</div></details>
+        {summary.spendingEnvelopes[0] && <footer>{summary.spendingEnvelopes[0].name}{tr(": médiane historique")}{" "}{euro(summary.spendingEnvelopes[0].historicalMedian)}{" "}{tr("· plafond conseillé −10%")}{" "}{euro(summary.spendingEnvelopes[0].recommendedFunding)}{" "}{tr("· toutes dépenses variables passent ici; achat ailleurs s’ajoute au plafond.")}</footer>}
       </details>
 
       <details className="panel spending-plan foldable">
-        <summary className="panel-head"><div><h3>Calcul réaliste</h3><p>Chaque euro protégé avant dépenses libres</p></div><span className={`confidence ${summary.dataConfidence}`}>FIABILITÉ {confidenceLabel.toUpperCase()}</span><i>›</i></summary>
+        <summary className="panel-head"><div><h3>{tr("Calcul réaliste")}</h3><p>{tr("Chaque euro protégé avant dépenses libres")}</p></div><span className={`confidence ${summary.dataConfidence}`}>{tr("FIABILITÉ")}{" "}{confidenceLabel.toUpperCase()}</span><i>›</i></summary>
         <div className="spending-plan-body">
           <div className="money-equation">
-            <span><small>{summary.incomeSource === "history" ? `Salaire estimé · ${summary.incomeHistoryMonths} mois` : "Revenus reçus"}</small><b>{euro(summary.income)}</b></span>
-            <span><small>Déjà dépensé</small><b>− {euro(summary.expenses)}</b></span>
-            <span><small>Charges essentielles restantes</small><b>− {euro(summary.futureEssentialExpenses)}</b></span>
-            <span><small>Réserve imprévus {summary.safetyBufferAutomatic ? "auto" : "fixe"}</small><b>− {euro(summary.safetyBuffer)}</b></span>
-            <span><small>Épargne soutenable protégée</small><b>− {euro(summary.protectedSavings)}</b></span>
+            <span><small>{summary.incomeSource === "history" ? tr("Salaire estimé · {0} mois", summary.incomeHistoryMonths) : tr("Revenus reçus")}</small><b>{euro(summary.income)}</b></span>
+            <span><small>{tr("Déjà dépensé")}</small><b>− {euro(summary.expenses)}</b></span>
+            <span><small>{tr("Charges essentielles restantes")}</small><b>− {euro(summary.futureEssentialExpenses)}</b></span>
+            <span><small>{tr("Réserve imprévus")}{" "}{summary.safetyBufferAutomatic ? "auto" : "fixe"}</small><b>− {euro(summary.safetyBuffer)}</b></span>
+            <span><small>{tr("Épargne soutenable protégée")}</small><b>− {euro(summary.protectedSavings)}</b></span>
             {summary.spendingEnvelopes.map((envelope) => <span key={envelope.id}><small>{envelope.name} restante</small><b className={envelope.remaining < 0 ? "negative" : "positive"}>{envelope.remaining < 0 ? "− " : "+ "}{euro(Math.abs(envelope.remaining))}</b></span>)}
-            {summary.flexibleBudgetApplied && <span><small>Plafond budgets libres</small><b>{euro(summary.flexibleBudgetRemaining)}</b></span>}
+            {summary.flexibleBudgetApplied && <span><small>{tr("Plafond budgets libres")}</small><b>{euro(summary.flexibleBudgetRemaining)}</b></span>}
           </div>
           <div className="month-forecast">
-            <small>PROJECTION FIN DE MOIS</small><strong>{euro(summary.projectedExpenses)}</strong><span>dépenses probables</span>
-            <div><b className={summary.projectedSavings >= 0 ? "positive" : "negative"}>{summary.projectedSavings >= 0 ? "+" : "−"}{euro(Math.abs(summary.projectedSavings))}</b><small>{summary.projectedSavings >= 0 ? "marge avant imprévus" : "déficit projeté"}</small></div>
-            <p>{summary.historyMonths} mois historique · {summary.transactionCount} opérations utiles · {summary.excludedTransactionCount} transferts ignorés</p>
+            <small>{tr("PROJECTION FIN DE MOIS")}</small><strong>{euro(summary.projectedExpenses)}</strong><span>{tr("dépenses probables")}</span>
+            <div><b className={summary.projectedSavings >= 0 ? "positive" : "negative"}>{summary.projectedSavings >= 0 ? "+" : "−"}{euro(Math.abs(summary.projectedSavings))}</b><small>{summary.projectedSavings >= 0 ? tr("marge avant imprévus") : tr("déficit projeté")}</small></div>
+            <p>{summary.historyMonths}{" "}{tr("mois historique ·")}{" "}{summary.transactionCount}{" "}{tr("opérations utiles ·")}{" "}{summary.excludedTransactionCount}{" "}{tr("transferts ignorés")}</p>
           </div>
         </div>
       </details>
 
       <details className="panel finance-assets foldable">
-        <summary className="panel-head"><div><h3>Actifs suivis</h3><p>{summary.assets.source === "banque" ? "Soldes réels des livrets et placements" : "Épargne disponible et placements bloqués, hors comptes courants"}{summary.savedThisMonth > 0 ? ` · ${euro(summary.savedThisMonth)} placés ce mois` : ""}</p></div><b className="asset-split"><span>{euro(summary.assets.liquid)} dispo</span><em>{euro(summary.assets.invested)} investi</em></b><i>›</i></summary>
-        <div>{summary.assets.entries.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{asset.bucket === "liquid" ? "Disponible" : "Investi · non mobilisable"}{asset.institution ? ` · ${asset.institution}` : ""}{asset.source === "banque" ? " · solde bancaire" : ""}{asset.contributions ? ` · ${asset.contributions > 0 ? "+" : "−"}${euro(Math.abs(asset.contributions))} depuis la saisie` : ""}</small></span><b>{euro(asset.amount)}</b></article>)}{!summary.assets.entries.length && <p className="finance-empty">Aucun actif configuré.</p>}</div>
-        <footer><button className="ghost" onClick={() => onView("finance-modules")}>Gérer modules</button></footer>
+        <summary className="panel-head"><div><h3>{tr("Actifs suivis")}</h3><p>{summary.assets.source === "banque" ? tr("Soldes réels des livrets et placements") : tr("Épargne disponible et placements bloqués, hors comptes courants")}{summary.savedThisMonth > 0 ? tr(" · {0} placés ce mois", euro(summary.savedThisMonth)) : ""}</p></div><b className="asset-split"><span>{euro(summary.assets.liquid)} dispo</span><em>{euro(summary.assets.invested)} investi</em></b><i>›</i></summary>
+        <div>{summary.assets.entries.map((asset) => <article key={asset.id}><span><strong>{asset.name}</strong><small>{asset.bucket === "liquid" ? tr("Disponible") : tr("Investi · non mobilisable")}{asset.institution ? ` · ${asset.institution}` : ""}{asset.source === "banque" ? " · solde bancaire" : ""}{asset.contributions ? ` · ${asset.contributions > 0 ? "+" : "−"}${euro(Math.abs(asset.contributions))} depuis la saisie` : ""}</small></span><b>{euro(asset.amount)}</b></article>)}{!summary.assets.entries.length && <p className="finance-empty">{tr("Aucun actif configuré.")}</p>}</div>
+        <footer><button className="ghost" onClick={() => onView("finance-modules")}>{tr("Gérer modules")}</button></footer>
       </details>
 
       <section className="finance-layout">
         <FinanceAdvicePanel month={month} />
 
         <details className="panel finance-insights foldable">
-          <summary className="panel-head"><div><h3>Alertes & leviers</h3><p>Repères automatiques, pas conseil financier</p></div><b>{summary.warnings.length + summary.recommendations.length}</b><i>›</i></summary>
+          <summary className="panel-head"><div><h3>{tr("Alertes & leviers")}</h3><p>{tr("Repères automatiques, pas conseil financier")}</p></div><b>{summary.warnings.length + summary.recommendations.length}</b><i>›</i></summary>
           <div className="insight-list">
             {summary.warnings.map((warning) => <article className={warning.tone} key={warning.id}><i /><span><strong>{warning.title}</strong><small>{warning.detail}</small></span></article>)}
-            {summary.recommendations.map((recommendation, index) => <article className="tip" key={recommendation}><i>{index + 1}</i><span><strong>Optimisation</strong><small>{recommendation}</small></span></article>)}
-            {!summary.warnings.length && !summary.recommendations.length && <p className="finance-empty">Importe opérations pour générer analyse.</p>}
+            {summary.recommendations.map((recommendation, index) => <article className="tip" key={recommendation}><i>{index + 1}</i><span><strong>{tr("Optimisation")}</strong><small>{recommendation}</small></span></article>)}
+            {!summary.warnings.length && !summary.recommendations.length && <p className="finance-empty">{tr("Importe opérations pour générer analyse.")}</p>}
           </div>
         </details>
       </section>
 
       <details className="panel finance-excluded">
-        <summary><span><strong>Virements et mouvements exclus</strong><small>{summary.excludedTransactionCount} ce mois · non comptés comme revenu ou dépense</small></span><b>›</b></summary>
-        <div>{data.transactions.filter(({ excluded }) => excluded).map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account} · {exclusionLabel(transaction.exclusionReason)}</small></span><b className={transaction.amount >= 0 ? "income" : "expense"}>{transaction.amount >= 0 ? "+" : "−"}{euro(Math.abs(transaction.amount))}</b></article>)}{!summary.excludedTransactionCount && <p className="finance-empty">Aucun mouvement exclu.</p>}</div>
+        <summary><span><strong>{tr("Virements et mouvements exclus")}</strong><small>{summary.excludedTransactionCount}{" "}{tr("ce mois · non comptés comme revenu ou dépense")}</small></span><b>›</b></summary>
+        <div>{data.transactions.filter(({ excluded }) => excluded).map((transaction) => <article key={transaction.id}><span><strong>{transaction.description}</strong><small>{operationDate(transaction)} · {transaction.account} · {exclusionLabel(transaction.exclusionReason)}</small></span><b className={transaction.amount >= 0 ? "income" : "expense"}>{transaction.amount >= 0 ? "+" : "−"}{euro(Math.abs(transaction.amount))}</b></article>)}{!summary.excludedTransactionCount && <p className="finance-empty">{tr("Aucun mouvement exclu.")}</p>}</div>
       </details>
 
       <section className="finance-forms">
         <form className="panel finance-settings" onSubmit={saveSettings}>
           <details className="finance-settings-fold" open={false}>
-          <summary className="panel-head"><div><h3>Plan mensuel</h3><p>Base calcul épargne</p></div><i>›</i></summary>
+          <summary className="panel-head"><div><h3>{tr("Plan mensuel")}</h3><p>{tr("Base calcul épargne")}</p></div><i>›</i></summary>
           <div className="finance-form-grid">
-            <label><span>Objectif épargne / mois</span><input type="number" min="0" step="0.01" value={settings.savingsGoal} onChange={(event) => setSettings({ ...settings, savingsGoal: event.target.value })} placeholder="0 €" /></label>
-            <label><span>Réserve imprévus (0 = auto)</span><input type="number" min="0" step="0.01" value={settings.safetyBuffer} onChange={(event) => setSettings({ ...settings, safetyBuffer: event.target.value })} placeholder="Auto" /></label>
-            <label><span>Fonds sécurité</span><select value={settings.emergencyMonths} onChange={(event) => setSettings({ ...settings, emergencyMonths: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6, 9, 12].map((value) => <option key={value} value={value}>{value} mois</option>)}</select></label>
+            <label><span>{tr("Objectif épargne / mois")}</span><input type="number" min="0" step="0.01" value={settings.savingsGoal} onChange={(event) => setSettings({ ...settings, savingsGoal: event.target.value })} placeholder="0 €" /></label>
+            <label><span>{tr("Réserve imprévus (0 = auto)")}</span><input type="number" min="0" step="0.01" value={settings.safetyBuffer} onChange={(event) => setSettings({ ...settings, safetyBuffer: event.target.value })} placeholder={tr("Auto")} /></label>
+            <label><span>{tr("Fonds sécurité")}</span><select value={settings.emergencyMonths} onChange={(event) => setSettings({ ...settings, emergencyMonths: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6, 9, 12].map((value) => <option key={value} value={value}>{value} mois</option>)}</select></label>
           </div>
-          <div className="budget-inputs">{data.categories.map((category) => <label key={category.id}><span>{category.label}</span><input type="number" min="0" step="0.01" value={settings.budgets[category.id]} onChange={(event) => setSettings({ ...settings, budgets: { ...settings.budgets, [category.id]: event.target.value } })} placeholder="Budget €" /></label>)}</div>
-          <div className="finance-settings-actions"><button className="primary" disabled={saving}>{saving ? "…" : "Enregistrer"}</button></div>
+          <div className="budget-inputs">{data.categories.map((category) => <label key={category.id}><span>{category.label}</span><input type="number" min="0" step="0.01" value={settings.budgets[category.id]} onChange={(event) => setSettings({ ...settings, budgets: { ...settings.budgets, [category.id]: event.target.value } })} placeholder={tr("Budget €")} /></label>)}</div>
+          <div className="finance-settings-actions"><button className="primary" disabled={saving}>{saving ? "…" : tr("Enregistrer")}</button></div>
           </details>
         </form>
       </section>
@@ -4525,9 +4527,9 @@ function FinanceBankingView({ onView }) {
   useEffect(() => { load(); }, [load]);
   return (
     <div className="page finance-page">
-      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · RÉGLAGES</p><h1>Banques.</h1><p className="muted">Connexions, configuration et synchronisation.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">{tr("BUDGET · RÉGLAGES")}</p><h1>{tr("Banques.")}</h1><p className="muted">{tr("Connexions, configuration et synchronisation.")}</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>{tr("← Budget")}</button><BudgetMenu onView={onView} /></div></section>
       {error && <p className="finance-error">{error}</p>}
-      {data ? <BankingPanel banks={data.banking.banks} month={month} onSynced={load} /> : !error && <section className="panel"><p className="finance-empty">Chargement connexions…</p></section>}
+      {data ? <BankingPanel banks={data.banking.banks} month={month} onSynced={load} /> : !error && <section className="panel"><p className="finance-empty">{tr("Chargement connexions…")}</p></section>}
     </div>
   );
 }
@@ -4553,25 +4555,25 @@ function FinanceModuleFields({ draft, onChange, categories, lockType = false }) 
   const field = (key, value) => onChange({ ...draft, [key]: value });
   return (
     <div className="finance-module-fields">
-      <label><span>Type</span><select value={draft.moduleType} disabled={lockType} onChange={(event) => field("moduleType", event.target.value)}><option value="asset">Actif</option><option value="recurring">Charge récurrente</option><option value="envelope">Enveloppe dépenses</option><option value="transfer">Règle transfert interne</option></select></label>
-      <label className="wide"><span>Nom</span><input value={draft.name} onChange={(event) => field("name", event.target.value)} maxLength="120" required placeholder="Nom libre" /></label>
+      <label><span>{tr("Type")}</span><select value={draft.moduleType} disabled={lockType} onChange={(event) => field("moduleType", event.target.value)}><option value="asset">{tr("Actif")}</option><option value="recurring">{tr("Charge récurrente")}</option><option value="envelope">{tr("Enveloppe dépenses")}</option><option value="transfer">{tr("Règle transfert interne")}</option></select></label>
+      <label className="wide"><span>{tr("Nom")}</span><input value={draft.name} onChange={(event) => field("name", event.target.value)} maxLength="120" required placeholder={tr("Nom libre")} /></label>
       {draft.moduleType === "asset" && <>
-        <label><span>Valeur actuelle</span><input type="number" min="0" step="0.01" value={draft.amount} onChange={(event) => field("amount", event.target.value)} required placeholder="0,00 €" /></label>
-        <label><span>Classe</span><select value={draft.bucket} onChange={(event) => field("bucket", event.target.value)}><option value="liquid">Liquide</option><option value="invested">Investi</option></select></label>
-        <label><span>Établissement</span><input value={draft.institution} onChange={(event) => field("institution", event.target.value)} maxLength="80" placeholder="Optionnel" /></label>
-        <label className="wide"><span>Motifs transferts à exclure</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" placeholder="Sépare avec virgules" /></label>
+        <label><span>{tr("Valeur actuelle")}</span><input type="number" min="0" step="0.01" value={draft.amount} onChange={(event) => field("amount", event.target.value)} required placeholder="0,00 €" /></label>
+        <label><span>{tr("Classe")}</span><select value={draft.bucket} onChange={(event) => field("bucket", event.target.value)}><option value="liquid">{tr("Liquide")}</option><option value="invested">{tr("Investi")}</option></select></label>
+        <label><span>{tr("Établissement")}</span><input value={draft.institution} onChange={(event) => field("institution", event.target.value)} maxLength="80" placeholder={tr("Optionnel")} /></label>
+        <label className="wide"><span>{tr("Motifs transferts à exclure")}</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" placeholder={tr("Sépare avec virgules")} /></label>
       </>}
       {draft.moduleType === "recurring" && <>
-        <label><span>Montant mensuel</span><input type="number" min="0.01" step="0.01" value={draft.amount} onChange={(event) => field("amount", event.target.value)} required /></label>
-        <label><span>Catégorie</span><select value={draft.category} onChange={(event) => field("category", event.target.value)}>{categories.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label>
-        <label><span>Jour</span><input type="number" min="1" max="31" value={draft.dayOfMonth} onChange={(event) => field("dayOfMonth", event.target.value)} required /></label>
-        <label><span>Début</span><input type="date" value={draft.startDate} onChange={(event) => field("startDate", event.target.value)} required /></label>
-        <label><span>Fin</span><input type="date" value={draft.endDate} onChange={(event) => field("endDate", event.target.value)} /></label>
-        <label className="wide"><span>Motifs bancaires pour catégorie</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" placeholder="Nom créancier, séparé par virgules" /></label>
+        <label><span>{tr("Montant mensuel")}</span><input type="number" min="0.01" step="0.01" value={draft.amount} onChange={(event) => field("amount", event.target.value)} required /></label>
+        <label><span>{tr("Catégorie")}</span><select value={draft.category} onChange={(event) => field("category", event.target.value)}>{categories.map((category) => <option value={category.id} key={category.id}>{category.label}</option>)}</select></label>
+        <label><span>{tr("Jour")}</span><input type="number" min="1" max="31" value={draft.dayOfMonth} onChange={(event) => field("dayOfMonth", event.target.value)} required /></label>
+        <label><span>{tr("Début")}</span><input type="date" value={draft.startDate} onChange={(event) => field("startDate", event.target.value)} required /></label>
+        <label><span>{tr("Fin")}</span><input type="date" value={draft.endDate} onChange={(event) => field("endDate", event.target.value)} /></label>
+        <label className="wide"><span>{tr("Motifs bancaires pour catégorie")}</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" placeholder={tr("Nom créancier, séparé par virgules")} /></label>
       </>}
-      {draft.moduleType === "envelope" && <label className="wide"><span>Nom du compte à suivre</span><input value={draft.accountMatch} onChange={(event) => field("accountMatch", event.target.value)} maxLength="120" required placeholder="Correspondance partielle" /></label>}
-      {draft.moduleType === "transfer" && <label className="wide"><span>Motifs transactions à exclure</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" required placeholder="Sépare avec virgules" /></label>}
-      <label className="module-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => field("enabled", event.target.checked)} /><span>Module actif</span></label>
+      {draft.moduleType === "envelope" && <label className="wide"><span>{tr("Nom du compte à suivre")}</span><input value={draft.accountMatch} onChange={(event) => field("accountMatch", event.target.value)} maxLength="120" required placeholder={tr("Correspondance partielle")} /></label>}
+      {draft.moduleType === "transfer" && <label className="wide"><span>{tr("Motifs transactions à exclure")}</span><input value={draft.transactionMatch} onChange={(event) => field("transactionMatch", event.target.value)} maxLength="240" required placeholder={tr("Sépare avec virgules")} /></label>}
+      <label className="module-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => field("enabled", event.target.checked)} /><span>{tr("Module actif")}</span></label>
     </div>
   );
 }
@@ -4594,7 +4596,7 @@ function FinanceModuleEditor({ module, categories, onSaved, onRemoved }) {
     }
   }
   async function remove() {
-    if (!window.confirm(`Supprimer module « ${module.name} » ?`)) return;
+    if (!window.confirm(tr("Supprimer module « {0} » ?", module.name))) return;
     setBusy(true);
     try {
       await api(`/api/finance/modules/${encodeURIComponent(module.id)}`, { method: "DELETE" });
@@ -4605,8 +4607,8 @@ function FinanceModuleEditor({ module, categories, onSaved, onRemoved }) {
     }
   }
   const typeLabel = { asset: "ACTIF", recurring: "CHARGE", envelope: "ENVELOPPE", transfer: "TRANSFERT" }[module.moduleType];
-  const detail = module.moduleType === "asset" ? `${euro(module.amount)} · ${module.institution || (module.bucket === "liquid" ? "liquide" : "investi")}` : module.moduleType === "recurring" ? `${euro(module.amount)} / mois · jour ${module.dayOfMonth}` : module.moduleType === "envelope" ? module.accountMatch : "Mouvements exclus du budget";
-  return <details className="panel finance-module-card"><summary><span><strong>{module.name}</strong><small>{typeLabel} · {module.enabled === false ? "désactivé" : detail}</small></span><b>›</b></summary><form onSubmit={save}>{error && <p className="finance-error">{error}</p>}<FinanceModuleFields draft={draft} onChange={setDraft} categories={categories} lockType /><footer className="finance-module-actions"><button type="button" className="danger-link" onClick={remove} disabled={busy} aria-label={`Supprimer ${module.name}`}>×</button><button className="primary" disabled={busy}>{busy ? "…" : "Enregistrer"}</button></footer></form></details>;
+  const detail = module.moduleType === "asset" ? `${euro(module.amount)} · ${module.institution || (module.bucket === "liquid" ? "liquide" : "investi")}` : module.moduleType === "recurring" ? `${euro(module.amount)} / mois · jour ${module.dayOfMonth}` : module.moduleType === "envelope" ? module.accountMatch : tr("Mouvements exclus du budget");
+  return <details className="panel finance-module-card"><summary><span><strong>{module.name}</strong><small>{typeLabel} · {module.enabled === false ? tr("désactivé") : detail}</small></span><b>›</b></summary><form onSubmit={save}>{error && <p className="finance-error">{error}</p>}<FinanceModuleFields draft={draft} onChange={setDraft} categories={categories} lockType /><footer className="finance-module-actions"><button type="button" className="danger-link" onClick={remove} disabled={busy} aria-label={`Supprimer ${module.name}`}>×</button><button className="primary" disabled={busy}>{busy ? "…" : tr("Enregistrer")}</button></footer></form></details>;
 }
 
 function FinanceModulesView({ onView }) {
@@ -4642,10 +4644,10 @@ function FinanceModulesView({ onView }) {
   const modules = data?.modules || [];
   return (
     <div className="page finance-page finance-modules-page">
-      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · COMPOSANTS</p><h1>Modules financiers.</h1><p className="muted">Données et règles configurables. Aucun compte personnel codé dans moteur.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">{tr("BUDGET · COMPOSANTS")}</p><h1>{tr("Modules financiers.")}</h1><p className="muted">{tr("Données et règles configurables. Aucun compte personnel codé dans moteur.")}</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>{tr("← Budget")}</button><BudgetMenu onView={onView} /></div></section>
       {error && <p className="finance-error">{error}</p>}
-      <section className="finance-module-list">{modules.map((module) => <FinanceModuleEditor key={module.id} module={module} categories={data.categories} onSaved={load} onRemoved={load} />)}{data && !modules.length && <section className="panel"><p className="finance-empty">Aucun module.</p></section>}</section>
-      <details className="panel new-module"><summary><span><strong>Ajouter module</strong><small>Actif, charge, enveloppe ou règle transfert</small></span><b>＋</b></summary><form onSubmit={add}><FinanceModuleFields draft={draft} onChange={setDraft} categories={data?.categories || []} /><footer><button className="primary" disabled={busy}>{busy ? "Ajout…" : "Ajouter module"}</button></footer></form></details>
+      <section className="finance-module-list">{modules.map((module) => <FinanceModuleEditor key={module.id} module={module} categories={data.categories} onSaved={load} onRemoved={load} />)}{data && !modules.length && <section className="panel"><p className="finance-empty">{tr("Aucun module.")}</p></section>}</section>
+      <details className="panel new-module"><summary><span><strong>{tr("Ajouter module")}</strong><small>{tr("Actif, charge, enveloppe ou règle transfert")}</small></span><b>＋</b></summary><form onSubmit={add}><FinanceModuleFields draft={draft} onChange={setDraft} categories={data?.categories || []} /><footer><button className="primary" disabled={busy}>{busy ? tr("Ajout…") : tr("Ajouter module")}</button></footer></form></details>
     </div>
   );
 }
@@ -4701,7 +4703,7 @@ function FinanceTransactionsView({ onView }) {
   }
 
   async function removeTransaction(id) {
-    if (!window.confirm("Supprimer cette opération ?")) return;
+    if (!window.confirm(tr("Supprimer cette opération ?"))) return;
     try {
       await api(`/api/finance/transactions/${encodeURIComponent(id)}`, { method: "DELETE" });
       await load();
@@ -4721,7 +4723,7 @@ function FinanceTransactionsView({ onView }) {
       setCategorizing(false);
     }
   }
-  const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
+  const monthName = new Intl.DateTimeFormat(LOCALE, { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${month}-01T00:00:00Z`));
   const lastSync = data?.banking?.lastSyncAt ? new Date(data.banking.lastSyncAt) : null;
   const sortedTransactions = useMemo(() => [...(data?.transactions || [])].sort((a, b) => {
     if (sortOrder === "amount-desc") return Math.abs(b.amount) - Math.abs(a.amount) || b.date.localeCompare(a.date);
@@ -4744,14 +4746,14 @@ function FinanceTransactionsView({ onView }) {
     return (
       <article className={item.excluded ? "excluded" : ""} key={item.id}>
         <span className={`transaction-kind ${item.kind}`}>{item.excluded ? "↔" : item.kind === "income" ? "+" : "−"}</span>
-        <span><strong>{item.description}</strong><small title={item.categoryReason || ""}>{operationDate(item)} · {item.account} · {item.excluded ? exclusionLabel(item.exclusionReason) : data.categories.find(({ id }) => id === item.category)?.label || "Revenu"}{item.categorySource === "codex" ? ` · Codex: ${item.categoryReason}` : ""}</small></span>
+        <span><strong>{item.description}</strong><small title={item.categoryReason || ""}>{operationDate(item)} · {item.account} · {item.excluded ? exclusionLabel(item.exclusionReason) : data.categories.find(({ id }) => id === item.category)?.label || tr("Revenu")}{item.categorySource === "codex" ? ` · Codex: ${item.categoryReason}` : ""}</small></span>
         <b className={item.amount >= 0 ? "income" : "expense"}>{item.amount >= 0 ? "+" : "−"}{euro(Math.abs(item.amount))}</b>
         <button onClick={() => removeTransaction(item.id)} aria-label={`Supprimer ${item.description}`}>×</button>
         {(item.excluded || item.assetId || item.assetAuto) && assetModules.length > 0 && (
           <label className="transaction-asset">
-            <span>{item.assetAuto && !item.assetId ? "Épargne détectée" : "Versé sur"}</span>
-            <select value={item.assetId || item.assetAuto || ""} onChange={(event) => assignAsset(item.id, event.target.value)} aria-label="Rattacher à un actif">
-              <option value="">Aucun actif</option>
+            <span>{item.assetAuto && !item.assetId ? tr("Épargne détectée") : tr("Versé sur")}</span>
+            <select value={item.assetId || item.assetAuto || ""} onChange={(event) => assignAsset(item.id, event.target.value)} aria-label={tr("Rattacher à un actif")}>
+              <option value="">{tr("Aucun actif")}</option>
               {assetModules.map((module) => <option value={module.id} key={module.id}>{module.name}</option>)}
             </select>
           </label>
@@ -4768,7 +4770,7 @@ function FinanceTransactionsView({ onView }) {
       <details className="transaction-group" key={key}>
         <summary>
           <span className={`transaction-kind ${items[0].kind}`}>{items.length}×</span>
-          <span><strong>{items[0].description}</strong><small>{items.length} opérations · du {dates[0].split("-").reverse().join("/")} au {dates.at(-1).split("-").reverse().join("/")}</small></span>
+          <span><strong>{items[0].description}</strong><small>{items.length}{" "}{tr("opérations · du")}{" "}{dates[0].split("-").reverse().join("/")} au {dates.at(-1).split("-").reverse().join("/")}</small></span>
           <b className={total >= 0 ? "income" : "expense"}>{total >= 0 ? "+" : "−"}{euro(Math.abs(total))}</b>
         </summary>
         {items.map(transactionRow)}
@@ -4778,26 +4780,26 @@ function FinanceTransactionsView({ onView }) {
 
   return (
     <div className="page finance-page finance-operations-page has-finance-dock">
-      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · HISTORIQUE LOCAL</p><h1>Opérations.</h1><p className="muted">Saisie manuelle et imports bancaires{lastSync ? ` · synchro ${lastSync.toLocaleDateString("fr-FR")} ${lastSync.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}` : ""}.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>← Budget</button><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">{tr("BUDGET · HISTORIQUE LOCAL")}</p><h1>{tr("Opérations.")}</h1><p className="muted">{tr("Saisie manuelle et imports bancaires")}{lastSync ? ` · synchro ${lastSync.toLocaleDateString(LOCALE)} ${lastSync.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" })}` : ""}.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>{tr("← Budget")}</button><BudgetMenu onView={onView} /><div className="month-switch"><button onClick={() => shiftMonth(-1)}>‹</button><strong>{monthName}</strong><button onClick={() => shiftMonth(1)}>›</button></div></div></section>
       {error && <p className="finance-error">{error}</p>}
       <section className="operations-layout">
         <form className="panel transaction-form" onSubmit={addTransaction}>
-          <div className="panel-head"><div><h3>Ajouter opération</h3><p>Dépense ou revenu manuel</p></div></div>
+          <div className="panel-head"><div><h3>{tr("Ajouter opération")}</h3><p>{tr("Dépense ou revenu manuel")}</p></div></div>
           <div className="transaction-fields">
-            <label><span>Type</span><select value={transaction.kind} onChange={(event) => setTransaction({ ...transaction, kind: event.target.value })}><option value="expense">Dépense</option><option value="income">Revenu</option></select></label>
-            <label><span>Montant</span><input type="number" min="0.01" step="0.01" value={transaction.amount} onChange={(event) => setTransaction({ ...transaction, amount: event.target.value })} required placeholder="0,00 €" /></label>
-            <label className="wide"><span>Description</span><input value={transaction.description} onChange={(event) => setTransaction({ ...transaction, description: event.target.value })} required maxLength="120" placeholder="Courses, loyer, salaire…" /></label>
-            {transaction.kind === "expense" && <label><span>Catégorie</span><select value={transaction.category} onChange={(event) => setTransaction({ ...transaction, category: event.target.value })}>{(data?.categories || []).map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>}
-            <label><span>Date</span><input type="date" value={transaction.date} onChange={(event) => setTransaction({ ...transaction, date: event.target.value })} required /></label>
-            <label className="wide"><span>Compte</span><input value={transaction.account} onChange={(event) => setTransaction({ ...transaction, account: event.target.value })} maxLength="60" placeholder="Optionnel" /></label>
-            <button className="primary wide" disabled={adding}>{adding ? "Ajout…" : "Ajouter"}</button>
+            <label><span>{tr("Type")}</span><select value={transaction.kind} onChange={(event) => setTransaction({ ...transaction, kind: event.target.value })}><option value="expense">{tr("Dépense")}</option><option value="income">{tr("Revenu")}</option></select></label>
+            <label><span>{tr("Montant")}</span><input type="number" min="0.01" step="0.01" value={transaction.amount} onChange={(event) => setTransaction({ ...transaction, amount: event.target.value })} required placeholder="0,00 €" /></label>
+            <label className="wide"><span>{tr("Description")}</span><input value={transaction.description} onChange={(event) => setTransaction({ ...transaction, description: event.target.value })} required maxLength="120" placeholder={tr("Courses, loyer, salaire…")} /></label>
+            {transaction.kind === "expense" && <label><span>{tr("Catégorie")}</span><select value={transaction.category} onChange={(event) => setTransaction({ ...transaction, category: event.target.value })}>{(data?.categories || []).map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}</select></label>}
+            <label><span>{tr("Date")}</span><input type="date" value={transaction.date} onChange={(event) => setTransaction({ ...transaction, date: event.target.value })} required /></label>
+            <label className="wide"><span>{tr("Compte")}</span><input value={transaction.account} onChange={(event) => setTransaction({ ...transaction, account: event.target.value })} maxLength="60" placeholder={tr("Optionnel")} /></label>
+            <button className="primary wide" disabled={adding}>{adding ? tr("Ajout…") : tr("Ajouter")}</button>
           </div>
         </form>
         <section className="panel finance-transactions">
-          <div className="panel-head"><div><h3>Historique</h3><p>{data?.transactions.length || 0} opérations · {data?.classification.categorizedByCodex || 0}/{data?.classification.bankTransactions || 0} classées Codex</p></div><div className="transaction-tools"><button className={grouped ? "ghost active" : "ghost"} onClick={() => setGrouped((value) => !value)}>{grouped ? "Groupés" : "Détaillés"}</button><button className="ghost" onClick={categorizeTransactions} disabled={categorizing}>{categorizing ? "Codex classe…" : "Reclasser Codex"}</button><label className="transaction-sort"><span>Trier</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}><option value="date-desc">Date récente</option><option value="amount-desc">Montant décroissant</option><option value="amount-asc">Montant croissant</option></select></label></div></div>
+          <div className="panel-head"><div><h3>{tr("Historique")}</h3><p>{data?.transactions.length || 0}{" "}{tr("opérations ·")}{" "}{data?.classification.categorizedByCodex || 0}/{data?.classification.bankTransactions || 0}{" "}{tr("classées Codex")}</p></div><div className="transaction-tools"><button className={grouped ? "ghost active" : "ghost"} onClick={() => setGrouped((value) => !value)}>{grouped ? tr("Groupés") : tr("Détaillés")}</button><button className="ghost" onClick={categorizeTransactions} disabled={categorizing}>{categorizing ? tr("Codex classe…") : tr("Reclasser Codex")}</button><label className="transaction-sort"><span>{tr("Trier")}</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value)}><option value="date-desc">{tr("Date récente")}</option><option value="amount-desc">{tr("Montant décroissant")}</option><option value="amount-asc">{tr("Montant croissant")}</option></select></label></div></div>
           <div className="transaction-list">
             {groups.map(transactionGroup)}
-            {data && !data.transactions.length && <p className="finance-empty">Aucune opération ce mois.</p>}
+            {data && !data.transactions.length && <p className="finance-empty">{tr("Aucune opération ce mois.")}</p>}
           </div>
         </section>
       </section>
@@ -4842,7 +4844,7 @@ function FinanceAgentView({ onView }) {
     }
   }
   async function removeRule(id) {
-    if (!window.confirm("Supprimer cette charge des prévisions ?")) return;
+    if (!window.confirm(tr("Supprimer cette charge des prévisions ?"))) return;
     try {
       await api(`/api/finance/recurring/${encodeURIComponent(id)}`, { method: "DELETE" });
       await load();
@@ -4852,21 +4854,21 @@ function FinanceAgentView({ onView }) {
   }
   return (
     <div className="page finance-agent-page">
-      <section className="hero-row finance-hero"><div><p className="eyebrow">BUDGET · CODEX</p><h1>Agent finances.</h1><p className="muted">Connaît comptes, transactions, catégories, modules et calculs Noyau.</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>− Réduire</button><BudgetMenu onView={onView} /></div></section>
+      <section className="hero-row finance-hero"><div><p className="eyebrow">{tr("BUDGET · CODEX")}</p><h1>{tr("Agent finances.")}</h1><p className="muted">{tr("Connaît comptes, transactions, catégories, modules et calculs Noyau.")}</p></div><div className="budget-child-actions"><button className="ghost" onClick={() => onView("finances")}>{tr("− Réduire")}</button><BudgetMenu onView={onView} /></div></section>
       {error && <p className="finance-error">{error}</p>}
       <section className="finance-agent-layout">
         <section className="panel finance-chat">
-          <div className="panel-head"><div><h3>Discussion Codex</h3><p>Snapshot financier envoyé au compte Codex configuré sur ce PC</p></div><span className="ready">CODEX</span></div>
+          <div className="panel-head"><div><h3>{tr("Discussion Codex")}</h3><p>{tr("Snapshot financier envoyé au compte Codex configuré sur ce PC")}</p></div><span className="ready">{tr("CODEX")}</span></div>
           <div className="finance-chat-messages">
-            {!messages.length && <article className="assistant"><strong>Agent finances · Codex</strong><p>Demande explication, analyse, prévision ou modification de charge mensuelle.</p></article>}
-            {messages.map((item) => <article className={item.role} key={item.id}><strong>{item.role === "user" ? "Toi" : "Agent finances · Codex"}</strong><p>{item.content}</p></article>)}
+            {!messages.length && <article className="assistant"><strong>{tr("Agent finances · Codex")}</strong><p>{tr("Demande explication, analyse, prévision ou modification de charge mensuelle.")}</p></article>}
+            {messages.map((item) => <article className={item.role} key={item.id}><strong>{item.role === "user" ? tr("Toi") : tr("Agent finances · Codex")}</strong><p>{item.content}</p></article>)}
           </div>
-          <div className="finance-prompts"><button onClick={(event) => send(event, "Chaque mois je paye 950 euros de loyer")}>Ajouter loyer</button><button onClick={(event) => send(event, "Combien je peux encore dépenser ce mois ?")}>Reste dépensable</button><button onClick={(event) => send(event, "Liste mes charges mensuelles")}>Lister charges</button></div>
-          <form className="finance-chat-input" onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Pourquoi prévision élevée ? Où réduire ?…" maxLength="1000" enterKeyHint="send" /><button className="primary" disabled={sending || !message.trim()}>{sending ? "Analyse…" : "Envoyer"}</button></form>
+          <div className="finance-prompts"><button onClick={(event) => send(event, "Chaque mois je paye 950 euros de loyer")}>{tr("Ajouter loyer")}</button><button onClick={(event) => send(event, "Combien je peux encore dépenser ce mois ?")}>{tr("Reste dépensable")}</button><button onClick={(event) => send(event, "Liste mes charges mensuelles")}>{tr("Lister charges")}</button></div>
+          <form className="finance-chat-input" onSubmit={send}><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder={tr("Pourquoi prévision élevée ? Où réduire ?…")} maxLength="1000" enterKeyHint="send" /><button className="primary" disabled={sending || !message.trim()}>{sending ? tr("Analyse…") : tr("Envoyer")}</button></form>
         </section>
         <section className="panel recurring-panel">
-          <div className="panel-head"><div><h3>Charges prévues</h3><p>{recurring.filter(({ endDate }) => !endDate).length} active{recurring.filter(({ endDate }) => !endDate).length > 1 ? "s" : ""}</p></div></div>
-          <div className="recurring-list">{recurring.map((rule) => <article className={rule.endDate ? "ended" : ""} key={rule.id}><span><strong>{rule.description}</strong><small>Le {rule.dayOfMonth} · depuis {rule.startDate.split("-").reverse().join("/")}{rule.endDate ? ` · fin ${rule.endDate.split("-").reverse().join("/")}` : ""}</small></span><b>{euro(rule.amount)}</b>{!rule.endDate && <button onClick={() => removeRule(rule.id)} aria-label={`Supprimer ${rule.description}`}>×</button>}</article>)}{!recurring.length && <p className="finance-empty">Aucune charge. Écris première règle dans discussion.</p>}</div>
+          <div className="panel-head"><div><h3>{tr("Charges prévues")}</h3><p>{recurring.filter(({ endDate }) => !endDate).length} active{recurring.filter(({ endDate }) => !endDate).length > 1 ? "s" : ""}</p></div></div>
+          <div className="recurring-list">{recurring.map((rule) => <article className={rule.endDate ? "ended" : ""} key={rule.id}><span><strong>{rule.description}</strong><small>{tr("Le")}{" "}{rule.dayOfMonth}{" "}{tr("· depuis")}{" "}{rule.startDate.split("-").reverse().join("/")}{rule.endDate ? ` · fin ${rule.endDate.split("-").reverse().join("/")}` : ""}</small></span><b>{euro(rule.amount)}</b>{!rule.endDate && <button onClick={() => removeRule(rule.id)} aria-label={`Supprimer ${rule.description}`}>×</button>}</article>)}{!recurring.length && <p className="finance-empty">{tr("Aucune charge. Écris première règle dans discussion.")}</p>}</div>
         </section>
       </section>
     </div>
@@ -4874,14 +4876,14 @@ function FinanceAgentView({ onView }) {
 }
 
 function todoDueLabel(value) {
-  if (!value) return "Sans échéance";
+  if (!value) return tr("Sans échéance");
   const today = localIsoDate();
-  if (value === today) return "Aujourd’hui";
+  if (value === today) return tr("Aujourd’hui");
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
-  if (value === localIsoDate(tomorrow)) return "Demain";
-  if (value < today) return `En retard · ${value.split("-").reverse().join("/")}`;
-  return `Pour le ${value.split("-").reverse().join("/")}`;
+  if (value === localIsoDate(tomorrow)) return tr("Demain");
+  if (value < today) return tr("En retard · {0}", value.split("-").reverse().join("/"));
+  return tr("Pour le {0}", value.split("-").reverse().join("/"));
 }
 
 async function writeClipboard(text) {
@@ -4930,14 +4932,14 @@ function completedLabel(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return `Terminé le ${date.toLocaleDateString("fr-FR")} à ${date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`;
+  return tr("Terminé le {0} à {1}", date.toLocaleDateString(LOCALE), date.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" }));
 }
 
 function formatCommentDate(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleDateString(LOCALE, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 function isCommentByAgent(comment) {
@@ -4980,12 +4982,12 @@ function FolderCreateModal({ parentFolder, onClose, onCreated }) {
         <div className="modal-head">
           <div>
             <p className="eyebrow">{parentFolder ? "SOUS-DOSSIER" : "DOSSIER"}</p>
-            <h2>{parentFolder ? `Sous-dossier dans ${parentFolder.name}` : "Nouveau dossier"}</h2>
+            <h2>{parentFolder ? `Sous-dossier dans ${parentFolder.name}` : tr("Nouveau dossier")}</h2>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Fermer">×</button>
+          <button type="button" className="icon-button" onClick={onClose} aria-label={tr("Fermer")}>×</button>
         </div>
         <form onSubmit={submit}>
-          <label htmlFor="folder-name-input">Nom {parentFolder ? "du sous-dossier" : "du dossier"}</label>
+          <label htmlFor="folder-name-input">{tr("Nom")}{" "}{parentFolder ? "du sous-dossier" : tr("du dossier")}</label>
           <input
             id="folder-name-input"
             autoFocus
@@ -4996,9 +4998,9 @@ function FolderCreateModal({ parentFolder, onClose, onCreated }) {
           />
 
           <div className="modal-actions">
-            <button type="button" className="ghost" onClick={onClose} disabled={busy}>Annuler</button>
+            <button type="button" className="ghost" onClick={onClose} disabled={busy}>{tr("Annuler")}</button>
             <button type="submit" className="primary" disabled={busy || !name.trim()}>
-              {busy ? "Création…" : parentFolder ? "Créer sous-dossier" : "Créer dossier"}
+              {busy ? tr("Création…") : parentFolder ? tr("Créer sous-dossier") : tr("Créer dossier")}
             </button>
           </div>
         </form>
@@ -5039,7 +5041,7 @@ function CalendarSyncModal({ onClose, onUpdated }) {
     try {
       await api("/api/calendar/subscriptions", {
         method: "POST",
-        body: JSON.stringify({ name: name.trim() || "Mon calendrier", url: url.trim(), color }),
+        body: JSON.stringify({ name: name.trim() || tr("Mon calendrier"), url: url.trim(), color }),
       });
       setName("");
       setUrl("");
@@ -5074,35 +5076,35 @@ function CalendarSyncModal({ onClose, onUpdated }) {
       <section className="modal calendar-sync-modal">
         <div className="modal-head">
           <div>
-            <p className="eyebrow">CALENDRIERS EXTERNES</p>
-            <h2>Liaison iCal / Webcal</h2>
+            <p className="eyebrow">{tr("CALENDRIERS EXTERNES")}</p>
+            <h2>{tr("Liaison iCal / Webcal")}</h2>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Fermer">×</button>
+          <button type="button" className="icon-button" onClick={onClose} aria-label={tr("Fermer")}>×</button>
         </div>
 
         <div className="calendar-sync-body">
           <section className="calendar-sync-section">
-            <h3> Synchroniser dans votre calendrier perso</h3>
-            <p className="muted small">Abonnez Google Calendar, Apple Calendar ou Outlook à vos tâches Noyau :</p>
+            <h3>{" "}{tr("Synchroniser dans votre calendrier perso")}</h3>
+            <p className="muted small">{tr("Abonnez Google Calendar, Apple Calendar ou Outlook à vos tâches Noyau :")}</p>
             <div className="calendar-export-row">
               <input readOnly value={exportUrl} className="calendar-export-input" />
               <button type="button" className="ghost" onClick={copyExport}>
-                {copied ? "✓ Copié" : "Copier lien"}
+                {copied ? tr("✓ Copié") : tr("Copier lien")}
               </button>
               <a href="/api/calendar/export.ics" download="noyau-todos.ics" className="button ghost">
-                Télécharger .ics
+                {tr("Télécharger .ics")}
               </a>
             </div>
           </section>
 
           <section className="calendar-sync-section">
-            <h3>+ Ajouter un calendrier perso (iCal / Webcal)</h3>
+            <h3>{tr("+ Ajouter un calendrier perso (iCal / Webcal)")}</h3>
             <form onSubmit={handleAdd} className="calendar-add-form">
               {error && <p className="finance-error">{error}</p>}
               <div className="calendar-form-row">
                 <input
                   type="text"
-                  placeholder="Nom (ex: Google Agenda, Apple Cal...)"
+                  placeholder={tr("Nom (ex: Google Agenda, Apple Cal...)")}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />
@@ -5111,7 +5113,7 @@ function CalendarSyncModal({ onClose, onUpdated }) {
                   value={color}
                   onChange={(e) => setColor(e.target.value)}
                   className="calendar-color-picker"
-                  title="Couleur des pastilles"
+                  title={tr("Couleur des pastilles")}
                 />
               </div>
               <input
@@ -5122,17 +5124,17 @@ function CalendarSyncModal({ onClose, onUpdated }) {
                 required
               />
               <button type="submit" className="primary" disabled={adding || !url.trim()}>
-                {adding ? "Connexion…" : "Ajouter ce calendrier"}
+                {adding ? tr("Connexion…") : tr("Ajouter ce calendrier")}
               </button>
             </form>
           </section>
 
           <section className="calendar-sync-section">
-            <h3> Vos abonnements actifs ({subscriptions.length})</h3>
+            <h3>{" "}{tr("Vos abonnements actifs (")}{subscriptions.length})</h3>
             {loading ? (
-              <p className="muted">Chargement…</p>
+              <p className="muted">{tr("Chargement…")}</p>
             ) : subscriptions.length === 0 ? (
-              <p className="muted small">Aucun calendrier externe configuré pour le moment.</p>
+              <p className="muted small">{tr("Aucun calendrier externe configuré pour le moment.")}</p>
             ) : (
               <ul className="calendar-subs-list">
                 {subscriptions.map((sub) => (
@@ -5146,7 +5148,7 @@ function CalendarSyncModal({ onClose, onUpdated }) {
                       type="button"
                       className="icon-button danger-link"
                       onClick={() => handleDelete(sub.id)}
-                      title="Supprimer l'abonnement"
+                      title={tr("Supprimer l'abonnement")}
                     >
                       ×
                     </button>
@@ -5158,7 +5160,7 @@ function CalendarSyncModal({ onClose, onUpdated }) {
         </div>
 
         <div className="modal-actions">
-          <button type="button" className="primary" onClick={onClose}>Fermer</button>
+          <button type="button" className="primary" onClick={onClose}>{tr("Fermer")}</button>
         </div>
       </section>
     </div>
@@ -5178,12 +5180,12 @@ function getCalendarProjectColor(projectOrId, projects = []) {
 
 function resolveCalendarTodoProject(todo, folders = [], projects = []) {
   if (todo?.projectId) {
-    return (projects || []).find((p) => p.id === todo.projectId) || { id: todo.projectId, name: "Projet" };
+    return (projects || []).find((p) => p.id === todo.projectId) || { id: todo.projectId, name: tr("Projet") };
   }
   if (todo?.folderId) {
     const folder = (folders || []).find((f) => f.id === todo.folderId);
     if (folder?.projectId) {
-      return (projects || []).find((p) => p.id === folder.projectId) || { id: folder.projectId, name: folder.name || "Projet" };
+      return (projects || []).find((p) => p.id === folder.projectId) || { id: folder.projectId, name: folder.name || tr("Projet") };
     }
   }
   return null;
@@ -5244,7 +5246,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
-  const monthName = new Intl.DateTimeFormat("fr-FR", { month: "long", year: "numeric" }).format(currentDate);
+  const monthName = new Intl.DateTimeFormat(LOCALE, { month: "long", year: "numeric" }).format(currentDate);
 
   const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
   const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
@@ -5365,7 +5367,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
     for (const todo of selectedTodos) {
       const proj = resolveCalendarTodoProject(todo, folders, projects);
       const key = proj ? proj.id : "__none__";
-      const name = proj ? proj.name : "Sans projet";
+      const name = proj ? proj.name : tr("Sans projet");
       const color = proj ? getCalendarProjectColor(proj, projects) : "#64748b";
       if (!groups.has(key)) {
         groups.set(key, { id: key, name, color, isProject: Boolean(proj), items: [] });
@@ -5384,7 +5386,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
     for (const todo of unscheduledTodos) {
       const proj = resolveCalendarTodoProject(todo, folders, projects);
       const key = proj ? proj.id : "__none__";
-      const name = proj ? proj.name : "Sans projet";
+      const name = proj ? proj.name : tr("Sans projet");
       const color = proj ? getCalendarProjectColor(proj, projects) : "#64748b";
       if (!groups.has(key)) {
         groups.set(key, { id: key, name, color, isProject: Boolean(proj), items: [] });
@@ -5426,7 +5428,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
     try {
       const [y, m, d] = selectedDay.split("-").map(Number);
       const date = new Date(y, m - 1, d);
-      return new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(date);
+      return new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(date);
     } catch {
       return selectedDay;
     }
@@ -5473,7 +5475,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
 
       <div className="todo-calendar-header">
         <div className="todo-calendar-title-group">
-          <button type="button" className="cal-collapse-btn" onClick={toggleCollapsed} title={collapsed ? "Déplier le calendrier" : "Replier le calendrier"}>
+          <button type="button" className="cal-collapse-btn" onClick={toggleCollapsed} title={collapsed ? tr("Déplier le calendrier") : tr("Replier le calendrier")}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={collapsed ? "chevron-collapsed" : ""}>
               <path d="M6 9l6 6 6-6" />
             </svg>
@@ -5482,13 +5484,13 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
             <h2 className="todo-calendar-month-name">{monthName.charAt(0).toUpperCase() + monthName.slice(1)}</h2>
             {!collapsed && (
               <div className="cal-nav-buttons">
-                <button type="button" className="cal-nav-btn" onClick={prevMonth} title="Mois précédent" aria-label="Mois précédent">
+                <button type="button" className="cal-nav-btn" onClick={prevMonth} title={tr("Mois précédent")} aria-label={tr("Mois précédent")}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
                 </button>
                 <button type="button" className="cal-today-btn" onClick={goToday}>
-                  Aujourd'hui
+                  {tr("Aujourd'hui")}
                 </button>
-                <button type="button" className="cal-nav-btn" onClick={nextMonth} title="Mois suivant" aria-label="Mois suivant">
+                <button type="button" className="cal-nav-btn" onClick={nextMonth} title={tr("Mois suivant")} aria-label={tr("Mois suivant")}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg>
                 </button>
               </div>
@@ -5507,22 +5509,22 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
               ))}
             </div>
           )}
-          <button type="button" className="cal-action-btn" onClick={() => setSyncModalOpen(true)} title="Lier calendriers Google, Apple ou Outlook">
+          <button type="button" className="cal-action-btn" onClick={() => setSyncModalOpen(true)} title={tr("Lier calendriers Google, Apple ou Outlook")}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
-            <span>Sync iCal</span>
+            <span>{tr("Sync iCal")}</span>
           </button>
-          <a href="/api/calendar/export.ics" download="noyau-todos.ics" className="cal-action-btn" title="Exporter les todos Noyau en flux .ics">
+          <a href="/api/calendar/export.ics" download="noyau-todos.ics" className="cal-action-btn" title={tr("Exporter les todos Noyau en flux .ics")}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-            <span>Export .ics</span>
+            <span>{tr("Export .ics")}</span>
           </a>
           <button
             type="button"
             className={`cal-action-btn ${widgetMode ? "active" : ""}`}
             onClick={() => setWidgetMode(!widgetMode)}
-            title="Basculer entre vue calendrier et vue widgets"
+            title={tr("Basculer entre vue calendrier et vue widgets")}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /></svg>
-            <span>{widgetMode ? "Vue grille" : "Vue widgets"}</span>
+            <span>{widgetMode ? tr("Vue grille") : tr("Vue widgets")}</span>
           </button>
         </div>
       </div>
@@ -5531,7 +5533,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
         <div className="cal-filter-toolbar">
           <div className="cal-filter-label">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
-            <span>Filtrer par projet :</span>
+            <span>{tr("Filtrer par projet :")}</span>
           </div>
           <div className="cal-project-filter-chips">
             <button
@@ -5539,7 +5541,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
               className={`cal-filter-chip ${projectFilter === "all" ? "active" : ""}`}
               onClick={() => setProjectFilter("all")}
             >
-              Tous les projets
+              {tr("Tous les projets")}
               <span className="cal-chip-count">{countOpenTodos(todos)}</span>
             </button>
             {projects.map((p) => {
@@ -5564,7 +5566,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                 className={`cal-filter-chip ${projectFilter === "none" ? "active" : ""}`}
                 onClick={() => setProjectFilter("none")}
               >
-                Sans projet
+                {tr("Sans projet")}
                 <span className="cal-chip-count">{projectCounts["__none__"]}</span>
               </button>
             )}
@@ -5577,7 +5579,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
           {!widgetMode ? (
             <div className="todo-calendar-grid-wrap">
               <div className="todo-calendar-weekdays">
-                <span>Lun</span><span>Mar</span><span>Mer</span><span>Jeu</span><span>Ven</span><span>Sam</span><span>Dim</span>
+                <span>{tr("Lun")}</span><span>{tr("Mar")}</span><span>{tr("Mer")}</span><span>{tr("Jeu")}</span><span>{tr("Ven")}</span><span>{tr("Sam")}</span><span>{tr("Dim")}</span>
               </div>
               <div className="todo-calendar-grid">
                 {days.map((item) => {
@@ -5600,7 +5602,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                     >
                       <div className="cal-cell-header">
                         <span className={`day-number ${item.isToday ? "is-today" : ""}`}>{item.dayNumber}</span>
-                        {item.isToday && <span className="cal-cell-today-pill">Auj.</span>}
+                        {item.isToday && <span className="cal-cell-today-pill">{tr("Auj.")}</span>}
                       </div>
                       <div className="calendar-markers">
                         {openTodos.slice(0, 3).map((t, idx) => {
@@ -5611,7 +5613,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                               key={t.id || idx}
                               className="cal-dot todo-open"
                               style={{ backgroundColor: color }}
-                              title={`[${p?.name || "Tâche"}] ${t.text}`}
+                              title={`[${p?.name || tr("Tâche")}] ${t.text}`}
                             />
                           );
                         })}
@@ -5619,7 +5621,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                           <span className="cal-dot-more">+{openTodos.length - 3}</span>
                         )}
                         {doneTodos.length > 0 && openTodos.length <= 2 && (
-                          <span className="cal-dot todo-done" title={`${doneTodos.length} terminée(s)`} />
+                          <span className="cal-dot todo-done" title={tr("{0} terminée(s)", doneTodos.length)} />
                         )}
                         {item.events.slice(0, 2).map((evt, idx) => (
                           <span
@@ -5638,15 +5640,15 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
           ) : (
             <div className="todo-calendar-widget-view">
               <div className="widget-card widget-today">
-                <span className="widget-eyebrow">AUJOURD’HUI</span>
+                <span className="widget-eyebrow">{tr("AUJOURD’HUI")}</span>
                 <strong className="widget-date-num">{new Date().getDate()}</strong>
-                <span className="widget-month-sub">{new Intl.DateTimeFormat("fr-FR", { weekday: "long", month: "short" }).format(new Date())}</span>
+                <span className="widget-month-sub">{new Intl.DateTimeFormat(LOCALE, { weekday: "long", month: "short" }).format(new Date())}</span>
                 <small className="widget-count">
-                  {countOpenTodos(todosByDay.get(todayIso) || [])} tâche(s) planifiée(s)
+                  {countOpenTodos(todosByDay.get(todayIso) || [])}{" "}{tr("tâche(s) planifiée(s)")}
                 </small>
               </div>
               <div className="widget-upcoming-list">
-                <span className="widget-eyebrow">PROCHAINES ÉCHÉANCES</span>
+                <span className="widget-eyebrow">{tr("PROCHAINES ÉCHÉANCES")}</span>
                 {Array.from(todosByDay.entries())
                   .filter(([date]) => date >= todayIso)
                   .sort(([a], [b]) => a.localeCompare(b))
@@ -5673,7 +5675,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                     </div>
                   ))}
                 {Array.from(todosByDay.entries()).filter(([date]) => date >= todayIso).length === 0 && (
-                  <p className="muted small">Aucune échéance à venir.</p>
+                  <p className="muted small">{tr("Aucune échéance à venir.")}</p>
                 )}
               </div>
             </div>
@@ -5688,21 +5690,21 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                     {formattedSelectedDay.charAt(0).toUpperCase() + formattedSelectedDay.slice(1)}
                   </h3>
                   <small className="muted">
-                    {countOpenTodos(selectedTodos)} tâche{countOpenTodos(selectedTodos) > 1 ? "s" : ""}
-                    {selectedExtEvents.length > 0 ? ` · ${selectedExtEvents.length} événement(s)` : ""}
+                    {countOpenTodos(selectedTodos)}{" "}{tr("tâche")}{countOpenTodos(selectedTodos) > 1 ? "s" : ""}
+                    {selectedExtEvents.length > 0 ? tr(" · {0} événement(s)", selectedExtEvents.length) : ""}
                     {projectFilter !== "all" && projectFilter !== "none" ? ` (filtre: ${projects.find((p) => p.id === projectFilter)?.name || ""})` : ""}
                   </small>
                 </div>
               </div>
               {selectedDay === todayIso && (
-                <span className="day-detail-today-badge">Aujourd'hui</span>
+                <span className="day-detail-today-badge">{tr("Aujourd'hui")}</span>
               )}
             </div>
 
             <form onSubmit={handleQuickAddTodo} className="day-quick-add-form">
               <input
                 type="text"
-                placeholder={`+ Ajouter une tâche pour ce jour…`}
+                placeholder={tr("+ Ajouter une tâche pour ce jour…")}
                 value={newTodoText}
                 onChange={(e) => setNewTodoText(e.target.value)}
               />
@@ -5711,9 +5713,9 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                   value={newTodoProjectId}
                   onChange={(e) => setNewTodoProjectId(e.target.value)}
                   className="day-quick-project-select"
-                  title="Assigner directement à un projet"
+                  title={tr("Assigner directement à un projet")}
                 >
-                  <option value="">(Projet…)</option>
+                  <option value="">{tr("(Projet…)")}</option>
                   {projects.map((p) => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
@@ -5726,15 +5728,15 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                   try { localStorage.setItem("noyau-todo-last-assignee", e.target.value); } catch {}
                 }}
                 className={`todo-assignee-select cal-quick-assignee-select assignee-${newTodoAssignee}`}
-                title="Attribuer la tâche (Aurora, Moi, ou tout le monde)"
-                aria-label="Attribution de la tâche"
+                title={tr("Attribuer la tâche (Aurora, Moi, ou tout le monde)")}
+                aria-label={tr("Attribution de la tâche")}
               >
-                <option value="aurora"> Aurora</option>
-                <option value="main"> Moi</option>
-                <option value="all"> Tout le monde</option>
+                <option value="aurora">{" "}{tr("Aurora")}</option>
+                <option value="main">{" "}{tr("Moi")}</option>
+                <option value="all">{" "}{tr("Tout le monde")}</option>
               </select>
               <button type="submit" className="primary mini quick-add-btn" disabled={addingTodo || !newTodoText.trim()}>
-                {addingTodo ? "…" : "Ajouter"}
+                {addingTodo ? "…" : tr("Ajouter")}
               </button>
             </form>
 
@@ -5769,31 +5771,31 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                             type="button"
                             className={`cal-todo-checkbox ${isDone ? "checked" : ""}`}
                             onClick={(e) => { e.stopPropagation(); toggleTodoStatus(todo); }}
-                            title={isDone ? "Marquer à faire" : "Marquer terminé"}
+                            title={isDone ? tr("Marquer à faire") : tr("Marquer terminé")}
                           >
                             {isDone ? "✓" : ""}
                           </button>
                           <span className="todo-text" onClick={() => onTodoClick?.(todo)}>{todo.text}</span>
                           {todo.shared && (
-                            <span className="todo-shared-chip" title={todo.ownerName ? `Partagé par ${todo.ownerName}` : "Tâche partagée"}>
-                               {todo.ownerName || "Partagée"}
+                            <span className="todo-shared-chip" title={todo.ownerName ? tr("Partagé par {0}", todo.ownerName) : tr("Tâche partagée")}>
+                               {todo.ownerName || tr("Partagée")}
                             </span>
                           )}
                           <button
                             type="button"
                             className={`cal-share-btn ${todo.shared ? "is-shared" : ""}`}
                             onClick={(e) => { e.stopPropagation(); toggleTodoShared(todo); }}
-                            title={todo.shared ? "Tâche partagée (cliquer pour rendre privée)" : "Tâche privée (cliquer pour partager)"}
+                            title={todo.shared ? tr("Tâche partagée (cliquer pour rendre privée)") : tr("Tâche privée (cliquer pour partager)")}
                           ><AppIcon name="share" size={16}/></button>
                           {todo._calKind === "completed" && (
-                            <span className="todo-completed-tag">✓ Réalisé</span>
+                            <span className="todo-completed-tag">{tr("✓ Réalisé")}</span>
                           )}
                           {todo._calKind === "due" && (
                             <button
                               type="button"
                               className="icon-button mini remove-due-btn"
                               onClick={() => unscheduleTodo(todo.id)}
-                              title="Retirer la date d'échéance"
+                              title={tr("Retirer la date d'échéance")}
                             >
                               ✕
                             </button>
@@ -5806,7 +5808,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
               ))}
 
               {selectedTodos.length === 0 && selectedExtEvents.length === 0 && (
-                <p className="calendar-day-empty">Rien de planifié pour cette date.</p>
+                <p className="calendar-day-empty">{tr("Rien de planifié pour cette date.")}</p>
               )}
             </div>
 
@@ -5815,9 +5817,9 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                 <div className="unscheduled-head">
                   <div className="unscheduled-head-title">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" /></svg>
-                    <strong>Tâches à planifier ({unscheduledTodos.length})</strong>
+                    <strong>{tr("Tâches à planifier (")}{unscheduledTodos.length})</strong>
                   </div>
-                  <small className="muted">Triées par projet · Planifier pour le {selectedDay.split("-").reverse().join("/")}</small>
+                  <small className="muted">{tr("Triées par projet · Planifier pour le")}{" "}{selectedDay.split("-").reverse().join("/")}</small>
                 </div>
                 <div className="unscheduled-grouped-list">
                   {groupedUnscheduledTodos.map((group) => (
@@ -5832,7 +5834,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                           <div key={todo.id} className="unscheduled-item">
                             <span className="todo-text" title={todo.text}>{todo.text}</span>
                             {todo.shared && (
-                              <span className="todo-shared-chip" title={todo.ownerName ? `Partagé par ${todo.ownerName}` : "Tâche partagée"}><AppIcon name="tag" size={16}/></span>
+                              <span className="todo-shared-chip" title={todo.ownerName ? tr("Partagé par {0}", todo.ownerName) : tr("Tâche partagée")}><AppIcon name="tag" size={16}/></span>
                             )}
                             <button
                               type="button"
@@ -5840,13 +5842,13 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                               disabled={schedulingId === todo.id}
                               onClick={() => scheduleTodo(todo.id, selectedDay)}
                             >
-                              {schedulingId === todo.id ? "…" : " Planifier"}
+                              {schedulingId === todo.id ? "…" : tr(" Planifier")}
                             </button>
                           </div>
                         ))}
                         {group.items.length > 4 && (
                           <small className="muted more-unscheduled">
-                            +{group.items.length - 4} autre(s) dans {group.name}
+                            +{group.items.length - 4}{" "}{tr("autre(s) dans")}{" "}{group.name}
                           </small>
                         )}
                       </div>
@@ -5896,31 +5898,31 @@ function CalendarView({ projects = [], onView }) {
         <div className="calendar-hero-content">
           <div className="calendar-hero-badge">
             <span className="cal-hero-dot" />
-            <span>Agenda & Échéances</span>
+            <span>{tr("Agenda & Échéances")}</span>
           </div>
-          <h1>Calendrier</h1>
+          <h1>{tr("Calendrier")}</h1>
           <p className="calendar-hero-desc">
-            Planification des tâches triées par projet, synchronisation flux iCal et widgets.
+            {tr("Planification des tâches triées par projet, synchronisation flux iCal et widgets.")}
           </p>
           <div className="calendar-hero-stats">
             <span className="cal-hero-stat-pill">
-              <strong>{scheduledCount}</strong> planifiée{scheduledCount > 1 ? "s" : ""}
+              <strong>{scheduledCount}</strong>{" "}{tr("planifiée")}{scheduledCount > 1 ? "s" : ""}
             </span>
             <span className="cal-hero-stat-pill warning">
-              <strong>{unscheduledCount}</strong> sans date
+              <strong>{unscheduledCount}</strong>{" "}{tr("sans date")}
             </span>
             <span className="cal-hero-stat-pill success">
-              <strong>{doneCount}</strong> terminée{doneCount > 1 ? "s" : ""}
+              <strong>{doneCount}</strong>{" "}{tr("terminée")}{doneCount > 1 ? "s" : ""}
             </span>
             <span className="cal-hero-stat-pill muted">
-              <strong>{projects.length}</strong> projet{projects.length > 1 ? "s" : ""}
+              <strong>{projects.length}</strong> {tr(projects.length > 1 ? "projets" : "projet")}
             </span>
           </div>
         </div>
         <div className="calendar-hero-actions">
           <button type="button" className="ghost cal-hero-todo-btn" onClick={() => onView?.("todos")}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
-            <span>Tableau des tâches</span>
+            <span>{tr("Tableau des tâches")}</span>
           </button>
         </div>
       </div>
@@ -5948,7 +5950,7 @@ function TodosView({ projects = [], onView }) {
   const cached = cachedView("todos");
   const [todos, setTodos] = useState(() => (Array.isArray(cached) ? cached : cached?.todos) || []);
   const [folders, setFolders] = useState(() => (Array.isArray(cached) ? [] : cached?.folders) || []);
-  const [storage, setStorage] = useState("Obsidian · NAS");
+  const [storage, setStorage] = useState(tr("Obsidian · NAS"));
   const [text, setText] = useState("");
   const [assignee, setAssignee] = useState(() => {
     try {
@@ -6036,10 +6038,10 @@ function TodosView({ projects = [], onView }) {
       // Un rafraichissement parti avant une action renverrait l'etat d'avant: on l'ignore.
       if (mutation !== mutationRef.current || profileCacheKey("todos") !== scope) return;
       apply(result);
-      setStorage(result.storage || "Obsidian");
+      setStorage(result.storage || tr("Obsidian"));
       setError("");
     } catch (reason) {
-      setError(isNative && nativeReadOnlyOffline ? cachedView("todos") ? "" : "Aucune tâche synchronisée sur cet appareil. Connectez-vous une première fois." : reason.message);
+      setError(isNative && nativeReadOnlyOffline ? cachedView("todos") ? "" : tr("Aucune tâche synchronisée sur cet appareil. Connectez-vous une première fois.") : reason.message);
     }
   }, [apply]);
 
@@ -6197,7 +6199,7 @@ function TodosView({ projects = [], onView }) {
   }, []);
 
   async function removeTodo(todo) {
-    if (!window.confirm(`Supprimer la tâche « ${todo.text} » ? Action définitive.`)) return;
+    if (!window.confirm(tr("Supprimer la tâche « {0} » ? Action définitive.", todo.text))) return;
     mutationRef.current += 1;
     deletedRef.current.set(todo.id, Date.now());
     setTodos((prev) => prev.filter((item) => item.id !== todo.id));
@@ -6293,25 +6295,25 @@ function TodosView({ projects = [], onView }) {
           type="button"
           className={viewMode === "board" ? "active" : ""}
           onClick={() => switchViewMode("board")}
-          title="Vue Tableau Trello (Kanban)"
+          title={tr("Vue Tableau Trello (Kanban)")}
         >
-          <span className="view-icon">⊞</span> Trello
+          <span className="view-icon">⊞</span>{" "}{tr("Trello")}
         </button>
         <button
           type="button"
           className={viewMode === "classic" ? "active" : ""}
           onClick={() => switchViewMode("classic")}
-          title="Vue Liste classique"
+          title={tr("Vue Liste classique")}
         >
-          <span className="view-icon"><AppIcon name="file" size={16}/></span> Classique
+          <span className="view-icon"><AppIcon name="file" size={16}/></span>{" "}{tr("Classique")}
         </button>
         <button
           type="button"
           className={viewMode === "raw" ? "active" : ""}
           onClick={() => switchViewMode("raw")}
-          title="Vue Markdown brut (édition et copie)"
+          title={tr("Vue Markdown brut (édition et copie)")}
         >
-          <span className="view-icon"><AppIcon name="file" size={16}/></span> .MD
+          <span className="view-icon"><AppIcon name="file" size={16}/></span>{" "}{tr(".MD")}
         </button>
       </div>
     );
@@ -6324,17 +6326,17 @@ function TodosView({ projects = [], onView }) {
           type="button"
           className={`todo-sort-btn ${sortMode === "priority" ? "active" : ""}`}
           onClick={() => switchSortMode(sortMode === "priority" ? "activity" : "priority")}
-          title="Trier par priorité ( Haute,  Moyenne,  Basse)"
+          title={tr("Trier par priorité ( Haute,  Moyenne,  Basse)")}
         >
-          Priorité
+          {tr("Priorité")}
         </button>
         <button
           type="button"
           className={`todo-sort-btn ${sortMode === "activity" ? "active" : ""}`}
           onClick={() => switchSortMode("activity")}
-          title="Trier par récents / activité"
+          title={tr("Trier par récents / activité")}
         >
-           Récents
+           {tr("Récents")}
         </button>
       </div>
     );
@@ -6345,9 +6347,9 @@ function TodosView({ projects = [], onView }) {
       <div className="todo-raw-wrap">
         <div className="todo-raw-toolbar">
           <div className="todo-raw-info">
-            <span className="todo-raw-tag">MARKDOWN BRUT</span>
-            <small className="muted">{rawContent ? rawContent.split(/\r?\n/).length : 0} lignes · {rawContent.length} car.</small>
-            {rawContent !== rawOriginal && <b className="todo-raw-dirty">● Modifié non enregistré</b>}
+            <span className="todo-raw-tag">{tr("MARKDOWN BRUT")}</span>
+            <small className="muted">{rawContent ? rawContent.split(/\r?\n/).length : 0}{" "}{tr("lignes ·")}{" "}{rawContent.length} car.</small>
+            {rawContent !== rawOriginal && <b className="todo-raw-dirty">{tr("● Modifié non enregistré")}</b>}
           </div>
           <div className="todo-raw-actions">
             <button
@@ -6355,27 +6357,27 @@ function TodosView({ projects = [], onView }) {
               className="ghost"
               onClick={loadRaw}
               disabled={rawLoading || rawSaving}
-              title="Recharger le fichier depuis le serveur"
+              title={tr("Recharger le fichier depuis le serveur")}
             >
-              {rawLoading ? "…" : " Recharger"}
+              {rawLoading ? "…" : tr(" Recharger")}
             </button>
             <button
               type="button"
               className="ghost"
               onClick={copyRaw}
               disabled={!rawContent}
-              title="Copier tout le Markdown"
+              title={tr("Copier tout le Markdown")}
             >
-              {rawCopied ? "✓ Copié !" : " Copier"}
+              {rawCopied ? tr("✓ Copié !") : tr(" Copier")}
             </button>
             <button
               type="button"
               className="primary"
               onClick={saveRaw}
               disabled={rawSaving || rawContent === rawOriginal}
-              title="Enregistrer les modifications dans le fichier Markdown"
+              title={tr("Enregistrer les modifications dans le fichier Markdown")}
             >
-              {rawSaving ? "Enregistrement…" : " Enregistrer"}
+              {rawSaving ? tr("Enregistrement…") : tr(" Enregistrer")}
             </button>
           </div>
         </div>
@@ -6384,7 +6386,7 @@ function TodosView({ projects = [], onView }) {
           className="todo-raw-textarea"
           value={rawContent}
           onChange={(e) => setRawContent(e.target.value)}
-          placeholder="Chargement du contenu Markdown brut…"
+          placeholder={tr("Chargement du contenu Markdown brut…")}
           spellCheck={false}
         />
       </div>
@@ -6431,7 +6433,7 @@ function TodosView({ projects = [], onView }) {
   );
 
   async function addColumn() {
-    const name = window.prompt("Nom de la nouvelle zone (ex: Idée, Backlog, En cours…) ?");
+    const name = window.prompt(tr("Nom de la nouvelle zone (ex: Idée, Backlog, En cours…) ?"));
     if (!name?.trim()) return;
     await run("column", () => api("/api/todos/columns", { method: "POST", body: JSON.stringify({ name }) }));
   }
@@ -6448,7 +6450,7 @@ function TodosView({ projects = [], onView }) {
   }
 
   async function removeColumn(column) {
-    if (!window.confirm(`Supprimer la zone « ${column.name} » ? Ses tâches repartent dans « À faire ».`)) return;
+    if (!window.confirm(tr("Supprimer la zone « {0} » ? Ses tâches repartent dans « À faire ».", column.name))) return;
     await run(`column:${column.id}`, () => api(`/api/todos/columns/${encodeURIComponent(column.id)}`, { method: "DELETE" }));
   }
 
@@ -6595,7 +6597,7 @@ function TodosView({ projects = [], onView }) {
   }
 
   async function renameFolder(folder) {
-    const name = window.prompt("Nouveau nom du dossier ?", folder.name);
+    const name = window.prompt(tr("Nouveau nom du dossier ?"), folder.name);
     if (!name?.trim() || name === folder.name) return;
     await run(folder.id, () => api(`/api/todos/folders/${encodeURIComponent(folder.id)}`, { method: "PATCH", body: JSON.stringify({ name }) }));
   }
@@ -6755,8 +6757,8 @@ function TodosView({ projects = [], onView }) {
             className={`todo-tri-box status-${column?.kind || "custom"}`}
             onClick={(event) => { event.stopPropagation(); update(todo, { status: nextCycleColumn.id }); }}
             disabled={busy === todo.id}
-            title={`${column?.name || "Zone"} — cliquer pour passer à : ${nextCycleColumn?.name || "Suivant"}`}
-            aria-label={`${column?.name || "Zone"} — changer d'état`}
+            title={tr("{0} — cliquer pour passer à : {1}", column?.name || tr("Zone"), nextCycleColumn?.name || tr("Suivant"))}
+            aria-label={tr("{0} — changer d'état", column?.name || tr("Zone"))}
           >
             {isDone && <span className="todo-tri-icon done-check">✓</span>}
             {isReview && <span className="todo-tri-icon review-bar" />}
@@ -6776,36 +6778,36 @@ function TodosView({ projects = [], onView }) {
               type="button"
               className="todo-card-expand"
               onClick={(event) => { event.stopPropagation(); setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}
-              title={expanded ? "Replier le texte" : "Déplier le texte"}
-              aria-label={expanded ? "Replier le texte" : "Déplier le texte"}
+              title={expanded ? tr("Replier le texte") : tr("Déplier le texte")}
+              aria-label={expanded ? tr("Replier le texte") : tr("Déplier le texte")}
             >{expanded ? "⌃" : "⌄"}</button>
           )}
           <details className="todo-card-menu">
-            <summary title="Actions sur la tâche" aria-label="Actions sur la tâche"><AppIcon name="more" size={15} /></summary>
+            <summary title={tr("Actions sur la tâche")} aria-label={tr("Actions sur la tâche")}><AppIcon name="more" size={15} /></summary>
             <div className="todo-card-menu-panel">
               {previousColumn && (
                 <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); update(todo, { status: previousColumn.id }); }}>
-                  Déplacer vers : {previousColumn.name}
+                  {tr("Déplacer vers :")}{" "}{previousColumn.name}
                 </button>
               )}
               {nextColumn && (
                 <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); update(todo, { status: nextColumn.id }); }}>
-                  Déplacer vers : {nextColumn.name}
+                  {tr("Déplacer vers :")}{" "}{nextColumn.name}
                 </button>
               )}
               {(overflows || expanded) && (
                 <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}>
-                  {expanded ? "Replier le texte" : "Déplier le texte"}
+                  {expanded ? tr("Replier le texte") : tr("Déplier le texte")}
                 </button>
               )}
               <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setDatePanel((c) => (c === todo.id ? null : todo.id)); }}>
-                {todo.dueDate ? "Modifier la date limite" : "Ajouter une date limite"}
+                {todo.dueDate ? tr("Modifier la date limite") : tr("Ajouter une date limite")}
               </button>
               <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}>
-                Commentaires ({commentsCount})
+                {tr("Commentaires (")}{commentsCount})
               </button>
               <label className="todo-card-menu-move">
-                <span>Attribuée à</span>
+                <span>{tr("Attribuée à")}</span>
                 <select
                   value={getTodoAssignee(todo)}
                   onChange={(event) => {
@@ -6817,15 +6819,15 @@ function TodosView({ projects = [], onView }) {
                     });
                   }}
                   disabled={busy === todo.id}
-                  aria-label="Changer l'attribution"
+                  aria-label={tr("Changer l'attribution")}
                 >
-                  <option value="aurora">Aurora</option>
-                  <option value="main">Moi</option>
-                  <option value="all">Tout le monde</option>
+                  <option value="aurora">{tr("Aurora")}</option>
+                  <option value="main">{tr("Moi")}</option>
+                  <option value="all">{tr("Tout le monde")}</option>
                 </select>
               </label>
               <label className="todo-card-menu-move">
-                <span>Priorité</span>
+                <span>{tr("Priorité")}</span>
                 <select
                   value={todo.priority || "medium"}
                   onChange={(event) => {
@@ -6834,15 +6836,15 @@ function TodosView({ projects = [], onView }) {
                     update(todo, { priority: next });
                   }}
                   disabled={busy === todo.id}
-                  aria-label="Priorité de la tâche"
+                  aria-label={tr("Priorité de la tâche")}
                 >
-                  <option value="high">Haute</option>
-                  <option value="medium">Moyenne</option>
-                  <option value="low">Basse</option>
+                  <option value="high">{tr("Haute")}</option>
+                  <option value="medium">{tr("Moyenne")}</option>
+                  <option value="low">{tr("Basse")}</option>
                 </select>
               </label>
               <label className="todo-card-menu-move">
-                <span>Zone</span>
+                <span>{tr("Zone")}</span>
                 <select
                   value={statusOf(todo)}
                   onChange={(event) => {
@@ -6851,13 +6853,13 @@ function TodosView({ projects = [], onView }) {
                     update(todo, { status: next });
                   }}
                   disabled={busy === todo.id}
-                  aria-label="Déplacer vers une autre zone"
+                  aria-label={tr("Déplacer vers une autre zone")}
                 >
                   {columns.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}
                 </select>
               </label>
               <label className="todo-card-menu-move">
-                <span>Déplacer vers</span>
+                <span>{tr("Déplacer vers")}</span>
                 <select
                   value={todo.folderId || ROOT_FOLDER}
                   onChange={(event) => {
@@ -6866,7 +6868,7 @@ function TodosView({ projects = [], onView }) {
                     update(todo, { folderId: next });
                   }}
                   disabled={busy === todo.id}
-                  aria-label="Déplacer la tâche vers un autre projet ou dossier"
+                  aria-label={tr("Déplacer la tâche vers un autre projet ou dossier")}
                 >
                   {hierarchicalFolders.map((item) => <option value={item.id} key={item.id}>{item.parentId ? `  ↳ ${item.name}` : item.name}</option>)}
                 </select>
@@ -6880,7 +6882,7 @@ function TodosView({ projects = [], onView }) {
                 }}
                 disabled={busy === `del:${todo.id}`}
               >
-                Supprimer la tâche
+                {tr("Supprimer la tâche")}
               </button>
             </div>
           </details>
@@ -6892,21 +6894,21 @@ function TodosView({ projects = [], onView }) {
               type="button"
               className="todo-ref-pill"
               onClick={() => writeClipboard(reference)}
-              title={`Référence ${reference} — cliquer pour copier`}
+              title={tr("Référence {0} — cliquer pour copier", reference)}
             >{reference}</button>
             {todo.priority === "high" && (
-              <span className="todo-pill-badge prio-high" title="Priorité haute — cliquer pour modifier" onClick={() => cyclePriority(todo)}>
-                Haute
+              <span className="todo-pill-badge prio-high" title={tr("Priorité haute — cliquer pour modifier")} onClick={() => cyclePriority(todo)}>
+                {tr("Haute")}
               </span>
             )}
             {todo.priority === "low" && (
-              <span className="todo-pill-badge prio-low" title="Priorité basse — cliquer pour modifier" onClick={() => cyclePriority(todo)}>
-                Basse
+              <span className="todo-pill-badge prio-low" title={tr("Priorité basse — cliquer pour modifier")} onClick={() => cyclePriority(todo)}>
+                {tr("Basse")}
               </span>
             )}
             {todo.assignee && todo.assignee !== "all" && (
-              <span className={`todo-pill-badge assignee-pill assignee-${getTodoAssignee(todo)}`} title={`Attribuée à ${getTodoAssignee(todo) === "aurora" ? "Aurora" : "Moi"}`}>
-                {getTodoAssignee(todo) === "aurora" ? "Aurora" : "Moi"}
+              <span className={`todo-pill-badge assignee-pill assignee-${getTodoAssignee(todo)}`} title={tr("Attribuée à {0}", getTodoAssignee(todo) === "aurora" ? tr("Aurora") : tr("Moi"))}>
+                {getTodoAssignee(todo) === "aurora" ? tr("Aurora") : tr("Moi")}
               </span>
             )}
             {todo.unread > 0 && (
@@ -6914,11 +6916,11 @@ function TodosView({ projects = [], onView }) {
                 type="button"
                 className="todo-unread-pill"
                 onClick={() => markSeen(todo.id)}
-                title={`${todo.unread} non lu(s)`}
+                title={tr("{0} non lu(s)", todo.unread)}
               >● {todo.unread}</button>
             )}
             {openFolder === "all" && folderObj && (
-              <span className="todo-folder-pill" title={`Dossier : ${folderObj.name}`}>{folderObj.name}</span>
+              <span className="todo-folder-pill" title={`Dossier : ${folderObj.name}`}>{tr(folderObj.name)}</span>
             )}
           </div>
 
@@ -6929,7 +6931,7 @@ function TodosView({ projects = [], onView }) {
                 className={`todo-date-pill ${overdue ? "overdue" : "has-date"} ${datePanel === todo.id ? "active" : ""}`}
                 onClick={() => setDatePanel((c) => (c === todo.id ? null : todo.id))}
                 disabled={busy === todo.id}
-                title={`Date limite : ${todo.dueDate}`}
+                title={tr("Date limite : {0}", todo.dueDate)}
               >
                 <AppIcon name="calendar" size={13}/>
                 <span>{todo.dueDate.slice(5).split("-").reverse().join("/")}</span>
@@ -6954,22 +6956,22 @@ function TodosView({ projects = [], onView }) {
 
         {datePanel === todo.id && (
           <div className="todo-date-popover">
-            <button type="button" onClick={async () => { await update(todo, { dueDate: localIsoDate() }); setDatePanel(null); }}>Auj.</button>
-            <button type="button" onClick={async () => { await update(todo, { dueDate: shiftIsoDate(1) }); setDatePanel(null); }}>Demain</button>
+            <button type="button" onClick={async () => { await update(todo, { dueDate: localIsoDate() }); setDatePanel(null); }}>{tr("Auj.")}</button>
+            <button type="button" onClick={async () => { await update(todo, { dueDate: shiftIsoDate(1) }); setDatePanel(null); }}>{tr("Demain")}</button>
             <button type="button" onClick={async () => { await update(todo, { dueDate: shiftIsoDate(7) }); setDatePanel(null); }}>+7 j</button>
             <input
               type="date"
               value={todo.dueDate || ""}
               onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }}
               disabled={busy === todo.id}
-              aria-label="Date limite"
+              aria-label={tr("Date limite")}
             />
             <button
               type="button"
               className="clear"
               onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }}
               disabled={busy === todo.id || !todo.dueDate}
-              title="Effacer la date"
+              title={tr("Effacer la date")}
             >×</button>
           </div>
         )}
@@ -6977,20 +6979,20 @@ function TodosView({ projects = [], onView }) {
         {commentsOpen && (
           <div className="todo-comments-panel">
             <div className="todo-comments-header">
-              <strong>Commentaires ({commentsCount})</strong>
-              <small>Discussions et notes illimitées</small>
+              <strong>{tr("Commentaires (")}{commentsCount})</strong>
+              <small>{tr("Discussions et notes illimitées")}</small>
             </div>
             <div className="todo-comments-list">
               {todo.comments && todo.comments.map((comment) => {
                 const isAgent = isCommentByAgent(comment);
                 const authorText = comment.author
                   ? (isAgent ? (comment.author.startsWith("IA ·") ? comment.author : `IA · ${comment.author}`) : comment.author)
-                  : (isAgent ? "IA" : "Vous");
+                  : (isAgent ? "IA" : tr("Vous"));
                 return (
                   <div className={`todo-comment-item ${isAgent ? "comment-agent" : "comment-user"}`} key={comment.id}>
                     <div className="todo-comment-meta">
                       <span className={`todo-comment-avatar ${isAgent ? "agent" : "user"}`}>
-                        {isAgent ? "Agent" : "Profil"}
+                        {isAgent ? tr("Agent") : tr("Profil")}
                       </span>
                       <strong className={`todo-comment-author ${isAgent ? "agent" : "user"}`}>
                         {authorText}
@@ -7000,7 +7002,7 @@ function TodosView({ projects = [], onView }) {
                         className="todo-comment-delete"
                         onClick={() => removeComment(todo, comment.id)}
                         disabled={busy === `comment-del:${comment.id}`}
-                        title="Supprimer ce commentaire"
+                        title={tr("Supprimer ce commentaire")}
                       >×</button>
                     </div>
                     <p className="todo-comment-text">{comment.text}</p>
@@ -7008,18 +7010,18 @@ function TodosView({ projects = [], onView }) {
                 );
               })}
               {(!todo.comments || !todo.comments.length) && (
-                <p className="todo-comments-empty">Aucun commentaire pour le moment.</p>
+                <p className="todo-comments-empty">{tr("Aucun commentaire pour le moment.")}</p>
               )}
             </div>
             <form className="todo-comment-form" onSubmit={(e) => addComment(todo, e)}>
               <input
                 value={newComment[todo.id] || ""}
                 onChange={(e) => setNewComment({ ...newComment, [todo.id]: e.target.value })}
-                placeholder="Ajouter un commentaire ou une note…"
+                placeholder={tr("Ajouter un commentaire ou une note…")}
                 maxLength="2000"
               />
               <button className="primary" disabled={busy === `comment:${todo.id}` || !(newComment[todo.id] || "").trim()}>
-                {busy === `comment:${todo.id}` ? "…" : "Commenter"}
+                {busy === `comment:${todo.id}` ? "…" : tr("Commenter")}
               </button>
             </form>
           </div>
@@ -7060,7 +7062,7 @@ function TodosView({ projects = [], onView }) {
             onPointerMove={dragOver}
             onPointerUp={endDrag}
             onPointerCancel={endDrag}
-            aria-label={`Déplacer ${todo.text}`}
+            aria-label={tr("Déplacer {0}", todo.text)}
           >⠿</button>
           <div className="todo-item-main">
             <button
@@ -7068,8 +7070,8 @@ function TodosView({ projects = [], onView }) {
               className={`todo-tri-box status-${status}`}
               onClick={cycleStatus}
               disabled={busy === todo.id}
-              title={currentColumn ? `${currentColumn.name} (cliquer pour changer de zone)` : "Changer d'état"}
-              aria-label={`Changer état de ${todo.text}`}
+              title={currentColumn ? `${currentColumn.name} (cliquer pour changer de zone)` : tr("Changer d'état")}
+              aria-label={tr("Changer état de {0}", todo.text)}
             >
               {isDone && <span className="todo-tri-icon done-check">✓</span>}
               {isReview && <span className="todo-tri-icon review-bar" />}
@@ -7082,17 +7084,17 @@ function TodosView({ projects = [], onView }) {
                 disabled={busy === todo.id}
               />
               <small className={overdue ? "overdue" : isReview ? "status-review-label" : isCustom ? "status-custom-label" : ""}>
-                {isDone ? completedLabel(todo.completedAt) || "Terminée" : isReview ? "◐ À vérifier / tester" : isCustom ? ` ${currentColumn?.name || "Zone"}` : todoDueLabel(todo.dueDate)}
+                {isDone ? completedLabel(todo.completedAt) || tr("Terminée") : isReview ? tr("◐ À vérifier / tester") : isCustom ? ` ${currentColumn?.name || tr("Zone")}` : todoDueLabel(todo.dueDate)}
               </small>
             </div>
           </div>
           <div className="todo-actions">
-            <button className="todo-ref-pill" onClick={() => writeClipboard(todoRef(todo.id))} title={`Référence ${todoRef(todo.id)} — cliquer pour copier`}>{todoRef(todo.id)}</button>
-            {todo.priority === "high" && <span className="todo-pill-badge prio-high" title="Priorité haute — cliquer pour modifier" onClick={() => cyclePriority(todo)}>Haute</span>}
-            {todo.priority === "low" && <span className="todo-pill-badge prio-low" title="Priorité basse — cliquer pour modifier" onClick={() => cyclePriority(todo)}>Basse</span>}
+            <button className="todo-ref-pill" onClick={() => writeClipboard(todoRef(todo.id))} title={tr("Référence {0} — cliquer pour copier", todoRef(todo.id))}>{todoRef(todo.id)}</button>
+            {todo.priority === "high" && <span className="todo-pill-badge prio-high" title={tr("Priorité haute — cliquer pour modifier")} onClick={() => cyclePriority(todo)}>{tr("Haute")}</span>}
+            {todo.priority === "low" && <span className="todo-pill-badge prio-low" title={tr("Priorité basse — cliquer pour modifier")} onClick={() => cyclePriority(todo)}>{tr("Basse")}</span>}
             {todo.assignee && todo.assignee !== "all" && (
-              <span className={`todo-pill-badge assignee-pill assignee-${getTodoAssignee(todo)}`} title={`Attribuée à ${getTodoAssignee(todo) === "aurora" ? "Aurora" : "Moi"}`}>
-                {getTodoAssignee(todo) === "aurora" ? "Aurora" : "Moi"}
+              <span className={`todo-pill-badge assignee-pill assignee-${getTodoAssignee(todo)}`} title={tr("Attribuée à {0}", getTodoAssignee(todo) === "aurora" ? tr("Aurora") : tr("Moi"))}>
+                {getTodoAssignee(todo) === "aurora" ? tr("Aurora") : tr("Moi")}
               </span>
             )}
             {todo.dueDate && (
@@ -7101,7 +7103,7 @@ function TodosView({ projects = [], onView }) {
                 className={`todo-date-trigger dated ${overdue ? "overdue" : ""} ${datePanel === todo.id ? "active" : ""}`}
                 onClick={() => setDatePanel((current) => current === todo.id ? null : todo.id)}
                 disabled={busy === todo.id}
-                title={`Date limite : ${todo.dueDate}`}
+                title={tr("Date limite : {0}", todo.dueDate)}
               >
                 <AppIcon name="calendar" size={13}/>
                 <span>{todo.dueDate.slice(5).split("-").reverse().join("/")}</span>
@@ -7121,18 +7123,18 @@ function TodosView({ projects = [], onView }) {
                 <span>{commentsCount}</span>
               </button>
             )}
-            {todo.unread > 0 && <button type="button" className="todo-unread-pill" onClick={() => markSeen(todo.id)} title="Marquer comme lu">● {todo.unread}</button>}
+            {todo.unread > 0 && <button type="button" className="todo-unread-pill" onClick={() => markSeen(todo.id)} title={tr("Marquer comme lu")}>● {todo.unread}</button>}
             <details className="todo-card-menu">
-              <summary title="Actions sur la tâche" aria-label="Actions sur la tâche"><AppIcon name="more" size={15} /></summary>
+              <summary title={tr("Actions sur la tâche")} aria-label={tr("Actions sur la tâche")}><AppIcon name="more" size={15} /></summary>
               <div className="todo-card-menu-panel">
                 <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setDatePanel((c) => (c === todo.id ? null : todo.id)); }}>
-                  {todo.dueDate ? "Modifier la date limite" : "Ajouter une date limite"}
+                  {todo.dueDate ? tr("Modifier la date limite") : tr("Ajouter une date limite")}
                 </button>
                 <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setOpenComments((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}>
-                  Commentaires ({commentsCount})
+                  {tr("Commentaires (")}{commentsCount})
                 </button>
                 <label className="todo-card-menu-move">
-                  <span>Zone</span>
+                  <span>{tr("Zone")}</span>
                   <select
                     value={status}
                     onChange={(event) => {
@@ -7141,13 +7143,13 @@ function TodosView({ projects = [], onView }) {
                       update(todo, { status: next });
                     }}
                     disabled={busy === todo.id}
-                    aria-label="Zone de la tâche"
+                    aria-label={tr("Zone de la tâche")}
                   >
                     {columns.map((c) => <option value={c.id} key={c.id}>{c.name}</option>)}
                   </select>
                 </label>
                 <label className="todo-card-menu-move">
-                  <span>Attribuée à</span>
+                  <span>{tr("Attribuée à")}</span>
                   <select
                     value={getTodoAssignee(todo)}
                     onChange={(event) => {
@@ -7159,15 +7161,15 @@ function TodosView({ projects = [], onView }) {
                       });
                     }}
                     disabled={busy === todo.id}
-                    aria-label="Attribution de la tâche"
+                    aria-label={tr("Attribution de la tâche")}
                   >
-                    <option value="aurora">Aurora</option>
-                    <option value="main">Moi</option>
-                    <option value="all">Tout le monde</option>
+                    <option value="aurora">{tr("Aurora")}</option>
+                    <option value="main">{tr("Moi")}</option>
+                    <option value="all">{tr("Tout le monde")}</option>
                   </select>
                 </label>
                 <label className="todo-card-menu-move">
-                  <span>Priorité</span>
+                  <span>{tr("Priorité")}</span>
                   <select
                     value={todo.priority || "medium"}
                     onChange={(event) => {
@@ -7176,15 +7178,15 @@ function TodosView({ projects = [], onView }) {
                       update(todo, { priority: next });
                     }}
                     disabled={busy === todo.id}
-                    aria-label="Priorité de la tâche"
+                    aria-label={tr("Priorité de la tâche")}
                   >
-                    <option value="high">Haute</option>
-                    <option value="medium">Moyenne</option>
-                    <option value="low">Basse</option>
+                    <option value="high">{tr("Haute")}</option>
+                    <option value="medium">{tr("Moyenne")}</option>
+                    <option value="low">{tr("Basse")}</option>
                   </select>
                 </label>
                 <label className="todo-card-menu-move">
-                  <span>Déplacer vers</span>
+                  <span>{tr("Déplacer vers")}</span>
                   <select
                     value={todo.folderId || ROOT_FOLDER}
                     onChange={(event) => {
@@ -7193,7 +7195,7 @@ function TodosView({ projects = [], onView }) {
                       update(todo, { folderId: next });
                     }}
                     disabled={busy === todo.id}
-                    aria-label="Dossier"
+                    aria-label={tr("Dossier")}
                   >
                     {hierarchicalFolders.map((item) => <option value={item.id} key={item.id}>{item.parentId ? `  ↳ ${item.name}` : item.name}</option>)}
                   </select>
@@ -7207,30 +7209,30 @@ function TodosView({ projects = [], onView }) {
                   }}
                   disabled={busy === `del:${todo.id}`}
                 >
-                  Supprimer la tâche
+                  {tr("Supprimer la tâche")}
                 </button>
               </div>
             </details>
           </div>
-          {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>Date limite</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>Effacer</button></div>}
+          {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>{tr("Date limite")}</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>{tr("Effacer")}</button></div>}
         </article>
         {commentsOpen && (
           <div className="todo-comments-panel">
             <div className="todo-comments-header">
-              <strong>Commentaires ({commentsCount})</strong>
-              <small>Discussions et notes illimitées</small>
+              <strong>{tr("Commentaires (")}{commentsCount})</strong>
+              <small>{tr("Discussions et notes illimitées")}</small>
             </div>
             <div className="todo-comments-list">
               {todo.comments && todo.comments.map((comment) => {
                 const isAgent = isCommentByAgent(comment);
                 const authorText = comment.author
                   ? (isAgent ? (comment.author.startsWith("IA ·") ? comment.author : `IA · ${comment.author}`) : comment.author)
-                  : (isAgent ? "IA" : "Vous");
+                  : (isAgent ? "IA" : tr("Vous"));
                 return (
                   <div className={`todo-comment-item ${isAgent ? "comment-agent" : "comment-user"}`} key={comment.id}>
                     <div className="todo-comment-meta">
                       <span className={`todo-comment-avatar ${isAgent ? "agent" : "user"}`}>
-                        {isAgent ? "Agent" : "Profil"}
+                        {isAgent ? tr("Agent") : tr("Profil")}
                       </span>
                       <strong className={`todo-comment-author ${isAgent ? "agent" : "user"}`}>
                         {authorText}
@@ -7240,7 +7242,7 @@ function TodosView({ projects = [], onView }) {
                         className="todo-comment-delete"
                         onClick={() => removeComment(todo, comment.id)}
                         disabled={busy === `comment-del:${comment.id}`}
-                        title="Supprimer ce commentaire"
+                        title={tr("Supprimer ce commentaire")}
                       >×</button>
                     </div>
                     <p className="todo-comment-text">{comment.text}</p>
@@ -7248,18 +7250,18 @@ function TodosView({ projects = [], onView }) {
                 );
               })}
               {(!todo.comments || !todo.comments.length) && (
-                <p className="todo-comments-empty">Aucun commentaire pour le moment.</p>
+                <p className="todo-comments-empty">{tr("Aucun commentaire pour le moment.")}</p>
               )}
             </div>
             <form className="todo-comment-form" onSubmit={(e) => addComment(todo, e)}>
               <input
                 value={newComment[todo.id] || ""}
                 onChange={(e) => setNewComment({ ...newComment, [todo.id]: e.target.value })}
-                placeholder="Ajouter un commentaire ou une note…"
+                placeholder={tr("Ajouter un commentaire ou une note…")}
                 maxLength="2000"
               />
               <button className="primary" disabled={busy === `comment:${todo.id}` || !(newComment[todo.id] || "").trim()}>
-                {busy === `comment:${todo.id}` ? "…" : "Commenter"}
+                {busy === `comment:${todo.id}` ? "…" : tr("Commenter")}
               </button>
             </form>
           </div>
@@ -7274,7 +7276,7 @@ function TodosView({ projects = [], onView }) {
   const globalUnread = todos.reduce((total, todo) => total + (todo.unread || 0), 0);
   const activeSection = sections.find((section) => section.folder.id === openFolder);
   const active = openFolder === "all"
-    ? { folder: { id: "all", name: "Toutes les tâches" }, subFolders: [], items: todos, rawItems: todos }
+    ? { folder: { id: "all", name: tr("Toutes les tâches") }, subFolders: [], items: todos, rawItems: todos }
     : activeSection
       ? {
           folder: activeSection.folder,
@@ -7311,19 +7313,19 @@ function TodosView({ projects = [], onView }) {
         <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setFolderToDelete(null)}>
           <section className="modal todo-delete-modal">
             <div className="modal-head">
-              <div><p className="eyebrow">SUPPRIMER UNE LISTE</p><h2>{folderToDelete.name}</h2></div>
-              <button className="icon-button" onClick={() => setFolderToDelete(null)} aria-label="Fermer">×</button>
+              <div><p className="eyebrow">{tr("SUPPRIMER UNE LISTE")}</p><h2>{folderToDelete.name}</h2></div>
+              <button className="icon-button" onClick={() => setFolderToDelete(null)} aria-label={tr("Fermer")}>×</button>
             </div>
             <p className="todo-delete-modal__body">
               {folderToDelete.count
-                ? `${folderToDelete.count} tâche${folderToDelete.count > 1 ? "s" : ""} de cette liste ${folderToDelete.count > 1 ? "repartent" : "repart"} dans « Sans dossier ». Rien n'est perdu.`
-                : "Cette liste est vide."}
-              {folderToDelete.projectId ? " La liste est rattachée à un projet : elle réapparaîtra tant que le projet existe." : ""}
+                ? tr("{0} tâche{1} de cette liste {2} dans « Sans dossier ». Rien n'est perdu.", folderToDelete.count, folderToDelete.count > 1 ? "s" : "", folderToDelete.count > 1 ? "repartent" : "repart")
+                : tr("Cette liste est vide.")}
+              {folderToDelete.projectId ? tr(" La liste est rattachée à un projet : elle réapparaîtra tant que le projet existe.") : ""}
             </p>
             <div className="modal-actions">
-              <button type="button" className="ghost" onClick={() => setFolderToDelete(null)}>Annuler</button>
+              <button type="button" className="ghost" onClick={() => setFolderToDelete(null)}>{tr("Annuler")}</button>
               <button type="button" className="danger-action" onClick={() => removeFolder(folderToDelete)} disabled={busy === folderToDelete.id}>
-                {busy === folderToDelete.id ? "…" : "Supprimer la liste"}
+                {busy === folderToDelete.id ? "…" : tr("Supprimer la liste")}
               </button>
             </div>
           </section>
@@ -7331,12 +7333,12 @@ function TodosView({ projects = [], onView }) {
       )}
         <section className="hero-row todos-hero">
           <div>
-            <p className="eyebrow">OBSIDIAN · NAS</p>
-            <h1>Todo.</h1>
+            <p className="eyebrow">{tr("OBSIDIAN · NAS")}</p>
+            <h1>{tr("Todo.")}</h1>
             <p className="muted">
-              {openCount} à faire
-              {reviewCount > 0 ? ` · ${reviewCount} à vérifier` : ""}
-              {doneCount > 0 ? ` · ${doneCount} terminée${doneCount > 1 ? "s" : ""}` : ""} · {storage}
+              {openCount}{" "}{tr("à faire")}
+              {reviewCount > 0 ? tr(" · {0} à vérifier", reviewCount) : ""}
+              {doneCount > 0 ? tr(" · {0} terminée{1}", doneCount, doneCount > 1 ? "s" : "") : ""} · {storage}
             </p>
           </div>
           <div className="todo-hero-right">
@@ -7348,19 +7350,19 @@ function TodosView({ projects = [], onView }) {
               onClick={() => setShowCalendar(!showCalendar)}
               title="Afficher/masquer le calendrier"
             >
-               {showCalendar ? "Masquer agenda" : "Agenda"}
+               {showCalendar ? tr("Masquer agenda") : tr("Agenda")}
             </button>
             <button
               type="button"
               className={`todo-correction-toggle ${correction ? "active" : ""}`}
               onClick={toggleCorrection}
               disabled={busy === "correction"}
-              title={correction ? "Correction IA active — cliquer pour désactiver" : "Correction IA désactivée — cliquer pour activer"}
+              title={correction ? tr("Correction IA active — cliquer pour désactiver") : tr("Correction IA désactivée — cliquer pour activer")}
             >
               <AppIcon name="settings" size={13}/>
-              <span>IA</span>
+              <span>{tr("IA")}</span>
             </button>
-            <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>+ Dossier</button>
+            <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>{tr("+ Dossier")}</button>
           </div>
         </section>
         {error && <p className="finance-error todo-error">{error}</p>}
@@ -7369,9 +7371,9 @@ function TodosView({ projects = [], onView }) {
         ) : (
           <section className="todo-folder-grid">
           <button className="panel todo-folder-card all-tasks" onClick={() => selectFolder("all")}>
-            <span className="todo-folder-name"> Toutes les tâches{globalUnread > 0 && <b className="todo-unread-badge" title={`${globalUnread} changement${globalUnread > 1 ? "s" : ""} non lu${globalUnread > 1 ? "s" : ""}`}>{globalUnread}</b>}</span>
+            <span className="todo-folder-name">{" "}{tr("Toutes les tâches")}{globalUnread > 0 && <b className="todo-unread-badge" title={tr("{0} changement{1} non lu{2}", globalUnread, globalUnread > 1 ? "s" : "", globalUnread > 1 ? "s" : "")}>{globalUnread}</b>}</span>
             <span className="todo-folder-meta">
-              {openCount} à faire{reviewCount > 0 ? ` · ${reviewCount} à vérifier` : ""}{doneCount > 0 ? ` · ${doneCount} terminée${doneCount > 1 ? "s" : ""}` : ""}
+              {openCount}{" "}{tr("à faire")}{reviewCount > 0 ? tr(" · {0} à vérifier", reviewCount) : ""}{doneCount > 0 ? tr(" · {0} terminée{1}", doneCount, doneCount > 1 ? "s" : "") : ""}
             </span>
           </button>
           {sections.map(({ folder, subFolders, items }) => {
@@ -7388,25 +7390,25 @@ function TodosView({ projects = [], onView }) {
                     className="todo-folder-delete"
                     onClick={(event) => { event.stopPropagation(); setFolderToDelete({ ...folder, count: items.length }); }}
                     disabled={busy === folder.id}
-                    title={`Supprimer la liste « ${folder.name} »`}
-                    aria-label={`Supprimer la liste ${folder.name}`}
+                    title={tr("Supprimer la liste « {0} »", folder.name)}
+                    aria-label={tr("Supprimer la liste {0}", folder.name)}
                   ><AppIcon name="trash" size={16}/></button>
                 )}
                 <span className="todo-folder-name">
                   {folder.projectId && projects.find((p) => p.id === folder.projectId)?.logoUrl && (
                     <ProjectImage src={projects.find((p) => p.id === folder.projectId).logoUrl} alt="" className="todo-card-project-logo" />
                   )}
-                  {folder.name || "Dossier"}{folderUnread > 0 && <b className="todo-unread-badge" title={`${folderUnread} changement${folderUnread > 1 ? "s" : ""} non lu${folderUnread > 1 ? "s" : ""}`}>{folderUnread}</b>}
+                  {folder.name || tr("Dossier")}{folderUnread > 0 && <b className="todo-unread-badge" title={tr("{0} changement{1} non lu{2}", folderUnread, folderUnread > 1 ? "s" : "", folderUnread > 1 ? "s" : "")}>{folderUnread}</b>}
                 </span>
                 <span className="todo-folder-meta">
-                  {folderTodos.length ? `${folderTodos.length} à faire` : "0 à faire"}
-                  {folderReviews.length ? ` · ${folderReviews.length} à vérifier` : ""}
-                  {folderDone.length ? ` · ${folderDone.length} terminée${folderDone.length > 1 ? "s" : ""}` : ""}
+                  {folderTodos.length ? tr("{0} à faire", folderTodos.length) : tr("0 à faire")}
+                  {folderReviews.length ? tr(" · {0} à vérifier", folderReviews.length) : ""}
+                  {folderDone.length ? tr(" · {0} terminée{1}", folderDone.length, folderDone.length > 1 ? "s" : "") : ""}
                   {late ? ` · ${late} en retard` : ""}
                 </span>
                 {(folder.projectId || folder.ownerProfileId) && (
                   <span className="todo-folder-badges">
-                    {folder.projectId && <b className="todo-folder-tag">PROJET</b>}
+                    {folder.projectId && <b className="todo-folder-tag">{tr("PROJET")}</b>}
                     {folder.ownerProfileId && <b className="shared-chip">⇄ {folder.ownerName}</b>}
                   </span>
                 )}
@@ -7432,14 +7434,14 @@ function TodosView({ projects = [], onView }) {
                       onClick={() => createSubFolder(folder)}
                       title={`Ajouter un sous-dossier dans ${folder.name}`}
                     >
-                      + Sous-dossier
+                      {tr("+ Sous-dossier")}
                     </button>
                   </div>
                 )}
               </div>
             );
           })}
-          {!sections.length && !error && <p className="finance-empty">Aucune tâche. Liste Obsidian vide.</p>}
+          {!sections.length && !error && <p className="finance-empty">{tr("Aucune tâche. Liste Obsidian vide.")}</p>}
         </section>
       )}
     </div>
@@ -7480,19 +7482,19 @@ function TodosView({ projects = [], onView }) {
         <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setFolderToDelete(null)}>
           <section className="modal todo-delete-modal">
             <div className="modal-head">
-              <div><p className="eyebrow">SUPPRIMER UNE LISTE</p><h2>{folderToDelete.name}</h2></div>
-              <button className="icon-button" onClick={() => setFolderToDelete(null)} aria-label="Fermer">×</button>
+              <div><p className="eyebrow">{tr("SUPPRIMER UNE LISTE")}</p><h2>{folderToDelete.name}</h2></div>
+              <button className="icon-button" onClick={() => setFolderToDelete(null)} aria-label={tr("Fermer")}>×</button>
             </div>
             <p className="todo-delete-modal__body">
               {folderToDelete.count
-                ? `${folderToDelete.count} tâche${folderToDelete.count > 1 ? "s" : ""} de cette liste ${folderToDelete.count > 1 ? "repartent" : "repart"} dans « Sans dossier ». Rien n'est perdu.`
-                : "Cette liste est vide."}
-              {folderToDelete.projectId ? " La liste est rattachée à un projet : elle réapparaîtra tant que le projet existe." : ""}
+                ? tr("{0} tâche{1} de cette liste {2} dans « Sans dossier ». Rien n'est perdu.", folderToDelete.count, folderToDelete.count > 1 ? "s" : "", folderToDelete.count > 1 ? "repartent" : "repart")
+                : tr("Cette liste est vide.")}
+              {folderToDelete.projectId ? tr(" La liste est rattachée à un projet : elle réapparaîtra tant que le projet existe.") : ""}
             </p>
             <div className="modal-actions">
-              <button type="button" className="ghost" onClick={() => setFolderToDelete(null)}>Annuler</button>
+              <button type="button" className="ghost" onClick={() => setFolderToDelete(null)}>{tr("Annuler")}</button>
               <button type="button" className="danger-action" onClick={() => removeFolder(folderToDelete)} disabled={busy === folderToDelete.id}>
-                {busy === folderToDelete.id ? "…" : "Supprimer la liste"}
+                {busy === folderToDelete.id ? "…" : tr("Supprimer la liste")}
               </button>
             </div>
           </section>
@@ -7500,7 +7502,7 @@ function TodosView({ projects = [], onView }) {
       )}
       <section className="hero-row todos-hero">
         <div>
-          <button className="todo-back" onClick={() => selectFolder(null)}>‹ Tous les dossiers</button>
+          <button className="todo-back" onClick={() => selectFolder(null)}>{tr("‹ Tous les dossiers")}</button>
           <div className="todo-header-title-row">
             {projects.find((p) => p.id === folder.projectId)?.logoUrl && (
               <ProjectImage
@@ -7512,9 +7514,9 @@ function TodosView({ projects = [], onView }) {
             <h1>{folder.name}</h1>
           </div>
           <p className="muted">
-            {todoItems.length} à faire
-            {reviewItems.length ? ` · ${reviewItems.length} à vérifier` : ""}
-            {doneItems.length ? ` · ${doneItems.length} terminée${doneItems.length > 1 ? "s" : ""}` : ""}
+            {todoItems.length}{" "}{tr("à faire")}
+            {reviewItems.length ? tr(" · {0} à vérifier", reviewItems.length) : ""}
+            {doneItems.length ? tr(" · {0} terminée{1}", doneItems.length, doneItems.length > 1 ? "s" : "") : ""}
           </p>
         </div>
         <div className="todo-hero-right">
@@ -7526,22 +7528,22 @@ function TodosView({ projects = [], onView }) {
             onClick={() => setShowCalendar(!showCalendar)}
             title="Afficher/masquer le calendrier"
           >
-             {showCalendar ? "Masquer agenda" : "Agenda"}
+             {showCalendar ? tr("Masquer agenda") : tr("Agenda")}
           </button>
           <button
             type="button"
             className={`todo-correction-toggle ${correction ? "active" : ""}`}
             onClick={toggleCorrection}
             disabled={busy === "correction"}
-            title={correction ? "Correction IA active — cliquer pour désactiver" : "Correction IA désactivée — cliquer pour activer"}
+            title={correction ? tr("Correction IA active — cliquer pour désactiver") : tr("Correction IA désactivée — cliquer pour activer")}
           >
             <AppIcon name="settings" size={13}/>
-            <span>IA</span>
+            <span>{tr("IA")}</span>
           </button>
           {!folder.projectId && folder.id !== ROOT_FOLDER && folder.id !== "all" && (
             <div className="todo-folder-actions">
-              <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>Renommer</button>
-              <button onClick={() => setFolderToDelete(folder)} disabled={busy === folder.id} aria-label={`Supprimer ${folder.name}`}>Supprimer</button>
+              <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>{tr("Renommer")}</button>
+              <button onClick={() => setFolderToDelete(folder)} disabled={busy === folder.id} aria-label={`Supprimer ${folder.name}`}>{tr("Supprimer")}</button>
             </div>
           )}
         </div>
@@ -7554,7 +7556,7 @@ function TodosView({ projects = [], onView }) {
             className={`todo-subfolder-tab ${subFolderFilter === "all" ? "active" : ""}`}
             onClick={() => changeSubFolderFilter("all")}
           >
-             Tout {active.folder.name} ({countOpenTodos(active.rawItems || active.items)})
+             {tr("Tout")}{" "}{active.folder.name} ({countOpenTodos(active.rawItems || active.items)})
           </button>
           {active.subFolders.map((sub) => {
             const count = countOpenTodos((active.rawItems || active.items).filter((t) => t.folderId === sub.id));
@@ -7589,7 +7591,7 @@ function TodosView({ projects = [], onView }) {
             disabled={busy === "folder"}
             title={`Créer un sous-dossier dans ${active.folder.name}`}
           >
-            ＋ Sous-dossier
+            {tr("＋ Sous-dossier")}
           </button>
         </div>
       )}
@@ -7598,21 +7600,21 @@ function TodosView({ projects = [], onView }) {
         <input
           value={text}
           onChange={(event) => setText(event.target.value)}
-          placeholder={`Ajouter dans ${subFolderFilter && subFolderFilter !== "all" ? (active.subFolders?.find((s) => s.id === subFolderFilter)?.name || folder.name) : folder.name}…`}
+          placeholder={tr("Ajouter dans {0}…", subFolderFilter && subFolderFilter !== "all" ? (active.subFolders?.find((s) => s.id === subFolderFilter)?.name || folder.name) : folder.name)}
           maxLength="300"
         />
         <select
           className={`todo-assignee-select todo-add-assignee assignee-${assignee}`}
           value={assignee}
           onChange={(e) => handleAssigneeChange(e.target.value)}
-          title="Attribuer à Aurora, Moi, ou tout le monde (enregistré par défaut)"
-          aria-label="Attribution de la tâche"
+          title={tr("Attribuer à Aurora, Moi, ou tout le monde (enregistré par défaut)")}
+          aria-label={tr("Attribution de la tâche")}
         >
-          <option value="aurora"> Aurora</option>
-          <option value="main"> Moi</option>
-          <option value="all"> Tout le monde</option>
+          <option value="aurora">{" "}{tr("Aurora")}</option>
+          <option value="main">{" "}{tr("Moi")}</option>
+          <option value="all">{" "}{tr("Tout le monde")}</option>
         </select>
-        <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : "Ajouter"}</button>
+        <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : tr("Ajouter")}</button>
       </form>
 
       {error && <p className="finance-error todo-error">{error}</p>}
@@ -7623,13 +7625,13 @@ function TodosView({ projects = [], onView }) {
         <div className="todo-board-wrap">
           <div className="todo-board-toolbar">
             <small>
-              {columns.length} zone{columns.length > 1 ? "s" : ""} · {countOpenTodos(items)} tâche{countOpenTodos(items) > 1 ? "s" : ""} en cours
-              {boardUnread > 0 && <b className="todo-unread-inline"> · {boardUnread} non lu{boardUnread > 1 ? "s" : ""}</b>}
+              {columns.length} {tr(columns.length > 1 ? "zones" : "zone")} · {countOpenTodos(items)}{" "}{tr("tâche")}{countOpenTodos(items) > 1 ? "s" : ""}{" "}{tr("en cours")}
+              {boardUnread > 0 && <b className="todo-unread-inline"> · {boardUnread}{" "}{tr("non lu")}{boardUnread > 1 ? "s" : ""}</b>}
             </small>
-            {boardUnread > 0 && <button className="todo-mark-seen-btn" onClick={() => markSeen(items.filter((todo) => todo.unread).map((todo) => todo.id))} title="Marquer toutes les nouveautés comme lues">Tout lu</button>}
-            <button className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title="Ajouter une zone" aria-label="Ajouter une zone">＋ Zone</button>
+            {boardUnread > 0 && <button className="todo-mark-seen-btn" onClick={() => markSeen(items.filter((todo) => todo.unread).map((todo) => todo.id))} title={tr("Marquer toutes les nouveautés comme lues")}>{tr("Tout lu")}</button>}
+            <button className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title={tr("Ajouter une zone")} aria-label={tr("Ajouter une zone")}>{tr("＋ Zone")}</button>
           </div>
-          <nav className="todo-mobile-zones" aria-label="Zones des tâches">{columns.map((column) => <button type="button" key={column.id} aria-pressed={selectedMobileColumn === column.id} onClick={() => { setMobileColumn(column.id); if (collapsedColumns[column.id]) toggleColumn(column); }}><span>{column.name}</span><b>{inColumn(items, column.id).length}</b></button>)}</nav>
+          <nav className="todo-mobile-zones" aria-label={tr("Zones des tâches")}>{columns.map((column) => <button type="button" key={column.id} aria-pressed={selectedMobileColumn === column.id} onClick={() => { setMobileColumn(column.id); if (collapsedColumns[column.id]) toggleColumn(column); }}><span>{tr(column.name)}</span><b>{inColumn(items, column.id).length}</b></button>)}</nav>
           <div className="todo-board">
             {columns.map((column, index) => {
               const columnItems = inColumn(items, column.id);
@@ -7645,11 +7647,11 @@ function TodosView({ projects = [], onView }) {
                     onClick={() => toggleColumn(column)}
                     onDragOver={handleBoardDragOver}
                     onDrop={(e) => handleBoardDrop(e, column.id)}
-                    title={`Déplier ${column.name}${isColDisabled ? " (Désactivée)" : ""}`}
+                    title={tr("Déplier {0}{1}", column.name, isColDisabled ? tr(" (Désactivée)") : "")}
                   >
                     <span className="todo-column-count">{columnItems.length}</span>
-                    <span className="todo-collapsed-title">{column.name}</span>
-                    {isColDisabled && <span className="todo-column-disabled-badge">OFF</span>}
+                    <span className="todo-collapsed-title">{tr(column.name)}</span>
+                    {isColDisabled && <span className="todo-column-disabled-badge">{tr("OFF")}</span>}
                     <span className="todo-collapsed-chevron">›</span>
                   </button>
                 );
@@ -7664,41 +7666,41 @@ function TodosView({ projects = [], onView }) {
                 >
                   <header className="todo-column-header">
                     <div className="todo-column-title">
-                      <button className="todo-column-fold" onClick={() => toggleColumn(column)} title={`Replier ${column.name}`} aria-label={`Replier ${column.name}`}>⌄</button>
+                      <button className="todo-column-fold" onClick={() => toggleColumn(column)} title={`Replier ${tr(column.name)}`} aria-label={`Replier ${tr(column.name)}`}>⌄</button>
                       {renaming ? (
                         <input
                           autoFocus
                           className="todo-column-rename"
-                          defaultValue={column.name}
+                          defaultValue={tr(column.name)}
                           onBlur={(e) => renameColumn(column, e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") e.target.blur();
                             if (e.key === "Escape") setRenamingColumn(null);
                           }}
-                          aria-label="Renommer la zone"
+                          aria-label={tr("Renommer la zone")}
                         />
                       ) : (
-                        <h3 onDoubleClick={() => setRenamingColumn(column.id)} title="Double-clic pour renommer">{column.name}</h3>
+                        <h3 onDoubleClick={() => setRenamingColumn(column.id)} title="Double-clic pour renommer">{tr(column.name)}</h3>
                       )}
-                      {isColDisabled && <span className="todo-column-disabled-badge">Désactivée</span>}
+                      {isColDisabled && <span className="todo-column-disabled-badge">{tr("Désactivée")}</span>}
                       <span className="todo-column-count">{columnItems.length}</span>
                     </div>
                     <div className="todo-column-tools">
                       {column.kind !== "done" && (
-                        <button type="button" className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === column.id ? null : column.id))} title={`Ajouter une tâche dans ${column.name}`} aria-label={`Ajouter dans ${column.name}`}>+</button>
+                        <button type="button" className="todo-column-add-btn" onClick={() => setAddingInColumn((c) => (c === column.id ? null : column.id))} title={tr("Ajouter une tâche dans {0}", column.name)} aria-label={tr("Ajouter dans {0}", column.name)}>+</button>
                       )}
                       <details className="todo-column-menu">
-                        <summary title="Options de la zone" aria-label="Options de la zone">⋯</summary>
+                        <summary title={tr("Options de la zone")} aria-label={tr("Options de la zone")}>⋯</summary>
                         <div className="todo-column-menu-panel">
-                          <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setRenamingColumn(column.id); }}>Renommer</button>
+                          <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setRenamingColumn(column.id); }}>{tr("Renommer")}</button>
                           {column.id !== "todo" && column.id !== "done" && (
                             <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); toggleColumnEnabled(column); }}>
-                              {isColDisabled ? "Activer la zone" : "Désactiver la zone"}
+                              {isColDisabled ? tr("Activer la zone") : tr("Désactiver la zone")}
                             </button>
                           )}
-                          <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); shiftColumn(column, -1); }} disabled={index === 0}>Déplacer à gauche</button>
-                          <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); shiftColumn(column, 1); }} disabled={index === columns.length - 1}>Déplacer à droite</button>
-                          {column.kind === "custom" && <button className="danger" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); removeColumn(column); }}>Supprimer la zone</button>}
+                          <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); shiftColumn(column, -1); }} disabled={index === 0}>{tr("Déplacer à gauche")}</button>
+                          <button onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); shiftColumn(column, 1); }} disabled={index === columns.length - 1}>{tr("Déplacer à droite")}</button>
+                          {column.kind === "custom" && <button className="danger" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); removeColumn(column); }}>{tr("Supprimer la zone")}</button>}
                         </div>
                       </details>
                     </div>
@@ -7709,18 +7711,18 @@ function TodosView({ projects = [], onView }) {
                         autoFocus
                         value={columnText}
                         onChange={(e) => setColumnText(e.target.value)}
-                        placeholder={`Nouvelle tâche · ${column.name}…`}
+                        placeholder={tr("Nouvelle tâche · {0}…", column.name)}
                         onKeyDown={(e) => { if (e.key === "Escape") setAddingInColumn(null); }}
                       />
                       <div className="quick-add-actions">
-                        <button type="submit" className="primary" disabled={!columnText.trim()}>Ajouter</button>
-                        <button type="button" className="ghost" onClick={() => setAddingInColumn(null)}>Annuler</button>
+                        <button type="submit" className="primary" disabled={!columnText.trim()}>{tr("Ajouter")}</button>
+                        <button type="button" className="ghost" onClick={() => setAddingInColumn(null)}>{tr("Annuler")}</button>
                       </div>
                     </form>
                   )}
                   <div className="todo-column-cards">
                     {columnItems.map((todo) => renderBoardCard(todo, column.id))}
-                    {!columnItems.length && addingInColumn !== column.id && <p className="todo-column-empty">Aucune tâche</p>}
+                    {!columnItems.length && addingInColumn !== column.id && <p className="todo-column-empty">{tr("Aucune tâche")}</p>}
                   </div>
                 </div>
               );
@@ -7730,7 +7732,7 @@ function TodosView({ projects = [], onView }) {
       ) : (
         <>
           <div className="todo-filter-tabs">
-            <button className={filterTab === "all" ? "active" : ""} onClick={() => setFilterTab("all")}>Toutes ({countOpenTodos(items)})</button>
+            <button className={filterTab === "all" ? "active" : ""} onClick={() => setFilterTab("all")}>{tr("Toutes (")}{countOpenTodos(items)})</button>
             {columns.map((col) => {
               const count = inColumn(items, col.id).length;
               return (
@@ -7739,18 +7741,18 @@ function TodosView({ projects = [], onView }) {
                   className={filterTab === col.id ? "active" : ""}
                   onClick={() => setFilterTab(col.id)}
                 >
-                  {col.kind === "custom" ? ` ${col.name}` : col.name} ({count})
+                  {col.kind === "custom" ? ` ${tr(col.name)}` : col.name} ({count})
                 </button>
               );
             })}
           </div>
           <section className="panel todo-list">
             {openList.map((todo) => folderRow(todo, openList))}
-            {!openList.length && !doneList.length && <p className="finance-empty">Aucune tâche dans cette vue.</p>}
+            {!openList.length && !doneList.length && <p className="finance-empty">{tr("Aucune tâche dans cette vue.")}</p>}
             {doneList.length > 0 && (
               <>
                 <button className="todo-done-toggle" onClick={() => setShowDone((current) => ({ ...current, [folder.id]: !current[folder.id] }))}>
-                  {showDone[folder.id] ? "▾" : "▸"} {doneList.length} terminée{doneList.length > 1 ? "s" : ""}
+                  {showDone[folder.id] ? "▾" : "▸"} {doneList.length}{" "}{tr("terminée")}{doneList.length > 1 ? "s" : ""}
                 </button>
                 {showDone[folder.id] && doneList.map((todo) => folderRow(todo, doneList))}
               </>
@@ -7767,18 +7769,18 @@ function getPasswordFeedback(pwd) {
   const clean = String(pwd).trim();
   if (!clean) return null;
   if (clean.length < 8) return { level: "weak", label: `${clean.length}/8 car. min` };
-  if (/^(.)\1+$/.test(clean)) return { level: "weak", label: "Caractère répété" };
+  if (/^(.)\1+$/.test(clean)) return { level: "weak", label: tr("Caractère répété") };
   const common = ["12345678", "password", "azertyuiop", "qwertyuiop", "admin123", "noyau123"];
-  if (common.includes(clean.toLowerCase())) return { level: "weak", label: "Trop simple à deviner" };
+  if (common.includes(clean.toLowerCase())) return { level: "weak", label: tr("Trop simple à deviner") };
   const hasLetters = /[a-zA-Z]/.test(clean);
   const hasDigitsOrSymbols = /[\d\W_]/.test(clean);
   if (clean.length < 12 && (!hasLetters || !hasDigitsOrSymbols)) {
-    return { level: "weak", label: "Ajouter chiffres ou symboles" };
+    return { level: "weak", label: tr("Ajouter chiffres ou symboles") };
   }
   if (clean.length >= 12 && hasLetters && hasDigitsOrSymbols) {
-    return { level: "strong", label: "Fort (robuste)" };
+    return { level: "strong", label: tr("Fort (robuste)") };
   }
-  return { level: "medium", label: "Correct" };
+  return { level: "medium", label: tr("Correct") };
 }
 
 function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
@@ -7827,13 +7829,13 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
     const result = await api(`/api/profiles/${encodeURIComponent(profileId)}`, { method: "PATCH", body: JSON.stringify(payload) });
     applyTheme(result.profile.theme);
     setPassword("");
-    setMsg("Réglages enregistrés.");
+    setMsg(tr("Réglages enregistrés."));
   });
 
   const clearPassword = () => run(async () => {
     await api(`/api/profiles/${encodeURIComponent(profileId)}/password`, { method: "POST", body: JSON.stringify({ password: "" }) });
     setPassword("");
-    setMsg("Mot de passe personnalisé supprimé (clé master active).");
+    setMsg(tr("Mot de passe personnalisé supprimé (clé master active)."));
   });
 
   const create = () => run(async () => {
@@ -7847,20 +7849,20 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
     });
     setNewName("");
     setNewProfilePassword("");
-    setMsg("Profil créé.");
+    setMsg(tr("Profil créé."));
   });
 
-  const activeName = active?.name || "Profil";
+  const activeName = active?.name || tr("Profil");
   return (
     <>
       <section className="panel profiles-settings">
-        <header className="panel-head"><div><strong>Profils</strong><small>Agents, projets, todo et budget séparés</small></div></header>
+        <header className="panel-head"><div><strong>{tr("Profils")}</strong><small>{tr("Agents, projets, todo et budget séparés")}</small></div></header>
         <div className="profiles-grid">
           {profiles.map((item) => (
             <button className={item.id === profileId ? "active" : ""} onClick={() => onSwitch(item.id)} key={item.id}>
               <strong>{item.name}</strong>
               <small>{THEMES[item.theme]?.label || item.theme}{item.primary ? " · principal" : ""}{item.hasPassword ? " · mot de passe actif" : ""}</small>
-              <em>{item.id === profileId ? "Profil actif" : "Basculer"}</em>
+              <em>{item.id === profileId ? tr("Profil actif") : tr("Basculer")}</em>
             </button>
           ))}
         </div>
@@ -7868,16 +7870,16 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
         {msg && <p className="form-success">{msg}</p>}
       </section>
       <details className="panel foldable settings-fold">
-        <summary className="panel-head"><div><h3>Réglages de {activeName}</h3><p>Nom, thème, mot de passe, fichier Todo</p></div><i>›</i></summary>
+        <summary className="panel-head"><div><h3>{tr("Réglages de")}{" "}{activeName}</h3><p>{tr("Nom, thème, mot de passe, fichier Todo")}</p></div><i>›</i></summary>
         <div className="profile-form">
-          <label htmlFor="profile-name">Nom du profil</label>
+          <label htmlFor="profile-name">{tr("Nom du profil")}</label>
           <input id="profile-name" value={name} onChange={(event) => setName(event.target.value)} />
-          <label htmlFor="profile-theme">Thème</label>
+          <label htmlFor="profile-theme">{tr("Thème")}</label>
           <select id="profile-theme" value={theme} onChange={(event) => setTheme(event.target.value)}>{Object.entries(THEMES).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select>
           <label htmlFor="profile-password">
-            Mot de passe de connexion
+            {tr("Mot de passe de connexion")}
             <small className="profile-pwd-status">
-              {active?.hasPassword ? "✓ Mot de passe configuré" : "Clé master (aucun mot de passe dédié)"}
+              {active?.hasPassword ? tr("✓ Mot de passe configuré") : tr("Clé master (aucun mot de passe dédié)")}
             </small>
           </label>
           <div className="profile-password-row">
@@ -7886,12 +7888,12 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder={active?.hasPassword ? "Nouveau mot de passe (ou laisser vide)" : "Définir un mot de passe (8 car. min)"}
+              placeholder={active?.hasPassword ? tr("Nouveau mot de passe (ou laisser vide)") : tr("Définir un mot de passe (8 car. min)")}
               autoComplete="new-password"
             />
             {active?.hasPassword && (
-              <button type="button" className="ghost danger" onClick={clearPassword} disabled={busy} title="Revenir à la clé d'accès master">
-                Effacer
+              <button type="button" className="ghost danger" onClick={clearPassword} disabled={busy} title={tr("Revenir à la clé d'accès master")}>
+                {tr("Effacer")}
               </button>
             )}
           </div>
@@ -7903,27 +7905,27 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
               <span className={`profile-pwd-strength-label ${pwdFeedback.level}`}>{pwdFeedback.label}</span>
             </div>
           )}
-          <label htmlFor="profile-todo">Fichier Todo Obsidian</label>
+          <label htmlFor="profile-todo">{tr("Fichier Todo Obsidian")}</label>
           <input id="profile-todo" value={todoFile} onChange={(event) => setTodoFile(event.target.value)} placeholder="/chemin/absolu/TO DO.md" />
-          <label htmlFor="profile-mount">Montage SMB (optionnel)</label>
+          <label htmlFor="profile-mount">{tr("Montage SMB (optionnel)")}</label>
           <input id="profile-mount" value={todoMountUri} onChange={(event) => setTodoMountUri(event.target.value)} placeholder="smb://nas/partage" />
-          <div className="modal-actions"><button className="primary" onClick={save} disabled={busy}>{busy ? "Application…" : "Enregistrer"}</button></div>
+          <div className="modal-actions"><button className="primary" onClick={save} disabled={busy}>{busy ? tr("Application…") : tr("Enregistrer")}</button></div>
         </div>
       </details>
       <details className="panel foldable settings-fold">
-        <summary className="panel-head"><div><h3>Nouveau profil</h3><p>Son propre espace, son thème et son mot de passe</p></div><i>›</i></summary>
+        <summary className="panel-head"><div><h3>{tr("Nouveau profil")}</h3><p>{tr("Son propre espace, son thème et son mot de passe")}</p></div><i>›</i></summary>
         <div className="profile-form">
-          <label htmlFor="profile-new">Prénom</label>
-          <input id="profile-new" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="Prénom" />
-          <label htmlFor="profile-new-theme">Thème</label>
+          <label htmlFor="profile-new">{tr("Prénom")}</label>
+          <input id="profile-new" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={tr("Prénom")} />
+          <label htmlFor="profile-new-theme">{tr("Thème")}</label>
           <select id="profile-new-theme" value={newTheme} onChange={(event) => setNewTheme(event.target.value)}>{Object.entries(THEMES).map(([id, item]) => <option value={id} key={id}>{item.label}</option>)}</select>
-          <label htmlFor="profile-new-pwd">Mot de passe (optionnel)</label>
+          <label htmlFor="profile-new-pwd">{tr("Mot de passe (optionnel)")}</label>
           <input
             id="profile-new-pwd"
             type="password"
             value={newProfilePassword}
             onChange={(event) => setNewProfilePassword(event.target.value)}
-            placeholder="Optionnel (8 car. min)"
+            placeholder={tr("Optionnel (8 car. min)")}
             autoComplete="new-password"
           />
           {newPwdFeedback && (
@@ -7934,7 +7936,7 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
               <span className={`profile-pwd-strength-label ${newPwdFeedback.level}`}>{newPwdFeedback.label}</span>
             </div>
           )}
-          <div className="modal-actions"><button className="ghost" onClick={create} disabled={busy || !newName.trim()}>Créer le profil</button></div>
+          <div className="modal-actions"><button className="ghost" onClick={create} disabled={busy || !newName.trim()}>{tr("Créer le profil")}</button></div>
         </div>
       </details>
     </>
@@ -7949,7 +7951,7 @@ function ClearHistoryModal({ profile, onClose, onCleared }) {
   async function submit(e) {
     e?.preventDefault();
     if (!password) {
-      setError("Mot de passe requis.");
+      setError(tr("Mot de passe requis."));
       return;
     }
     setBusy(true);
@@ -7962,7 +7964,7 @@ function ClearHistoryModal({ profile, onClose, onCleared }) {
       if (onCleared) onCleared(result);
       onClose();
     } catch (err) {
-      setError(err.message || "Erreur lors de la suppression.");
+      setError(err.message || tr("Erreur lors de la suppression."));
     } finally {
       setBusy(false);
     }
@@ -7973,38 +7975,55 @@ function ClearHistoryModal({ profile, onClose, onCleared }) {
       <section className="modal">
         <div className="modal-head">
           <div>
-            <p className="eyebrow">CONFIDENTIALITÉ & SÉCURITÉ</p>
-            <h2>Purger les historiques</h2>
+            <p className="eyebrow">{tr("CONFIDENTIALITÉ & SÉCURITÉ")}</p>
+            <h2>{tr("Purger les historiques")}</h2>
           </div>
           <button className="icon-button" onClick={onClose} type="button">×</button>
         </div>
         <form onSubmit={submit}>
           <p className="todo-delete-modal__body">
-            Efface le scrollback tmux et réinitialise les conversations pour tous les agents et terminaux CLI du profil <strong>{profile?.name || "actif"}</strong> ainsi que les agents partagés.
-            Les passations et points de reprise automatiques de la mémoire commune sont aussi effacés ; les notes durables et mémoires de projet Claude restent conservées.
+            {tr("Efface le scrollback tmux et réinitialise les conversations pour tous les agents et terminaux CLI du profil")}{" "}<strong>{profile?.name || "actif"}</strong>{" "}{tr("ainsi que les agents partagés. Les passations et points de reprise automatiques de la mémoire commune sont aussi effacés ; les notes durables et mémoires de projet Claude restent conservées.")}
           </p>
-          <label htmlFor="clear-history-pwd">Mot de passe de confirmation ({profile?.name || "Profil"})</label>
+          <label htmlFor="clear-history-pwd">{tr("Mot de passe de confirmation (")}{profile?.name || tr("Profil")})</label>
           <input
             id="clear-history-pwd"
             type="password"
             autoFocus
             autoComplete="current-password"
-            placeholder="Entre ton mot de passe"
+            placeholder={tr("Entre ton mot de passe")}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             disabled={busy}
           />
           {error && <p className="form-error">{error}</p>}
           <div className="modal-actions">
-            <button type="button" className="ghost" onClick={onClose} disabled={busy}>Annuler</button>
+            <button type="button" className="ghost" onClick={onClose} disabled={busy}>{tr("Annuler")}</button>
             <button type="submit" className="danger-action" disabled={busy || !password}>
-              {busy ? "Purge en cours…" : "Purger les historiques"}
+              {busy ? tr("Purge en cours…") : tr("Purger les historiques")}
             </button>
           </div>
         </form>
       </section>
     </div>
   );
+}
+
+const MODULE_LABELS = [["projects", tr("Projets")], ["todos", tr("Tâches")], ["calendar", tr("Calendrier")], ["groceries", tr("Courses")], ["budget", tr("Budget")]];
+
+// Modules de toute l'instance: le serveur refuse les profils secondaires.
+function ModuleSettings() {
+  const modules = useModules();
+  const [error, setError] = useState("");
+  const toggle = async (id) => {
+    setError("");
+    try {
+      const result = await api("/api/config/modules", { method: "PUT", body: JSON.stringify({ modules: { [id]: !modules[id] } }) });
+      setModules(result.modules);
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+  return <article className="setting-select-row module-settings"><span className="setting-symbol"><AppIcon name="settings"/></span><div><strong>{tr("Modules")}</strong><small>{error || tr("Afficher ou masquer des sections de Noyau pour tous les profils")}</small><div className="module-toggles">{MODULE_LABELS.map(([id, label]) => <label key={id} className={modules[id] !== false ? "on" : ""}><input type="checkbox" checked={modules[id] !== false} onChange={() => toggle(id)} />{tr(label)}</label>)}</div></div></article>;
 }
 
 function SettingsView({ permission, notificationInfo, onNotifications, onRefresh, onView, profiles, profileId, onSwitchProfile, onProfilesChanged, voice, onVoice, muted, onMuted }) {
@@ -8061,7 +8080,7 @@ function SettingsView({ permission, notificationInfo, onNotifications, onRefresh
       });
       if (onProfilesChanged) await onProfilesChanged();
     } catch (error) {
-      window.alert(`Erreur mise à jour réglages: ${error.message}`);
+      window.alert(tr("Erreur mise à jour réglages: {0}", error.message));
     }
   }
 
@@ -8077,7 +8096,7 @@ function SettingsView({ permission, notificationInfo, onNotifications, onRefresh
       if (value === "always") localStorage.removeItem(PHYSICAL_KEY);
     } catch { /* stockage optionnel */ }
   }
-  const notificationLabel = { active: "Tester notification", local: "Alertes locales actives", insecure: "HTTPS requis", denied: "Alertes bloquées" }[permission] || "Activer alertes";
+  const notificationLabel = { active: tr("Tester notification"), local: tr("Alertes locales actives"), insecure: "HTTPS requis", denied: tr("Alertes bloquées") }[permission] || tr("Activer alertes");
   useEffect(() => {
     fetch("/version.json", { cache: "no-store" }).then((response) => response.ok ? response.json() : null).then(setVersionInfo).catch(() => {});
   }, []);
@@ -8088,52 +8107,52 @@ function SettingsView({ permission, notificationInfo, onNotifications, onRefresh
   }
   return (
     <div className="page settings-page">
-      <section className="hero-row"><div><p className="eyebrow">APPLICATION</p><h1>Réglages.</h1><p className="muted">Alertes et accès appareil.</p></div></section>
+      <section className="hero-row"><div><p className="eyebrow">{tr("APPLICATION")}</p><h1>{tr("Réglages.")}</h1><p className="muted">{tr("Alertes et accès appareil.")}</p></div></section>
       <section className="panel settings-list">
-        <article><span className="setting-symbol">◉</span><div><strong>Notifications agents</strong><small>{notificationInfo || (permission === "local" ? "Alertes locales quand l’app fonctionne ; alertes en arrière-plan indisponibles sans configuration serveur." : "Fin réponse, attente validation, migration terminée.")}</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
+        <article><span className="setting-symbol">◉</span><div><strong>{tr("Notifications agents")}</strong><small>{notificationInfo || (permission === "local" ? "Alertes locales quand l’app fonctionne ; alertes en arrière-plan indisponibles sans configuration serveur." : tr("Fin réponse, attente validation, migration terminée."))}</small></div><button className={`ghost ${permission === "active" ? "active" : ""}`} onClick={onNotifications}>{notificationLabel}</button></article>
         <article>
           <span className="setting-symbol"></span>
           <div>
-            <strong>Alertes reset quotas</strong>
-            <small>Notification push dès qu'un quota se réinitialise.</small>
+            <strong>{tr("Alertes reset quotas")}</strong>
+            <small>{tr("Notification push dès qu'un quota se réinitialise.")}</small>
           </div>
           <div className="quota-reset-toggles">
             <button
               type="button"
               className={`quota-toggle-btn ${quotaNotify.codex ? "active" : ""}`}
               onClick={() => toggleQuotaReset("codex")}
-              title="Alerte reset pour Codex"
+              title={tr("Alerte reset pour Codex")}
             >
-              Codex <b>{quotaNotify.codex ? "ON" : "OFF"}</b>
+              {tr("Codex")}{" "}<b>{quotaNotify.codex ? "ON" : "OFF"}</b>
             </button>
             <button
               type="button"
               className={`quota-toggle-btn ${quotaNotify.claude ? "active" : ""}`}
               onClick={() => toggleQuotaReset("claude")}
-              title="Alerte reset pour Claude"
+              title={tr("Alerte reset pour Claude")}
             >
-              Claude <b>{quotaNotify.claude ? "ON" : "OFF"}</b>
+              {tr("Claude")}{" "}<b>{quotaNotify.claude ? "ON" : "OFF"}</b>
             </button>
             <button
               type="button"
               className={`quota-toggle-btn ${quotaNotify.antigravity ? "active" : ""}`}
               onClick={() => toggleQuotaReset("antigravity")}
-              title="Alerte reset pour Antigravity"
+              title={tr("Alerte reset pour Antigravity")}
             >
-              Antigravity <b>{quotaNotify.antigravity ? "ON" : "OFF"}</b>
+              {tr("Antigravity")}{" "}<b>{quotaNotify.antigravity ? "ON" : "OFF"}</b>
             </button>
           </div>
         </article>
         <article className="setting-select-row">
           <span className="setting-symbol"><AppIcon name="settings"/></span>
           <div>
-            <strong>Mode basse consommation & veille</strong>
+            <strong>{tr("Mode basse consommation & veille")}</strong>
             <small>
               {power?.sleeping
-                ? `En veille depuis ${new Date(power.sleepingSince).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} · ${power.pausedContainers.length} conteneur${power.pausedContainers.length > 1 ? "s" : ""} Docker gelé${power.pausedContainers.length > 1 ? "s" : ""}`
+                ? tr("En veille depuis {0} · {1} conteneur{2} Docker gelé{3}", new Date(power.sleepingSince).toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" }), power.pausedContainers.length, power.pausedContainers.length > 1 ? "s" : "", power.pausedContainers.length > 1 ? "s" : "")
                 : power?.canSleep
-                  ? `Normal · Aucun agent au travail · Prêt pour la veille (${power?.runningContainersCount || 0} conteneurs Docker)`
-                  : `Actif · ${power?.workingAgents?.length} agent(s) en train de travailler`}
+                  ? tr("Normal · Aucun agent au travail · Prêt pour la veille ({0} conteneurs Docker)", power?.runningContainersCount || 0)
+                  : tr("Actif · {0} agent(s) en train de travailler", power?.workingAgents?.length)}
             </small>
           </div>
           <button
@@ -8141,15 +8160,15 @@ function SettingsView({ permission, notificationInfo, onNotifications, onRefresh
             onClick={toggleSleep}
             disabled={powerBusy || (!power?.sleeping && !power?.canSleep)}
           >
-            {powerBusy ? "Action en cours…" : power?.sleeping ? "Sortir de veille" : " Mettre en veille"}
+            {powerBusy ? tr("Action en cours…") : power?.sleeping ? tr("Sortir de veille") : tr(" Mettre en veille")}
           </button>
         </article>
         <article className="setting-select-row">
           <span className="setting-symbol"><AppIcon name="calendar"/></span>
           <div>
-            <strong>Veille nocturne automatique</strong>
+            <strong>{tr("Veille nocturne automatique")}</strong>
             <small>
-              Met en pause les conteneurs Docker entre {power?.schedule?.start || "00:00"} et {power?.schedule?.end || "07:30"} (si aucun agent ne travaille)
+              {tr("Met en pause les conteneurs Docker entre")}{" "}{power?.schedule?.start || "00:00"} et {power?.schedule?.end || "07:30"}{" "}{tr("(si aucun agent ne travaille)")}
             </small>
           </div>
           <button
@@ -8157,29 +8176,31 @@ function SettingsView({ permission, notificationInfo, onNotifications, onRefresh
             onClick={() => updatePowerSchedule({ enabled: !power?.schedule?.enabled })}
             aria-pressed={Boolean(power?.schedule?.enabled)}
           >
-            {power?.schedule?.enabled ? "Activée" : "Désactivée"}
+            {power?.schedule?.enabled ? tr("Activée") : tr("Désactivée")}
           </button>
         </article>
-        <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>Mise à jour interface</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : "Lecture version…"}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? "Actualisation…" : "Recharger dernière version"}</button></article>
+        <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>{tr("Mise à jour interface")}</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : tr("Lecture version…")}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? tr("Actualisation…") : tr("Recharger dernière version")}</button></article>
         <MobileApplicationSettings api={api} />
         <BiometricSettings profileId={profileId} api={api} />
-        <article><span className="setting-symbol">⌁</span><div><strong>Connexions bancaires</strong><small>Enable Banking: application ID, URL de retour, clé privée, banques liées.</small></div><button className="ghost" onClick={() => onView("finance-banking")}>Ouvrir réglages</button></article>
-        <article className="setting-select-row"><span className="setting-symbol">✓</span><div><strong>Confirmations</strong><small>{confirmMode === "off" ? "Redémarrage et changement de fournisseur immédiats" : "Demandées avant redémarrage et changement de fournisseur"} · suppressions toujours confirmées</small></div><select className="setting-select" value={confirmMode} onChange={(event) => chooseConfirm(event.target.value)} aria-label="Confirmations"><option value="on">Demander</option><option value="off">Sans confirmation</option></select></article>
-        <article className="setting-select-row"><span className="setting-symbol"><AppIcon name="settings"/></span><div><strong>Mode micro</strong><small>{voice?.installed === false ? "Moteurs vocaux absents · lancer scripts/voice-install.sh" : voice?.error ? voice.error : voice?.listening ? "À l'écoute · dis « Noyau, ouvre l'agent … »" : "Éteint · rien n'est capté"}</small></div><button className={`setting-toggle ${voice?.listening ? "on" : ""}`} onClick={() => onVoice(!voice?.listening)} disabled={voice?.installed === false} aria-pressed={Boolean(voice?.listening)}>{voice?.listening ? "Activé" : "Éteint"}</button></article>
-        <article className="setting-select-row"><span className="setting-symbol"><AppIcon name="settings"/></span><div><strong>Sons de notification</strong><small>{muted ? "Coupés" : "Bip quand un agent attend une réponse ou rend la main"}</small></div><button className={`setting-toggle ${muted ? "" : "on"}`} onClick={() => onMuted(!muted)} aria-pressed={!muted}>{muted ? "Coupés" : "Activés"}</button></article>
-        <article className="setting-select-row"><span className="setting-symbol">⌨</span><div><strong>Clavier virtuel</strong><small>Réglage propre à cet appareil · {osk === "auto" ? (wantsOnScreenKeyboard() ? "ouvert au toucher ici" : "désactivé ici (clavier physique ou PC)") : osk === "always" ? "toujours ouvert au toucher" : "jamais ouvert"}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label="Clavier virtuel"><option value="auto">Automatique</option><option value="always">Toujours</option><option value="never">Jamais</option></select></article>
+        <article><span className="setting-symbol">⌁</span><div><strong>{tr("Connexions bancaires")}</strong><small>{tr("Enable Banking: application ID, URL de retour, clé privée, banques liées.")}</small></div><button className="ghost" onClick={() => onView("finance-banking")}>{tr("Ouvrir réglages")}</button></article>
+        <article className="setting-select-row"><span className="setting-symbol">文</span><div><strong>{tr("Langue")}</strong><small>{tr("Interface de cet appareil · recharge l'application")}</small></div><select className="setting-select" value={currentLanguage()} onChange={(event) => setLanguage(event.target.value)} aria-label={tr("Langue")}>{LANGUAGES.map((language) => <option key={language.id} value={language.id}>{language.label}</option>)}</select></article>
+        <ModuleSettings />
+        <article className="setting-select-row"><span className="setting-symbol">✓</span><div><strong>{tr("Confirmations")}</strong><small>{confirmMode === "off" ? tr("Redémarrage et changement de fournisseur immédiats") : tr("Demandées avant redémarrage et changement de fournisseur")}{" "}{tr("· suppressions toujours confirmées")}</small></div><select className="setting-select" value={confirmMode} onChange={(event) => chooseConfirm(event.target.value)} aria-label={tr("Confirmations")}><option value="on">{tr("Demander")}</option><option value="off">{tr("Sans confirmation")}</option></select></article>
+        <article className="setting-select-row"><span className="setting-symbol"><AppIcon name="settings"/></span><div><strong>{tr("Mode micro")}</strong><small>{voice?.installed === false ? tr("Moteurs vocaux absents · lancer scripts/voice-install.sh") : voice?.error ? voice.error : voice?.listening ? tr("À l'écoute · dis « Noyau, ouvre l'agent … »") : tr("Éteint · rien n'est capté")}</small></div><button className={`setting-toggle ${voice?.listening ? "on" : ""}`} onClick={() => onVoice(!voice?.listening)} disabled={voice?.installed === false} aria-pressed={Boolean(voice?.listening)}>{voice?.listening ? tr("Activé") : tr("Éteint")}</button></article>
+        <article className="setting-select-row"><span className="setting-symbol"><AppIcon name="settings"/></span><div><strong>{tr("Sons de notification")}</strong><small>{muted ? tr("Coupés") : tr("Bip quand un agent attend une réponse ou rend la main")}</small></div><button className={`setting-toggle ${muted ? "" : "on"}`} onClick={() => onMuted(!muted)} aria-pressed={!muted}>{muted ? tr("Coupés") : tr("Activés")}</button></article>
+        <article className="setting-select-row"><span className="setting-symbol">⌨</span><div><strong>{tr("Clavier virtuel")}</strong><small>{tr("Réglage propre à cet appareil ·")}{" "}{osk === "auto" ? (wantsOnScreenKeyboard() ? tr("ouvert au toucher ici") : tr("désactivé ici (clavier physique ou PC)")) : osk === "always" ? tr("toujours ouvert au toucher") : tr("jamais ouvert")}</small></div><select className="setting-select" value={osk} onChange={(event) => chooseOsk(event.target.value)} aria-label={tr("Clavier virtuel")}><option value="auto">{tr("Automatique")}</option><option value="always">{tr("Toujours")}</option><option value="never">{tr("Jamais")}</option></select></article>
         <article>
           <span className="setting-symbol"><AppIcon name="settings"/></span>
           <div>
-            <strong>Historique des agents et CLI</strong>
-            <small>Efface le scrollback tmux et réinitialise les conversations ({activeProfile?.name || "profil actif"} et partagés).</small>
+            <strong>{tr("Historique des agents et CLI")}</strong>
+            <small>{tr("Efface le scrollback tmux et réinitialise les conversations (")}{activeProfile?.name || tr("profil actif")}{" "}{tr("et partagés).")}</small>
             {clearStatus && <small className="setting-ok" style={{ display: "block", marginTop: "4px" }}>{clearStatus}</small>}
           </div>
           <button className="ghost danger-action" onClick={() => setClearModalOpen(true)}>
-            Effacer l'historique
+            {tr("Effacer l'historique")}
           </button>
         </article>
-        <article><span className="setting-symbol">⌁</span><div><strong>Connexion privée</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : "Ouvre version HTTPS via VPN"}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
+        <article><span className="setting-symbol">⌁</span><div><strong>{tr("Connexion privée")}</strong><small>{window.isSecureContext ? "HTTPS actif · notifications compatibles" : tr("Ouvre version HTTPS via VPN")}</small></div><b className={window.isSecureContext ? "setting-ok" : "setting-warn"}>{window.isSecureContext ? "ACTIF" : "REQUIS"}</b></article>
       </section>
       {profiles.length > 0 && <ProfilesSettings key={profileId} profiles={profiles} profileId={profileId} onSwitch={onSwitchProfile} onChanged={onProfilesChanged} />}
       {clearModalOpen && (
@@ -8187,7 +8208,7 @@ function SettingsView({ permission, notificationInfo, onNotifications, onRefresh
           profile={activeProfile}
           onClose={() => setClearModalOpen(false)}
           onCleared={(res) => {
-            setClearStatus(res.message || "Historiques effacés.");
+            setClearStatus(res.message || tr("Historiques effacés."));
             if (onRefresh) onRefresh();
           }}
         />
@@ -8280,7 +8301,7 @@ function VsCodeModal({ session, onClose }) {
       if (res.ok) {
         setKeyStatus({
           success: true,
-          message: `✓ Clé SSH autorisée (${res.added} nouvelle${res.added > 1 ? "s" : ""}, ${res.total} au total)`,
+          message: tr("✓ Clé SSH autorisée ({0} nouvelle{1}, {2} au total)", res.added, res.added > 1 ? "s" : "", res.total),
         });
         setPubKey("");
       }
@@ -8303,18 +8324,18 @@ function VsCodeModal({ session, onClose }) {
               </svg>
             </span>
             <div>
-              <h2 id="vscode-modal-heading" className="vscode-title">VS Code Remote</h2>
-              <span className="vscode-subtitle">Éditeur distant via SSH</span>
+              <h2 id="vscode-modal-heading" className="vscode-title">{tr("VS Code Remote")}</h2>
+              <span className="vscode-subtitle">{tr("Éditeur distant via SSH")}</span>
             </div>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Fermer">×</button>
+          <button type="button" className="icon-button" onClick={onClose} aria-label={tr("Fermer")}>×</button>
         </div>
 
         <div className="vscode-modal-body">
           {/* Summary Target & Folder Card */}
           <div className="vscode-summary-card">
             <div className="vscode-summary-row">
-              <span className="vscode-summary-label"> Dossier</span>
+              <span className="vscode-summary-label">{" "}{tr("Dossier")}</span>
               <span className="vscode-summary-pill" title={cleanCwd}>
                 <strong>{folderName}</strong>
                 <span className="vscode-path-hint">{cleanCwd}</span>
@@ -8322,7 +8343,7 @@ function VsCodeModal({ session, onClose }) {
             </div>
 
             <div className="vscode-summary-row">
-              <span className="vscode-summary-label"> Cible SSH</span>
+              <span className="vscode-summary-label">{" "}{tr("Cible SSH")}</span>
               {editingTarget ? (
                 <div className="vscode-inline-edit">
                   <input
@@ -8339,13 +8360,13 @@ function VsCodeModal({ session, onClose }) {
                     autoFocus
                     placeholder="user@noyau.lan"
                   />
-                  <button type="button" className="primary mini" onClick={handleCommitTarget}>OK</button>
+                  <button type="button" className="primary mini" onClick={handleCommitTarget}>{tr("OK")}</button>
                   <button type="button" className="ghost mini" onClick={() => { setTargetDraft(sshTarget); setEditingTarget(false); }}>✕</button>
                 </div>
               ) : (
-                <div className="vscode-target-pill" onClick={() => setEditingTarget(true)} title="Cliquer pour modifier l'adresse SSH">
+                <div className="vscode-target-pill" onClick={() => setEditingTarget(true)} title={tr("Cliquer pour modifier l'adresse SSH")}>
                   <code>{sshTarget}</code>
-                  <span className="vscode-edit-icon" aria-label="Modifier">✎</span>
+                  <span className="vscode-edit-icon" aria-label={tr("Modifier")}>✎</span>
                 </div>
               )}
             </div>
@@ -8357,9 +8378,9 @@ function VsCodeModal({ session, onClose }) {
               <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                 <path d="M5 3l14 9-14 9V3z"/>
               </svg>
-              Ouvrir dans VS Code
+              {tr("Ouvrir dans VS Code")}
             </span>
-            <span className="vscode-hero-sub">ssh-remote+{sshTarget}</span>
+            <span className="vscode-hero-sub">{tr("ssh-remote+")}{sshTarget}</span>
           </button>
 
           {/* Quick Utility Actions */}
@@ -8370,7 +8391,7 @@ function VsCodeModal({ session, onClose }) {
               onClick={copyCli}
               title={cliCommand}
             >
-              {copied ? "✓ Commande copiée !" : " Copier commande CLI"}
+              {copied ? tr("✓ Commande copiée !") : tr(" Copier commande CLI")}
             </button>
 
             {isLocal && (
@@ -8378,9 +8399,9 @@ function VsCodeModal({ session, onClose }) {
                 type="button"
                 className="ghost mini vscode-action-pill"
                 onClick={openLocal}
-                title="Ouvrir sans tunnel SSH (accès local direct)"
+                title={tr("Ouvrir sans tunnel SSH (accès local direct)")}
               >
-                 Ouvrir en local
+                 {tr("Ouvrir en local")}
               </button>
             )}
           </div>
@@ -8394,7 +8415,7 @@ function VsCodeModal({ session, onClose }) {
             >
               <span className="vscode-trigger-icon"><AppIcon name="lock"/></span>
               <span className="vscode-trigger-text">
-                {showKeySetup ? "Masquer la configuration de clé SSH" : "Première connexion ou refus de clé (PermissionDenied) ?"}
+                {showKeySetup ? tr("Masquer la configuration de clé SSH") : tr("Première connexion ou refus de clé (PermissionDenied) ?")}
               </span>
               <span className="vscode-chevron">{showKeySetup ? "▲" : "▼"}</span>
             </button>
@@ -8402,40 +8423,40 @@ function VsCodeModal({ session, onClose }) {
             {showKeySetup && (
               <div className="vscode-key-setup-body">
                 <p className="vscode-setup-help">
-                  Pour que VS Code se connecte sans mot de passe, autorisez la clé publique de votre PC :
+                  {tr("Pour que VS Code se connecte sans mot de passe, autorisez la clé publique de votre PC :")}
                 </p>
 
                 <div className="vscode-key-helpers">
                   <div className="vscode-helper-row">
-                    <span className="vscode-helper-label">1. Créer une clé :</span>
+                    <span className="vscode-helper-label">{tr("1. Créer une clé :")}</span>
                     <button
                       type="button"
                       className="ghost mini vscode-chip-btn"
                       onClick={() => copyCommand('ssh-keygen -t ed25519 -C "pc-fixe"', "gen")}
-                      title="Copier la commande pour générer une clé ed25519"
+                      title={tr("Copier la commande pour générer une clé ed25519")}
                     >
-                      {copiedCmd === "gen" ? "✓ Copié !" : " ssh-keygen -t ed25519"}
+                      {copiedCmd === "gen" ? tr("✓ Copié !") : " ssh-keygen -t ed25519"}
                     </button>
                   </div>
 
                   <div className="vscode-helper-row">
-                    <span className="vscode-helper-label">2. Copier la clé :</span>
+                    <span className="vscode-helper-label">{tr("2. Copier la clé :")}</span>
                     <div className="vscode-helper-chips">
                       <button
                         type="button"
                         className="ghost mini vscode-chip-btn"
                         onClick={() => copyCommand("cat ~/.ssh/id_ed25519.pub", "cat-linux")}
-                        title="Afficher la clé sur Linux / macOS"
+                        title={tr("Afficher la clé sur Linux / macOS")}
                       >
-                        {copiedCmd === "cat-linux" ? "✓ Copié !" : " Linux/Mac (cat)"}
+                        {copiedCmd === "cat-linux" ? tr("✓ Copié !") : " Linux/Mac (cat)"}
                       </button>
                       <button
                         type="button"
                         className="ghost mini vscode-chip-btn"
                         onClick={() => copyCommand("Get-Content ~\\.ssh\\id_ed25519.pub | Set-Clipboard", "cat-win")}
-                        title="Copier la clé directement dans le presse-papier Windows"
+                        title={tr("Copier la clé directement dans le presse-papier Windows")}
                       >
-                        {copiedCmd === "cat-win" ? "✓ Copié !" : " Windows (clip)"}
+                        {copiedCmd === "cat-win" ? tr("✓ Copié !") : tr(" Windows (clip)")}
                       </button>
                     </div>
                   </div>
@@ -8444,14 +8465,14 @@ function VsCodeModal({ session, onClose }) {
                 {/* Paste Textarea */}
                 <div className="vscode-key-input-box">
                   <div className="vscode-input-header">
-                    <span>3. Collez votre clé publique :</span>
+                    <span>{tr("3. Collez votre clé publique :")}</span>
                     <button
                       type="button"
                       className="ghost mini vscode-paste-chip"
                       onClick={handlePasteKey}
-                      title="Coller depuis le presse-papier"
+                      title={tr("Coller depuis le presse-papier")}
                     >
-                       Coller
+                       {tr("Coller")}
                     </button>
                   </div>
                   <textarea
@@ -8468,7 +8489,7 @@ function VsCodeModal({ session, onClose }) {
                       disabled={addingKey || !pubKey.trim()}
                       onClick={handleAddKey}
                     >
-                      {addingKey ? "Autorisation…" : " Autoriser la clé sur le laptop"}
+                      {addingKey ? tr("Autorisation…") : tr(" Autoriser la clé sur le laptop")}
                     </button>
                     {keyStatus && (
                       <span className={`vscode-status-badge ${keyStatus.success ? "success" : "error"}`}>
@@ -8488,7 +8509,7 @@ function VsCodeModal({ session, onClose }) {
               checked={directSsh}
               onChange={(e) => saveSettings(sshTarget, e.target.checked)}
             />
-            <span>Toujours ouvrir en 1 clic sans cette confirmation</span>
+            <span>{tr("Toujours ouvrir en 1 clic sans cette confirmation")}</span>
           </label>
         </div>
       </section>
@@ -8528,7 +8549,7 @@ function CreateFileModal({ session, onClose, onSend }) {
   const handleSaveAndSend = async () => {
     const validFiles = files.filter((f) => f.content.trim().length > 0);
     if (!validFiles.length) {
-      setError("Veuillez saisir du contenu pour au moins un fichier.");
+      setError(tr("Veuillez saisir du contenu pour au moins un fichier."));
       return;
     }
     setSaving(true);
@@ -8546,10 +8567,10 @@ function CreateFileModal({ session, onClose, onSend }) {
         onSend(res.files);
         onClose();
       } else {
-        throw new Error("Erreur lors de la création des fichiers.");
+        throw new Error(tr("Erreur lors de la création des fichiers."));
       }
     } catch (err) {
-      setError(err.message || "Erreur de création");
+      setError(err.message || tr("Erreur de création"));
     } finally {
       setSaving(false);
     }
@@ -8562,11 +8583,11 @@ function CreateFileModal({ session, onClose, onSend }) {
           <div className="create-file-header-left">
             <span className="create-file-glyph"><AppIcon name="file" size={24} /></span>
             <div>
-              <h2 id="create-file-title" className="create-file-title">Créer un ou plusieurs fichiers</h2>
-              <span className="create-file-subtitle">Évite de polluer le prompt avec des tokens, configs ou longs textes</span>
+              <h2 id="create-file-title" className="create-file-title">{tr("Créer un ou plusieurs fichiers")}</h2>
+              <span className="create-file-subtitle">{tr("Évite de polluer le prompt avec des tokens, configs ou longs textes")}</span>
             </div>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Fermer">×</button>
+          <button type="button" className="icon-button" onClick={onClose} aria-label={tr("Fermer")}>×</button>
         </div>
 
         {error && <div className="create-file-error">{error}</div>}
@@ -8587,29 +8608,29 @@ function CreateFileModal({ session, onClose, onSend }) {
                   type="button"
                   className="ghost mini create-file-paste-btn"
                   onClick={() => handlePasteClipboard(file.id)}
-                  title="Coller le presse-papiers ici"
+                  title={tr("Coller le presse-papiers ici")}
                 >
-                   Coller
+                   {tr("Coller")}
                 </button>
                 {files.length > 1 && (
                   <button
                     type="button"
                     className="danger-link mini"
                     onClick={() => removeFile(file.id)}
-                    title="Supprimer ce fichier" aria-label="Supprimer ce fichier"
+                    title={tr("Supprimer ce fichier")} aria-label={tr("Supprimer ce fichier")}
                   ><AppIcon name="trash" size={16}/></button>
                 )}
               </div>
               <textarea
                 className="create-file-content-input"
-                placeholder="Colle ou saisis le contenu de ton fichier ici (tokens, API keys, code, texte volumineux)…"
+                placeholder={tr("Colle ou saisis le contenu de ton fichier ici (tokens, API keys, code, texte volumineux)…")}
                 value={file.content}
                 onChange={(e) => updateFile(file.id, "content", e.target.value)}
                 rows={6}
                 spellCheck="false"
               />
               <div className="create-file-char-count">
-                {file.content.length} caractère{file.content.length > 1 ? "s" : ""}
+                {file.content.length}{" "}{tr("caractère")}{file.content.length > 1 ? "s" : ""}
                 {file.content.length > 0 ? ` · ~${(file.content.length / 1024).toFixed(1)} Ko` : ""}
               </div>
             </div>
@@ -8618,14 +8639,14 @@ function CreateFileModal({ session, onClose, onSend }) {
 
         <div className="create-file-footer">
           <button type="button" className="ghost create-file-add-btn" onClick={addFile}>
-            ＋ Ajouter un autre fichier
+            {tr("＋ Ajouter un autre fichier")}
           </button>
           <div className="create-file-actions">
             <button type="button" className="ghost" onClick={onClose} disabled={saving}>
-              Annuler
+              {tr("Annuler")}
             </button>
             <button type="button" className="primary" onClick={handleSaveAndSend} disabled={saving}>
-              {saving ? "Création…" : `Créer & insérer dans le prompt (${files.filter((f) => f.content.trim()).length || 1})`}
+              {saving ? tr("Création…") : tr("Créer & insérer dans le prompt ({0})", files.filter((f) => f.content.trim()).length || 1)}
             </button>
           </div>
         </div>
@@ -8684,7 +8705,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
   const openVsCode = (e) => {
     const cwd = session.cwd;
     if (!cwd) {
-      window.alert("Répertoire de travail inconnu pour cet agent.");
+      window.alert(tr("Répertoire de travail inconnu pour cet agent."));
       return;
     }
     const hostname = window.location.hostname;
@@ -8723,7 +8744,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
     if (session.migrationState === "failed" && migrationRef.current) {
       migrationRef.current = false;
       setMigrating(false);
-      if (session.migrationError) window.alert(`Bascule impossible: ${session.migrationError}`);
+      if (session.migrationError) window.alert(tr("Bascule impossible: {0}", session.migrationError));
     }
   }, [session.migrationState, session.migratedTo, session.migrationError, onMigrated]);
 
@@ -8890,11 +8911,11 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
     });
     const inputDisposable = terminal.onData((data) => {
       if (data === "\r") {
-        transmit({ type: "key", key: "Enter" });
+        transmit({ type: "key", key: tr("Enter") });
         return;
       }
       if (data === "\x7f") {
-        transmit({ type: "key", key: "Backspace" });
+        transmit({ type: "key", key: tr("Backspace") });
         return;
       }
       let output = data;
@@ -9110,10 +9131,12 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
     terminalNode.current.addEventListener("click", openKeyboard);
     // Sans clavier virtuel, aucun champ n'est focalise (sinon le clavier du systeme surgit):
     // on capte les touches au niveau du document et on les envoie telles quelles a l'agent.
-    const specialKeys = { Enter: "Enter", Backspace: "Backspace", Tab: "Tab", Escape: "Escape", ArrowUp: "ArrowUp", ArrowDown: "ArrowDown", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", PageUp: "PageUp", PageDown: "PageDown" };
+    const specialKeys = { Enter: tr("Enter"), Backspace: tr("Backspace"), Tab: tr("Tab"), Escape: tr("Escape"), ArrowUp: "ArrowUp", ArrowDown: "ArrowDown", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", PageUp: "PageUp", PageDown: "PageDown" };
     const editableTarget = (node) => node instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName) || node.isContentEditable);
     const captureKey = (event) => {
       if (!captureMode || event.metaKey || event.defaultPrevented || editableTarget(event.target)) return;
+      // La vue conversation et le texte selectionne gardent les raccourcis du navigateur (Ctrl+C copie).
+      if (document.querySelector(".agent-conversation") || !window.getSelection()?.isCollapsed) return;
       if (specialKeys[event.key]) {
         event.preventDefault();
         sendSpecial(specialKeys[event.key]);
@@ -9426,7 +9449,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
   async function sendFile(file, { submit = true } = {}) {
     if (!file) return;
     if (file.size > 500 * 1024 * 1024) {
-      window.alert("Fichier trop volumineux. La taille maximale autorisée est de 500 Mo.");
+      window.alert(tr("Fichier trop volumineux. La taille maximale autorisée est de 500 Mo."));
       return;
     }
     onInteract?.();
@@ -9438,7 +9461,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
       const uploaded = await api("/api/uploads/file", { method: "POST", body: form });
       const insertedPath = uploaded.path.includes(" ") ? `"${uploaded.path}" ` : `${uploaded.path} `;
       transmit(submit
-        ? { type: "submit", data: `${uploaded.image ? "Image" : "Fichier"} joint à examiner : ${uploaded.path}` }
+        ? { type: "submit", data: tr("{0} joint à examiner : {1}", uploaded.image ? tr("Image") : tr("Fichier"), uploaded.path) }
         : { type: "input", data: insertedPath });
     } catch (error) {
       window.alert(error.message);
@@ -9522,7 +9545,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
       const result = await readNativeClipboard(Clipboard, { imageOnly });
       if (result.kind === "image") await sendFile(new File([result.blob], `capture-${Date.now()}.${result.ext}`, { type: result.type }), { submit: false });
       else sendKeyboardData(result.value);
-    } catch (error) { window.alert(error.message || "Accès au presse-papiers refusé par le téléphone."); }
+    } catch (error) { window.alert(error.message || tr("Accès au presse-papiers refusé par le téléphone.")); }
     finally { clipboardBusyRef.current = false; }
   }
 
@@ -9545,9 +9568,9 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
           return;
         }
       }
-      window.alert("Aucune image trouvée dans le presse-papiers. Fais une capture d'écran ou copie une image d'abord.");
+      window.alert(tr("Aucune image trouvée dans le presse-papiers. Fais une capture d'écran ou copie une image d'abord."));
     } catch {
-      window.alert("Impossible d'accéder au presse-papiers (vérifie les permissions ou utilise Ctrl+V).");
+      window.alert(tr("Impossible d'accéder au presse-papiers (vérifie les permissions ou utilise Ctrl+V)."));
     }
   }
 
@@ -9582,7 +9605,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
     } catch (error) {
       if (error.message === "Presse-papiers vide.") return window.alert(error.message);
       // Sans contexte sécurisé, la lecture du presse-papiers est interdite: saisie manuelle.
-      const manual = window.prompt("Colle ici le texte à envoyer à l'agent (Cmd+V) :", "");
+      const manual = window.prompt(tr("Colle ici le texte à envoyer à l'agent (Cmd+V) :"), "");
       if (manual) sendKeyboardData(manual);
     }
   }
@@ -9595,7 +9618,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
       const result = await api("/api/todos");
       const todo = (result.todos || []).find((item) => todoRef(item.id) === String(reference).toUpperCase());
       if (!todo) {
-        window.alert(`Tâche ${reference} introuvable.`);
+        window.alert(tr("Tâche {0} introuvable.", reference));
         return;
       }
       setTodoDetail(todo);
@@ -9625,7 +9648,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
     const comments = (todo.comments || []).slice(-3)
       .map((comment) => `${formatCommentDate(comment.createdAt)}${comment.author ? ` ${comment.author}` : ""}: ${comment.text.replace(/\s+/g, " ")}`)
       .join(" · ");
-    const block = `${todoRef(todo.id)} « ${todo.text} » [${todo.status || "todo"}]${todo.dueDate ? ` échéance ${todo.dueDate}` : ""}${comments ? ` — derniers commentaires: ${comments}` : ""} `;
+    const block = tr("{0} « {1} » [{2}]{3}{4} ", todoRef(todo.id), todo.text, todo.status || "todo", todo.dueDate ? tr(" échéance {0}", todo.dueDate) : "", comments ? ` — derniers commentaires: ${comments}` : "");
     setTodoPicker(false);
     if (conversationMode) insertConversation(block);
     else { sendKeyboardData(block); focusKeyboard(); }
@@ -9645,13 +9668,13 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
   }
 
   async function copyText(value) {
-    if (!await writeClipboard(value)) window.alert("Copie refusée par le navigateur.");
+    if (!await writeClipboard(value)) window.alert(tr("Copie refusée par le navigateur."));
   }
 
   async function copyTerminal() {
     try {
       const terminal = terminalRef.current;
-      if (!terminal) throw new Error("Terminal indisponible.");
+      if (!terminal) throw new Error(tr("Terminal indisponible."));
       let content = terminal.getSelection();
       if (!content) {
         const buffer = terminal.buffer.active;
@@ -9660,10 +9683,10 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
         for (let row = start; row < Math.min(buffer.length, start + terminal.rows); row += 1) lines.push(buffer.getLine(row)?.translateToString(true) || "");
         content = lines.join("\n").trimEnd();
       }
-      if (!content) throw new Error("Terminal vide.");
-      if (!await writeClipboard(content)) throw new Error("Copie refusée par le navigateur.");
+      if (!content) throw new Error(tr("Terminal vide."));
+      if (!await writeClipboard(content)) throw new Error(tr("Copie refusée par le navigateur."));
     } catch (error) {
-      window.alert(error.message || "Copie presse-papiers refusée.");
+      window.alert(error.message || tr("Copie presse-papiers refusée."));
     }
   }
 
@@ -9682,11 +9705,11 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
 
   // Redemarrage: le pane repart avec la meme conversation, la connexion terminal se remet toute seule.
   async function restart() {
-    if (restarting || !confirmAction("Redémarrer l'agent en reprenant la conversation en cours ?")) return;
+    if (restarting || !confirmAction(tr("Redémarrer l'agent en reprenant la conversation en cours ?"))) return;
     setRestarting(true);
     try {
       const result = await api(`/api/sessions/${session.id}/restart`, { method: "POST" });
-      if (!result?.resumed) window.alert("Agent redémarré. Aucune conversation précédente à reprendre.");
+      if (!result?.resumed) window.alert(tr("Agent redémarré. Aucune conversation précédente à reprendre."));
       onRefresh?.();
     } catch (error) {
       window.alert(error.message);
@@ -9706,14 +9729,14 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
 
   async function migrate(target) {
     if (!target || target === session.assistant) return;
-    if (!confirmAction(`Basculer « ${session.name} » vers ${assistantMeta[target]?.label || target} ? Le contexte de la conversation est transmis au nouvel agent.`)) return;
+    if (!confirmAction(tr("Basculer « {0} » vers {1} ? Le contexte de la conversation est transmis au nouvel agent.", session.name, assistantMeta[target]?.label || target))) return;
     setMigrating(true);
     try {
       const result = await api(`/api/sessions/${session.id}/migrate`, { method: "POST", body: JSON.stringify({ target }) });
       if (result?.mode === "transcript" && result.session?.id) {
         migrationRef.current = false;
         setMigrating(false);
-        if (!result.history) window.alert("Aucun historique lisible: le nouvel agent repart de l'état du dépôt.");
+        if (!result.history) window.alert(tr("Aucun historique lisible: le nouvel agent repart de l'état du dépôt."));
         onMigrated(result.session.id);
         return;
       }
@@ -9728,20 +9751,20 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
   return (
     <div className={`terminal-page ${showAgentSwitcher ? "has-agent-switcher" : ""} ${conversationMode ? "conversation-mode" : ""}`}>
       <div className="terminal-toolbar">
-        <button className="icon-button terminal-back" onClick={onBack} aria-label="Retour">‹</button>
+        <button className="icon-button terminal-back" onClick={onBack} aria-label={tr("Retour")}>‹</button>
         <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small />
         <div className="terminal-identity">
           <strong>
             <i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} />
             <span>{session.name}</span>
-            {session.assistant === "codex" && <span className="codex-efficiency-badge" title="Contexte compact, recherches ciblées, raisonnement faible">Caveman · compact</span>}
+            {session.assistant === "codex" && <span className="codex-efficiency-badge" title={tr("Contexte compact, recherches ciblées, raisonnement faible")}>{tr("Caveman · compact")}</span>}
             <span
               className="agent-desc-btn"
-              title={session.description ? `Description : ${session.description}` : "Voir la description de l'agent"}
+              title={session.description ? `Description : ${session.description}` : tr("Voir la description de l'agent")}
               onClick={() => setDescOpen((v) => !v)}
               role="button"
               tabIndex={0}
-              aria-label="Description de l'agent"
+              aria-label={tr("Description de l'agent")}
             >
               <AppIcon name="info" size={15} />
             </span>
@@ -9749,9 +9772,9 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
               <button
                 type="button"
                 className="agent-settings-btn"
-                title="Réglages de l'agent"
+                title={tr("Réglages de l'agent")}
                 onClick={onEdit}
-                aria-label={`Réglages de ${session.name}`}
+                aria-label={tr("Réglages de {0}", session.name)}
               ><AppIcon name="settings" size={15}/>
               </button>
             )}
@@ -9762,47 +9785,47 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
               <div className="agent-desc-popover terminal-desc-popover" onClick={(e) => e.stopPropagation()}>
                 <div className="agent-desc-popover-head">
                   <strong>{session.name}</strong>
-                  <button type="button" onClick={() => setDescOpen(false)} aria-label="Fermer">×</button>
+                  <button type="button" onClick={() => setDescOpen(false)} aria-label={tr("Fermer")}>×</button>
                 </div>
-                <p>{session.description || "Aucune description renseignée pour cet agent."}</p>
+                <p>{session.description || tr("Aucune description renseignée pour cet agent.")}</p>
               </div>
             </>
           )}
-          <small>{session.agentStatus?.label || "Disponible"} · {connected ? "Connecté" : "Déconnecté"} · {session.cwd}</small>
+          <small>{tr(session.agentStatus?.label || "Disponible")} · {connected ? tr("Connecté") : tr("Déconnecté")} · {session.cwd}</small>
         </div>
         <div className="terminal-actions">
-          {sessions.length > 1 && <button type="button" className="agent-chat-choose" aria-label="Choisir un autre agent" onClick={() => window.dispatchEvent(new Event("noyau:choose-agent"))}><AppIcon name="swap"/></button>}
-          {session.assistant !== "shell" && <button type="button" className="ghost agent-chat-toggle" onClick={() => setConversationMode((value) => !value)}><AppIcon name={conversationMode ? "terminal" : "chat"} size={17}/><span>{conversationMode ? "Terminal" : "Conversation"}</span></button>}
+          {sessions.length > 1 && <button type="button" className="agent-chat-choose" aria-label={tr("Choisir un autre agent")} onClick={() => window.dispatchEvent(new Event("noyau:choose-agent"))}><AppIcon name="swap"/></button>}
+          {session.assistant !== "shell" && <button type="button" className="ghost agent-chat-toggle" onClick={() => setConversationMode((value) => !value)}><AppIcon name={conversationMode ? "terminal" : "chat"} size={17}/><span>{conversationMode ? tr("Terminal") : tr("Conversation")}</span></button>}
           <ContextControl session={session} onRefresh={onRefresh} />
-          <details className="terminal-extra-actions"><summary aria-label="Actions de l’agent">•••</summary><div className="terminal-extra-panel">
-          {session.assistant !== "shell" && <button type="button" className="ghost" title="Mémoire commune de cet agent entre moteurs" aria-label="Ouvrir la mémoire commune" onClick={() => setMemoryOpen(true)}><AppIcon name="memory"/> <span>Mémoire de l’agent</span></button>}
-          {held > 0 && <span className="terminal-held-pill" title="Message d'un autre agent en attente : il partira dès que tu auras envoyé ton prompt"> {held}</span>}
-          {!connected && <span className="terminal-link-pill" title="Connexion perdue: la saisie est gardée et partira à la reconnexion">{queued ? `${queued} en attente` : "⟳"}</span>}
+          <details className="terminal-extra-actions"><summary aria-label={tr("Actions de l’agent")}>•••</summary><div className="terminal-extra-panel">
+          {session.assistant !== "shell" && <button type="button" className="ghost" title={tr("Mémoire commune de cet agent entre moteurs")} aria-label={tr("Ouvrir la mémoire commune")} onClick={() => setMemoryOpen(true)}><AppIcon name="memory"/> <span>{tr("Mémoire de l’agent")}</span></button>}
+          {held > 0 && <span className="terminal-held-pill" title={tr("Message d'un autre agent en attente : il partira dès que tu auras envoyé ton prompt")}> {held}</span>}
+          {!connected && <span className="terminal-link-pill" title={tr("Connexion perdue: la saisie est gardée et partira à la reconnexion")}>{queued ? tr("{0} en attente", queued) : "⟳"}</span>}
           {["codex", "claude", "antigravity"].includes(session.assistant) && (
-            <label className="provider-switch" title={migrating ? "Bascule en cours… (choisir pour forcer immédiatement)" : "Changer de fournisseur en gardant le contexte"}>
-              <span className="terminal-provider-label">Moteur</span><select value={session.assistant} onChange={(event) => migrate(event.target.value)} aria-label="Fournisseur">
+            <label className="provider-switch" title={migrating ? tr("Bascule en cours… (choisir pour forcer immédiatement)") : tr("Changer de fournisseur en gardant le contexte")}>
+              <span className="terminal-provider-label">{tr("Moteur")}</span><select value={session.assistant} onChange={(event) => migrate(event.target.value)} aria-label={tr("Fournisseur")}>
                 {["codex", "claude", "antigravity"].filter((id) => id === session.assistant || assistants?.[id] !== false).map((id) => {
                   const quota = providerQuota(quotas, id);
                   return <option value={id} key={id}>{assistantMeta[id].label}{quota ? ` · ${quota.percent}%` : ""}</option>;
                 })}
               </select>
-              {migrating && <em title="Passation en cours…">…</em>}
+              {migrating && <em title={tr("Passation en cours…")}>…</em>}
             </label>
           )}
-          {session.managed && <button type="button" className="ghost" disabled={restarting} onClick={restart}><AppIcon name="refresh"/><span>{restarting ? "Redémarrage…" : "Redémarrer l’agent"}</span></button>}
-          {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label="Archiver agent" title="Archiver: ferme l'agent en gardant son fil">Archiver l’agent</button>}
+          {session.managed && <button type="button" className="ghost" disabled={restarting} onClick={restart}><AppIcon name="refresh"/><span>{restarting ? tr("Redémarrage…") : tr("Redémarrer l’agent")}</span></button>}
+          {session.managed && !session.core && <button className="danger-link" onClick={kill} aria-label={tr("Archiver agent")} title="Archiver: ferme l'agent en gardant son fil">{tr("Archiver l’agent")}</button>}
           </div></details>
         </div>
       </div>
       {showAgentSwitcher && <TerminalAgentSwitcher session={session} sessions={sessions} onOpen={onSwitchAgent} />}
       <div className="agent-workspace">
         <div className="terminal-frame" ref={terminalNode} />
-        {conversationMode && <AgentConversation session={session} connected={connected} api={api} onSubmit={(text) => { onInteract?.(); transmit({ type: "submit", data: text }); }} onForceSubmit={() => { onInteract?.(); sendSpecial("Enter"); sendSpecial("C-m"); }} onStop={() => sendSpecial("Escape")} onRestart={restart} onTerminal={() => setConversationMode(false)} agents={sessions} restarting={restarting} onTagTodo={() => setTodoPicker(true)} onCreateNote={() => setCreateFileModal(true)} insertRequest={conversationInsert} onInsertConsumed={() => setConversationInsert(null)} draftStore={draftStore} held={held} queued={queued} onDictation={async () => { setConversationMode(false); try { if (!voiceCapture.active) await voiceCapture.start(); const state = await api("/api/voice/dictation", { method: "POST", body: JSON.stringify({ sessionId: session.id, enabled: true }) }); onVoice?.(state); if (!state.listening) window.alert(state.error || "Micro indisponible."); } catch (error) { window.alert(error.message); } }} />}
+        {conversationMode && <AgentConversation session={session} connected={connected} api={api} onSubmit={(text) => { onInteract?.(); transmit({ type: "submit", data: text }); }} onForceSubmit={() => { onInteract?.(); sendSpecial("Enter"); sendSpecial("C-m"); }} onStop={() => sendSpecial("Escape")} onRestart={restart} onTerminal={() => setConversationMode(false)} agents={sessions} restarting={restarting} onTagTodo={() => setTodoPicker(true)} onCreateNote={() => setCreateFileModal(true)} insertRequest={conversationInsert} onInsertConsumed={() => setConversationInsert(null)} draftStore={draftStore} held={held} queued={queued} onDictation={async () => { setConversationMode(false); try { if (!voiceCapture.active) await voiceCapture.start(); const state = await api("/api/voice/dictation", { method: "POST", body: JSON.stringify({ sessionId: session.id, enabled: true }) }); onVoice?.(state); if (!state.listening) window.alert(state.error || tr("Micro indisponible.")); } catch (error) { window.alert(error.message); } }} />}
       </div>
       {snapshot !== null && (
         <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSnapshot(null)}>
           <section className="modal terminal-snapshot">
-            <div className="modal-head"><div><p className="eyebrow">TEXTE DE L’ÉCRAN</p><h2>Copier</h2></div><button className="icon-button" onClick={() => setSnapshot(null)}>×</button></div>
+            <div className="modal-head"><div><p className="eyebrow">{tr("TEXTE DE L’ÉCRAN")}</p><h2>{tr("Copier")}</h2></div><button className="icon-button" onClick={() => setSnapshot(null)}>×</button></div>
             {snapshot.links?.length > 0 && (
               <div className="snapshot-links">
                 {snapshot.links.map((link) => (
@@ -9816,18 +9839,18 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
                         setTimeout(() => setCopiedLink(null), 2000);
                       }}
                     >
-                      {copiedLink === link ? "Copié !" : "Copier"}
+                      {copiedLink === link ? tr("Copié !") : tr("Copier")}
                     </button>
-                    <a className="ghost" href={link} target="_blank" rel="noreferrer">Ouvrir</a>
+                    <a className="ghost" href={link} target="_blank" rel="noreferrer">{tr("Ouvrir")}</a>
                   </div>
                 ))}
               </div>
             )}
             <textarea className="snapshot-text" ref={snapshotRef} value={snapshot.text} readOnly spellCheck="false" />
             <div className="modal-actions">
-              <button className="ghost" onClick={() => setSnapshot(null)}>Fermer</button>
-              <button className="ghost" onClick={() => { snapshotRef.current?.focus(); snapshotRef.current?.select(); }}>Tout sélectionner</button>
-              <button className="primary" onClick={() => copyText(snapshot.text)}>Tout copier</button>
+              <button className="ghost" onClick={() => setSnapshot(null)}>{tr("Fermer")}</button>
+              <button className="ghost" onClick={() => { snapshotRef.current?.focus(); snapshotRef.current?.select(); }}>{tr("Tout sélectionner")}</button>
+              <button className="primary" onClick={() => copyText(snapshot.text)}>{tr("Tout copier")}</button>
             </div>
           </section>
         </div>
@@ -9848,7 +9871,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
           onCompositionEnd={(event) => syncKeyboardField(event.currentTarget)}
           onFocus={() => { setKeyboardActive(true); viewportRefreshRef.current(true); }}
           onBlur={() => { setKeyboardActive(false); viewportRefreshRef.current(true); }}
-          aria-label="Clavier terminal"
+          aria-label={tr("Clavier terminal")}
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="none"
@@ -9862,8 +9885,8 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
             type="button"
             className="vscode-key"
             {...tapKey(openVsCode)}
-            aria-label="Ouvrir le projet dans VS Code"
-            title={`Ouvrir dans VS Code (${session.cwd || "projet"}) · Shift+clic pour options SSH`}
+            aria-label={tr("Ouvrir le projet dans VS Code")}
+            title={tr("Ouvrir dans VS Code ({0}) · Shift+clic pour options SSH", session.cwd || "projet")}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
               <path d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z"/>
@@ -9880,23 +9903,23 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
                 if (enabled && !voiceCapture.active) await voiceCapture.start().catch((error) => { micError = error; });
                 const state = await api("/api/voice/dictation", { method: "POST", body: JSON.stringify({ sessionId: session.id, enabled }) });
                 onVoice?.(state);
-                if (enabled && !state.listening) window.alert(state.error || micError?.message || "Micro indisponible.");
-                else if (micError) window.alert(`Micro de ce navigateur refusé (${micError.message}): Noyau écoute le micro du PC hôte.`);
+                if (enabled && !state.listening) window.alert(state.error || micError?.message || tr("Micro indisponible."));
+                else if (micError) window.alert(tr("Micro de ce navigateur refusé ({0}): Noyau écoute le micro du PC hôte.", micError.message));
                 if (!enabled && !state.listening) voiceCapture.stop();
               } catch (error) {
                 window.alert(error.message);
               }
             })}
             aria-pressed={voice?.dictation === session.id}
-            aria-label="Dicter au lieu de taper"
-            title={voice?.dictation === session.id ? "Dictée active: ce que tu dis s'écrit ici" : "Dicter: parler au lieu d'écrire, sans dire « Noyau »"}
+            aria-label={tr("Dicter au lieu de taper")}
+            title={voice?.dictation === session.id ? tr("Dictée active: ce que tu dis s'écrit ici") : "Dicter: parler au lieu d'écrire, sans dire « Noyau »"}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></svg>
           </button>
-          <button className="keyboard-key" {...tapKey(() => { setOskEnabled(true); focusKeyboard(true); })} aria-label="Afficher le clavier">
+          <button className="keyboard-key" {...tapKey(() => { setOskEnabled(true); focusKeyboard(true); })} aria-label={tr("Afficher le clavier")}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M6 13.5h.01M9.5 13.5h6.5" /></svg>
           </button>
-          <label className={`upload-key ${uploading ? "disabled" : ""}`} aria-label="Joindre photo ou fichier" title="Téléverser un fichier depuis l'appareil">
+          <label className={`upload-key ${uploading ? "disabled" : ""}`} aria-label={tr("Joindre photo ou fichier")} title={tr("Téléverser un fichier depuis l'appareil")}>
             <input type="file" onChange={attachFile} disabled={uploading} />
             <span>{uploading ? "…" : "＋"}</span>
           </label>
@@ -9904,8 +9927,8 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
             type="button"
             className="create-file-key"
             {...tapKey(() => setCreateFileModal(true))}
-            aria-label="Créer fichier texte direct"
-            title="Créer un ou plusieurs fichiers texte (tokens API, snippets, config) et insérer les chemins"
+            aria-label={tr("Créer fichier texte direct")}
+            title={tr("Créer un ou plusieurs fichiers texte (tokens API, snippets, config) et insérer les chemins")}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -9918,8 +9941,8 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
             type="button"
             className={`paste-image-key ${uploading ? "disabled" : ""}`}
             {...tapKey(pasteImageOnly)}
-            aria-label="Coller image du presse-papiers"
-            title="Coller directement une image ou capture d'écran du presse-papiers"
+            aria-label={tr("Coller image du presse-papiers")}
+            title={tr("Coller directement une image ou capture d'écran du presse-papiers")}
             disabled={uploading}
           >
             {uploading ? "…" : (
@@ -9930,28 +9953,28 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
               </svg>
             )}
           </button>
-          {session.managed && <button className="restart-key" {...tapKey(restart)} aria-label="Redémarrer l'agent">
+          {session.managed && <button className="restart-key" {...tapKey(restart)} aria-label={tr("Redémarrer l'agent")}>
             {restarting ? "…" : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg>}
           </button>}
-          <button className="todo-key" {...tapKey(() => setTodoPicker(true))} aria-label="Taguer une tâche" title="Taguer une tâche: envoie sa référence, son texte et ses derniers commentaires">✱</button>
-          <button className="text-key" {...tapKey(openSnapshot)} aria-label="Texte de l'écran">
+          <button className="todo-key" {...tapKey(() => setTodoPicker(true))} aria-label={tr("Taguer une tâche")} title={tr("Taguer une tâche: envoie sa référence, son texte et ses derniers commentaires")}>✱</button>
+          <button className="text-key" {...tapKey(openSnapshot)} aria-label={tr("Texte de l'écran")}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h8l4 4v12H6z" /><path d="M14 4v4h4M9 13h6M9 16.5h4" /></svg>
           </button>
-          <button className="copy-key" {...tapKey(copyTerminal)} aria-label="Copier l'écran">
+          <button className="copy-key" {...tapKey(copyTerminal)} aria-label={tr("Copier l'écran")}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15" /></svg>
           </button>
-          <button className="paste-key" {...tapKey(pasteClipboard)} aria-label="Coller">
+          <button className="paste-key" {...tapKey(pasteClipboard)} aria-label={tr("Coller")}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="16" rx="2" /><path d="M9 5V3.8A.8.8 0 0 1 9.8 3h4.4a.8.8 0 0 1 .8.8V5M9 12h6M9 16h4" /></svg>
           </button>
-          <button {...tapKey(() => pressSpecial("Escape"))}>Esc</button>
-          <button className={ctrl ? "selected" : ""} {...tapKey(() => toggleModifier("ctrl"))}>Ctrl</button>
-          <button className={alt ? "selected" : ""} {...tapKey(() => toggleModifier("alt"))}>Alt</button>
-          <button {...tapKey(() => pressSpecial("Tab"))}>Tab</button>
+          <button {...tapKey(() => pressSpecial(tr("Escape")))}>{tr("Esc")}</button>
+          <button className={ctrl ? "selected" : ""} {...tapKey(() => toggleModifier("ctrl"))}>{tr("Ctrl")}</button>
+          <button className={alt ? "selected" : ""} {...tapKey(() => toggleModifier("alt"))}>{tr("Alt")}</button>
+          <button {...tapKey(() => pressSpecial(tr("Tab")))}>{tr("Tab")}</button>
           <button {...tapKey(() => pressSpecial("ArrowLeft"))}>←</button>
           <button {...tapKey(() => pressSpecial("ArrowUp"))}>↑</button>
           <button {...tapKey(() => pressSpecial("ArrowDown"))}>↓</button>
           <button {...tapKey(() => pressSpecial("ArrowRight"))}>→</button>
-          <button className="enter-key" {...tapKey(() => pressSpecial("Enter"))}>Entrée</button>
+          <button className="enter-key" {...tapKey(() => pressSpecial(tr("Enter")))}>{tr("Entrée")}</button>
         </div>
       </div>
     </div>
@@ -10000,24 +10023,24 @@ function NewSessionModal({ projects, sessions, assistants, onClose, onCreated })
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal">
-        <div className="modal-head"><div><p className="eyebrow">NOUVELLE SESSION</p><h2>Lancer agent</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
+        <div className="modal-head"><div><p className="eyebrow">{tr("NOUVELLE SESSION")}</p><h2>{tr("Lancer agent")}</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
         <form onSubmit={submit}>
-          <label>Type</label>
+          <label>{tr("Type")}</label>
           <div className="assistant-choice">
             {LAUNCHABLE_ASSISTANTS.map((id) => {
               const meta = assistantMeta[id];
               const missing = assistants?.[id] === false;
               return (
-                <button type="button" className={`${assistant === id ? "selected" : ""} ${missing ? "missing" : ""}`} onClick={() => setAssistant(id)} disabled={missing} title={missing ? `${meta.label} n'est pas installé sur ce PC` : meta.label} key={id}>
+                <button type="button" className={`${assistant === id ? "selected" : ""} ${missing ? "missing" : ""}`} onClick={() => setAssistant(id)} disabled={missing} title={missing ? tr("{0} n'est pas installé sur ce PC", meta.label) : meta.label} key={id}>
                   <AgentIcon assistant={id} /><span>{meta.label}{missing ? " · absent" : ""}</span>
                 </button>
               );
             })}
           </div>
-          <label htmlFor="name">Nom</label>
-          <input id="name" value={name} onChange={(event) => setName(event.target.value)} placeholder={`Ex. ${assistant === "shell" ? "Serveur local" : "Refonte dashboard"}`} />
+          <label htmlFor="name">{tr("Nom")}</label>
+          <input id="name" value={name} onChange={(event) => setName(event.target.value)} placeholder={`Ex. ${assistant === "shell" ? tr("Serveur local") : tr("Refonte dashboard")}`} />
           <div className="form-row-between">
-            <label htmlFor="description">Description <small className="label-optional">(rôle et utilité)</small></label>
+            <label htmlFor="description">{tr("Description")}{" "}<small className="label-optional">{tr("(rôle et utilité)")}</small></label>
             <button
               type="button"
               className="suggest-link"
@@ -10033,7 +10056,7 @@ function NewSessionModal({ projects, sessions, assistants, onClose, onCreated })
               }}
               disabled={suggesting}
             >
-              {suggesting ? "Génération…" : " Suggérer"}
+              {suggesting ? tr("Génération…") : tr(" Suggérer")}
             </button>
           </div>
           <textarea
@@ -10041,23 +10064,23 @@ function NewSessionModal({ projects, sessions, assistants, onClose, onCreated })
             rows={2}
             value={description}
             onChange={(event) => setDescription(event.target.value)}
-            placeholder="À quoi sert cet agent ? Ex. Scraping web, tests mocks, refonte frontend..."
+            placeholder={tr("À quoi sert cet agent ? Ex. Scraping web, tests mocks, refonte frontend...")}
           />
-          <label htmlFor="project">Projet</label>
+          <label htmlFor="project">{tr("Projet")}</label>
           <select id="project" value={projectId} onChange={(event) => {
             const nextProj = event.target.value;
             setProjectId(nextProj);
             if (nextProj) setProjectLogo(true);
-          }}><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
-          <label htmlFor="cwd">Dossier de travail</label>
+          }}><option value="">{tr("Sans projet")}</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
+          <label htmlFor="cwd">{tr("Dossier de travail")}</label>
           <input id="cwd" list="agent-directories" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="/home/user/projects/mon-projet" autoComplete="off" spellCheck="false" />
           <datalist id="agent-directories">{[...new Set(sessions.map((session) => session.cwd).filter(Boolean))].map((directory) => <option value={directory} key={directory} />)}</datalist>
-          <p className="form-hint">Chemin existant sur ce PC. Vide = dossier projets par défaut. Projet sert seulement au classement.</p>
-          {assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{assistant === "codex" ? "Codex --yolo" : `${assistantMeta[assistant]?.label} --dangerously-skip-permissions`}</small></span></label>}
-          <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Cherche logo/icon dans dossier projet</small></span></label>
-          <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
+          <p className="form-hint">{tr("Chemin existant sur ce PC. Vide = dossier projets par défaut. Projet sert seulement au classement.")}</p>
+          {assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>{tr("Sans confirmation")}</strong><small>{assistant === "codex" ? tr("Codex --yolo") : `${assistantMeta[assistant]?.label} --dangerously-skip-permissions`}</small></span></label>}
+          <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>{tr("Logo projet auto")}</strong><small>{tr("Cherche logo/icon dans dossier projet")}</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>{tr("Agent favori")}</strong><small>{tr("Affiché avant autres agents")}</small></span></label>
           {error && <p className="form-error">{error}</p>}
-          <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Annuler</button><button className="primary" disabled={loading}>{loading ? "Lancement…" : "Lancer"}</button></div>
+          <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>{tr("Annuler")}</button><button className="primary" disabled={loading}>{loading ? tr("Lancement…") : tr("Lancer")}</button></div>
         </form>
       </section>
     </div>
@@ -10083,7 +10106,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
     setLoading(true);
     setError("");
     try {
-      if (assistant !== session.assistant && !window.confirm(`Basculer « ${name} » vers ${assistantMeta[assistant]?.label} ? L'agent actuel est arrêté et le nouveau reprend la dernière conversation.`)) {
+      if (assistant !== session.assistant && !window.confirm(tr("Basculer « {0} » vers {1} ? L'agent actuel est arrêté et le nouveau reprend la dernière conversation.", name, assistantMeta[assistant]?.label))) {
         setLoading(false);
         return;
       }
@@ -10102,8 +10125,8 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
         }),
       });
       onSaved(result.session, { switched: Boolean(result.switched) });
-      if (result.switched && !result.history) window.alert("Aucun historique lisible: le nouvel agent repart de l'état du dépôt.");
-      if (result.pending) window.alert("Mode permissions appliqué après prochaine réponse agent.");
+      if (result.switched && !result.history) window.alert(tr("Aucun historique lisible: le nouvel agent repart de l'état du dépôt."));
+      if (result.pending) window.alert(tr("Mode permissions appliqué après prochaine réponse agent."));
     } catch (reason) {
       setError(reason.message);
     } finally {
@@ -10114,12 +10137,12 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal">
-        <div className="modal-head"><div><p className="eyebrow">RÉGLAGES AGENT</p><h2>Éditer</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
+        <div className="modal-head"><div><p className="eyebrow">{tr("RÉGLAGES AGENT")}</p><h2>{tr("Éditer")}</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
         <form onSubmit={submit}>
-          <label htmlFor="edit-name">Nom</label>
+          <label htmlFor="edit-name">{tr("Nom")}</label>
           <input id="edit-name" value={name} onChange={(event) => setName(event.target.value)} />
           <div className="form-row-between">
-            <label htmlFor="edit-description">Description <small className="label-optional">(rôle et utilité)</small></label>
+            <label htmlFor="edit-description">{tr("Description")}{" "}<small className="label-optional">{tr("(rôle et utilité)")}</small></label>
             <button
               type="button"
               className="suggest-link"
@@ -10135,7 +10158,7 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
               }}
               disabled={suggesting}
             >
-              {suggesting ? "Génération…" : " Suggérer"}
+              {suggesting ? tr("Génération…") : tr(" Suggérer")}
             </button>
           </div>
           <textarea
@@ -10143,31 +10166,31 @@ function EditSessionModal({ session, projects, onClose, onSaved }) {
             rows={2}
             value={description}
             onChange={(event) => setDescription(event.target.value)}
-            placeholder="À quoi sert cet agent ?"
+            placeholder={tr("À quoi sert cet agent ?")}
           />
           {["codex", "claude", "antigravity"].includes(session.assistant) && <>
-            <label htmlFor="edit-assistant">Agent</label>
+            <label htmlFor="edit-assistant">{tr("Agent")}</label>
             <select id="edit-assistant" value={assistant} onChange={(event) => setAssistant(event.target.value)}>
-              <option value="codex">Codex</option>
-              <option value="claude">Claude</option>
-              <option value="antigravity">Antigravity</option>
+              <option value="codex">{tr("Codex")}</option>
+              <option value="claude">{tr("Claude")}</option>
+              <option value="antigravity">{tr("Antigravity")}</option>
             </select>
-            {assistant !== session.assistant && <p className="form-hint">Bascule immédiate: historique de la dernière conversation transmis au nouvel agent.</p>}
+            {assistant !== session.assistant && <p className="form-hint">{tr("Bascule immédiate: historique de la dernière conversation transmis au nouvel agent.")}</p>}
           </>}
-          <label htmlFor="edit-project">Projet</label>
+          <label htmlFor="edit-project">{tr("Projet")}</label>
           <select id="edit-project" value={projectId} onChange={(event) => {
             const nextProj = event.target.value;
             setProjectId(nextProj);
             if (nextProj) setProjectLogo(true);
-          }}><option value="">Sans projet</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
-          {session.assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>Sans confirmation</strong><small>{session.assistant === "codex" ? "Codex --yolo" : `${assistantMeta[session.assistant]?.label} --dangerously-skip-permissions`}</small></span></label>}
-          <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>Logo projet auto</strong><small>Remplace icône agent si logo trouvé</small></span></label>
-          <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>Agent favori</strong><small>Affiché avant autres agents</small></span></label>
-          <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Partager l’agent</strong><small>Visible et utilisable depuis les autres profils</small></span></label>
-          <label className="checkbox-option"><input type="checkbox" checked={todoTracking} onChange={(event) => setTodoTracking(event.target.checked)} /><span><strong>Reporting évolutions / bugs</strong><small>Chaque demande envoyée à cet agent est tracée dans les to-do du projet</small></span></label>
-          {session.permissionRestartPending && <p className="form-hint">Changement permissions en attente prochaine réponse.</p>}
+          }}><option value="">{tr("Sans projet")}</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
+          {session.assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>{tr("Sans confirmation")}</strong><small>{session.assistant === "codex" ? tr("Codex --yolo") : `${assistantMeta[session.assistant]?.label} --dangerously-skip-permissions`}</small></span></label>}
+          <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>{tr("Logo projet auto")}</strong><small>{tr("Remplace icône agent si logo trouvé")}</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>{tr("Agent favori")}</strong><small>{tr("Affiché avant autres agents")}</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>{tr("Partager l’agent")}</strong><small>{tr("Visible et utilisable depuis les autres profils")}</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={todoTracking} onChange={(event) => setTodoTracking(event.target.checked)} /><span><strong>{tr("Reporting évolutions / bugs")}</strong><small>{tr("Chaque demande envoyée à cet agent est tracée dans les to-do du projet")}</small></span></label>
+          {session.permissionRestartPending && <p className="form-hint">{tr("Changement permissions en attente prochaine réponse.")}</p>}
           {error && <p className="form-error">{error}</p>}
-          <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Annuler</button><button className="primary" disabled={loading}>{loading ? "Application…" : "Enregistrer"}</button></div>
+          <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>{tr("Annuler")}</button><button className="primary" disabled={loading}>{loading ? tr("Application…") : tr("Enregistrer")}</button></div>
         </form>
       </section>
     </div>
@@ -10242,32 +10265,32 @@ function ProjectModal({ project, onClose, onSaved }) {
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal">
-        <div className="modal-head"><div><p className="eyebrow">{project ? "RÉGLAGES PROJET" : "NOUVEAU PROJET"}</p><h2>{project ? "Éditer projet" : "Créer projet"}</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
+        <div className="modal-head"><div><p className="eyebrow">{project ? tr("RÉGLAGES PROJET") : tr("NOUVEAU PROJET")}</p><h2>{project ? tr("Éditer projet") : tr("Créer projet")}</h2></div><button className="icon-button" onClick={onClose}>×</button></div>
         <form onSubmit={submit}>
-          <label htmlFor="project-name">Nom</label>
+          <label htmlFor="project-name">{tr("Nom")}</label>
           <input id="project-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex. Noyau" autoFocus />
 
           {project && (
             <div className="project-logo-picker-section">
-              <label>Logo du projet</label>
+              <label>{tr("Logo du projet")}</label>
               <div className="project-logo-preview-row">
                 <div className="project-logo-preview-box">
                   {logoPath ? (
                     <ProjectImage
                       src={`/api/projects/${project.id}/image-file?path=${encodeURIComponent(logoPath)}`}
-                      alt="Logo sélectionné"
+                      alt={tr("Logo sélectionné")}
                     />
                   ) : (
                     <ProjectImage
                       src={project.logoUrl}
-                      alt="Logo projet"
+                      alt={tr("Logo projet")}
                       onError={(e) => { e.currentTarget.style.display = "none"; }}
                     />
                   )}
                 </div>
                 <div className="project-logo-details">
-                  <strong>{logoPath ? "Logo personnalisé sélectionné" : "Logo automatique"}</strong>
-                  <small>{logoPath ? logoPath.split("/").pop() : "Détecté dans les dossiers ou agents du projet"}</small>
+                  <strong>{logoPath ? tr("Logo personnalisé sélectionné") : tr("Logo automatique")}</strong>
+                  <small>{logoPath ? logoPath.split("/").pop() : tr("Détecté dans les dossiers ou agents du projet")}</small>
                 </div>
                 <div className="project-logo-actions">
                   <button
@@ -10275,16 +10298,16 @@ function ProjectModal({ project, onClose, onSaved }) {
                     className="ghost small"
                     onClick={() => setShowPicker((prev) => !prev)}
                   >
-                    {showPicker ? "Fermer" : "Changer…"}
+                    {showPicker ? tr("Fermer") : tr("Changer…")}
                   </button>
                   {logoPath && (
                     <button
                       type="button"
                       className="ghost small"
                       onClick={() => setLogoPath(null)}
-                      title="Revenir au logo détecté automatiquement"
+                      title={tr("Revenir au logo détecté automatiquement")}
                     >
-                      Auto
+                      {tr("Auto")}
                     </button>
                   )}
                 </div>
@@ -10296,7 +10319,7 @@ function ProjectModal({ project, onClose, onSaved }) {
                     type="search"
                     value={searchQuery}
                     onChange={handleLogoSearch}
-                    placeholder="Filtrer les images du projet…"
+                    placeholder={tr("Filtrer les images du projet…")}
                     className="project-logo-search-input"
                   />
                   <div className="project-logo-grid" onScroll={handleGridScroll}>
@@ -10321,15 +10344,15 @@ function ProjectModal({ project, onClose, onSaved }) {
                       );
                     })}
                     {imagesLoading && (
-                      <div className="project-logo-loading-more">Chargement des images…</div>
+                      <div className="project-logo-loading-more">{tr("Chargement des images…")}</div>
                     )}
                     {!imagesLoading && images.length === 0 && (
-                      <div className="project-logo-empty-hint">Aucune image trouvée dans le projet.</div>
+                      <div className="project-logo-empty-hint">{tr("Aucune image trouvée dans le projet.")}</div>
                     )}
                   </div>
                   {hasMore && !imagesLoading && (
                     <p className="form-hint" style={{ marginTop: "6px", marginBottom: "0" }}>
-                      Défilez vers le bas pour charger davantage d'images.
+                      {tr("Défilez vers le bas pour charger davantage d'images.")}
                     </p>
                   )}
                 </div>
@@ -10337,11 +10360,11 @@ function ProjectModal({ project, onClose, onSaved }) {
             </div>
           )}
 
-          <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>Partager le projet</strong><small>Visible par les autres profils, avec ses agents, todos et modules</small></span></label>
-          <label className="checkbox-option"><input type="checkbox" checked={todoTracking} onChange={(event) => setTodoTracking(event.target.checked)} /><span><strong>Reporting évolutions / bugs</strong><small>Les demandes adressées aux agents du projet créent ou commentent un to-do</small></span></label>
-          <p className="form-hint">Agents peuvent utiliser dossiers différents. Changer le logo met à jour l'icône du projet et de ses agents.</p>
+          <label className="checkbox-option"><input type="checkbox" checked={shared} onChange={(event) => setShared(event.target.checked)} /><span><strong>{tr("Partager le projet")}</strong><small>{tr("Visible par les autres profils, avec ses agents, todos et modules")}</small></span></label>
+          <label className="checkbox-option"><input type="checkbox" checked={todoTracking} onChange={(event) => setTodoTracking(event.target.checked)} /><span><strong>{tr("Reporting évolutions / bugs")}</strong><small>{tr("Les demandes adressées aux agents du projet créent ou commentent un to-do")}</small></span></label>
+          <p className="form-hint">{tr("Agents peuvent utiliser dossiers différents. Changer le logo met à jour l'icône du projet et de ses agents.")}</p>
           {error && <p className="form-error">{error}</p>}
-          <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Annuler</button><button className="primary" disabled={loading}>{loading ? "Enregistrement…" : "Enregistrer"}</button></div>
+          <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>{tr("Annuler")}</button><button className="primary" disabled={loading}>{loading ? tr("Enregistrement…") : tr("Enregistrer")}</button></div>
         </form>
       </section>
     </div>
@@ -10368,11 +10391,11 @@ class ViewBoundary extends React.Component {
     return (
       <div className="page">
         <section className="panel view-error">
-          <strong>Cet écran a planté.</strong>
+          <strong>{tr("Cet écran a planté.")}</strong>
           <p>{String(this.state.error?.message || this.state.error)}</p>
           <div className="modal-actions">
-            <button className="ghost" onClick={() => this.setState({ error: null })}>Réessayer</button>
-            <button className="primary" onClick={() => location.reload()}>Recharger</button>
+            <button className="ghost" onClick={() => this.setState({ error: null })}>{tr("Réessayer")}</button>
+            <button className="primary" onClick={() => location.reload()}>{tr("Recharger")}</button>
           </div>
         </section>
       </div>
@@ -10404,7 +10427,7 @@ const voiceCapture = (() => {
     get active() { return socket?.readyState === WebSocket.OPEN; },
     async start() {
       if (this.active) return true;
-      if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) throw new Error("Micro du navigateur indisponible ici.");
+      if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) throw new Error(tr("Micro du navigateur indisponible ici."));
       stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
       context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       await context.resume();
@@ -10412,7 +10435,7 @@ const voiceCapture = (() => {
       socket.binaryType = "arraybuffer";
       await new Promise((resolve, reject) => {
         socket.addEventListener("open", resolve, { once: true });
-        socket.addEventListener("error", () => reject(new Error("Liaison micro refusée.")), { once: true });
+        socket.addEventListener("error", () => reject(new Error(tr("Liaison micro refusée."))), { once: true });
       });
       socket.addEventListener("close", () => release());
       source = context.createMediaStreamSource(stream);
@@ -10448,17 +10471,17 @@ const voiceCapture = (() => {
 // Une action vocale se raconte en une ligne: on doit la reconnaitre du coin de l'oeil.
 function describeVoiceAction(action) {
   if (action.action === "open-agent") return `Ouvre l'agent ${action.name || ""}`.trim();
-  if (action.action === "open-project") return `Ouvre le projet ${action.name || ""}`.trim();
+  if (action.action === "open-project") return tr("Ouvre le projet {0}", action.name || "").trim();
   if (action.action === "view") return `Ouvre ${action.view}`;
   if (action.action === "send-agent") return `À ${action.name}: « ${action.text} »`;
-  if (action.action === "interrupt") return action.name ? `Arrête ${action.name}` : "Arrête la tâche en cours";
-  if (action.action === "optimize") return `${action.mode === "clear" ? "Repart propre" : "Compacte"} ${action.name}`;
+  if (action.action === "interrupt") return action.name ? tr("Arrête {0}", action.name) : tr("Arrête la tâche en cours");
+  if (action.action === "optimize") return `${action.mode === "clear" ? tr("Repart propre") : tr("Compacte")} ${action.name}`;
   if (action.action === "restart") return `Relance ${action.name}`;
-  if (action.action === "dictate") return `Dicté: « ${action.text} »`;
-  if (action.action === "mute") return "Coupe le son";
-  if (action.action === "unmute") return "Remet le son";
-  if (action.action === "stop-listening") return "Arrête d'écouter";
-  if (action.action === "unknown") return `Pas compris: « ${action.target || ""} »`;
+  if (action.action === "dictate") return tr("Dicté: « {0} »", action.text);
+  if (action.action === "mute") return tr("Coupe le son");
+  if (action.action === "unmute") return tr("Remet le son");
+  if (action.action === "stop-listening") return tr("Arrête d'écouter");
+  if (action.action === "unknown") return tr("Pas compris: « {0} »", action.target || "");
   return action.action;
 }
 
@@ -10486,13 +10509,13 @@ function VoiceOverlay({ voice, feed, sessions, onVoice, onOpenAgent }) {
     <aside className={`voice-overlay ${folded ? "folded" : ""}`}>
       <header>
         <i className={`voice-overlay-dot ${feed.partial ? "live" : ""}`} aria-hidden="true" />
-        <strong>{target ? `Dictée → ${target.name}` : "Micro actif"}</strong>
-        <button className="voice-overlay-fold" onClick={() => setFolded((value) => !value)} aria-label={folded ? "Déplier" : "Replier"}>{folded ? "▴" : "▾"}</button>
-        <button className="voice-overlay-off" onClick={() => onVoice(false)}>Couper</button>
+        <strong>{target ? tr("Dictée → {0}", target.name) : tr("Micro actif")}</strong>
+        <button className="voice-overlay-fold" onClick={() => setFolded((value) => !value)} aria-label={folded ? tr("Déplier") : tr("Replier")}>{folded ? "▴" : "▾"}</button>
+        <button className="voice-overlay-off" onClick={() => onVoice(false)}>{tr("Couper")}</button>
       </header>
       {!folded && (
         <div className="voice-overlay-body">
-          <p className={`voice-overlay-heard ${feed.partial ? "live" : ""}`}>{heard ? `« ${heard} »` : "En écoute…"}</p>
+          <p className={`voice-overlay-heard ${feed.partial ? "live" : ""}`}>{heard ? `« ${heard} »` : tr("En écoute…")}</p>
           {feed.events.length > 0 && (
             <ul className="voice-overlay-events">
               {feed.events.map((event) => <li key={event.key}>{event.label}</li>)}
@@ -10501,9 +10524,9 @@ function VoiceOverlay({ voice, feed, sessions, onVoice, onOpenAgent }) {
           {working.map((session) => (
             <div key={session.id} className="voice-overlay-task">
               <button className="voice-overlay-agent" onClick={() => onOpenAgent(session.id)}>
-                <strong>{session.name}</strong><small>travaille en ce moment</small>
+                <strong>{session.name}</strong><small>{tr("travaille en ce moment")}</small>
               </button>
-              <button className="voice-overlay-stop" disabled={busy === session.id} onClick={() => interrupt(session.id)}>{busy === session.id ? "…" : "Arrêter"}</button>
+              <button className="voice-overlay-stop" disabled={busy === session.id} onClick={() => interrupt(session.id)}>{busy === session.id ? "…" : tr("Arrêter")}</button>
             </div>
           ))}
         </div>
@@ -10528,6 +10551,10 @@ function App() {
   activeIdRef.current = activeId;
   const [view, setView] = useState(() => ["projects", "map", "groceries", "calendar", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "finance-banking", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : (!new URLSearchParams(location.search).has("session") && isNative && ["projects", "map", "groceries", "calendar", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "finance-banking", "settings", "dashboard"].includes(initialNativeNavigation?.view) ? initialNativeNavigation.view : "dashboard"));
   useEffect(() => { if (isNative && auth) saveNativeNavigation(sessionStorage, activeProfileId(), activeId, view); }, [auth, activeId, view]);
+  const enabledModules = useModules();
+  useEffect(() => { if (auth) api("/api/config").then((config) => setModules(config.modules)).catch(() => {}); }, [auth]);
+  // Module coupe: sa vue retombe sur l'accueil.
+  useEffect(() => { const module = viewModule(view); if (module && enabledModules[module] === false) setView("dashboard"); }, [view, enabledModules]);
   const startupInteracted = React.useRef(false);
   useEffect(() => { if (!isNative) return; const mark = () => { startupInteracted.current = true; }; window.addEventListener("pointerdown", mark, { once: true }); window.addEventListener("keydown", mark, { once: true }); return () => { window.removeEventListener("pointerdown", mark); window.removeEventListener("keydown", mark); }; }, []);
   const [nativeSetupSkipped, setNativeSetupSkipped] = useState(() => Boolean(isNative && activeProfileId()));
@@ -10566,7 +10593,7 @@ function App() {
   const [bootAttempts, setBootAttempts] = useState(0);
   const [bootNonce, setBootNonce] = useState(0);
   const [bootPercent, setBootPercent] = useState(8);
-  const [bootStep, setBootStep] = useState("Démarrage…");
+  const [bootStep, setBootStep] = useState(tr("Démarrage…"));
   const [bootDetail, setBootDetail] = useState("");
   const [permission, setPermission] = useState(() => isNative ? (nativeLocalAlertsEnabled(activeProfileId()) ? "local" : "default") : !window.isSecureContext ? "insecure" : (typeof Notification === "undefined" ? "denied" : Notification.permission));
   const [notificationInfo, setNotificationInfo] = useState("");
@@ -10812,7 +10839,7 @@ function App() {
     async function authenticate() {
       controller?.abort();
       controller = new AbortController();
-      advance(12, attempt ? `Nouvelle tentative (${attempt + 1})…` : "Contact du serveur…");
+      advance(12, attempt ? tr("Nouvelle tentative ({0})…", attempt + 1) : tr("Contact du serveur…"));
       creepTo(70);
       // VPN/Wi-Fi qui se reveille peut depasser 4s: laisser 12s avant d'abandonner la tentative.
       const timeout = setTimeout(() => controller.abort(), 12000);
@@ -10820,7 +10847,7 @@ function App() {
         const session = await api("/api/auth/session", { signal: controller.signal });
         if (disposed) return;
         clearInterval(creepTimer);
-        advance(80, "Session validée…");
+        advance(80, tr("Session validée…"));
         setOfflineMode(false);
         if (isNative && !startupInteracted.current && !new URLSearchParams(location.search).has("view") && !new URLSearchParams(location.search).has("session")) setView((current) => current === "groceries" ? "dashboard" : current);
         setBootOffline(false);
@@ -10841,7 +10868,7 @@ function App() {
         if (error.status === 401) {
           if (isNative && nativeOfflineExplicit.current) { setAuth(true); setOfflineMode(true); return; }
           if (isNative) setOfflineMode(false);
-          advance(100, "Authentification requise");
+          advance(100, tr("Authentification requise"));
           setBootOffline(false);
           setAuth(false);
           return;
@@ -10850,8 +10877,8 @@ function App() {
         attempt += 1;
         setBootAttempts(attempt);
         setBootDetail(error.name === "AbortError"
-          ? "Aucune réponse après 12 s. Serveur éteint, hors du réseau local, ou certificat non approuvé."
-          : `Échec réseau : ${error.message}`);
+          ? tr("Aucune réponse après 12 s. Serveur éteint, hors du réseau local, ou certificat non approuvé.")
+          : tr("Échec réseau : {0}", error.message));
         if (attempt >= 3) setBootOffline(true);
         // Backoff: 1s, 2s, 4s… plafonne a 15s au lieu de marteler le reseau chaque seconde.
         retryTimer = setTimeout(authenticate, Math.min(1000 * 2 ** (attempt - 1), 15000));
@@ -10874,7 +10901,7 @@ function App() {
 
   // Une frappe hors champ de saisie ne peut venir que d'un vrai clavier: on s'en souvient.
   useEffect(() => {
-    const hardwareOnly = new Set(["Tab", "Escape", "Control", "Alt", "Meta", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "Insert", "Delete"]);
+    const hardwareOnly = new Set([tr("Tab"), tr("Escape"), tr("Control"), tr("Alt"), tr("Meta"), "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", tr("Home"), tr("End"), tr("Insert"), tr("Delete")]);
     const detect = (event) => {
       if (!event.isTrusted || event.key === "Unidentified") return;
       const target = event.target;
@@ -11094,10 +11121,10 @@ function App() {
         await refresh();
         window.dispatchEvent(new Event("noyau:todos-refresh"));
       } else {
-        window.alert("Session expirée. Veuillez vous reconnecter.");
+        window.alert(tr("Session expirée. Veuillez vous reconnecter."));
       }
     } catch (error) {
-      window.alert(error.status === 401 ? "Le serveur répond, mais la session a expiré : reconnectez-vous." : "Connexion impossible : serveur / VPN toujours injoignable.");
+      window.alert(error.status === 401 ? tr("Le serveur répond, mais la session a expiré : reconnectez-vous.") : tr("Connexion impossible : serveur / VPN toujours injoignable."));
     }
   }, [refresh]);
 
@@ -11172,14 +11199,14 @@ function App() {
     setSwitchTarget(null);
     await applyProfileSwitch(res.profile.id);
     if (isNative) {
-      try { const status = await biometricStatus(res.profile.id); if (status.available && !status.enabled && window.confirm(`Activer ${status.label} pour le profil ${target.name} sur cet appareil ?`)) await enableBiometric(res.profile.id, password); }
-      catch (error) { window.alert(error.message || "Activation biométrique impossible."); }
+      try { const status = await biometricStatus(res.profile.id); if (status.available && !status.enabled && window.confirm(tr("Activer {0} pour le profil {1} sur cet appareil ?", status.label, target.name))) await enableBiometric(res.profile.id, password); }
+      catch (error) { window.alert(error.message || tr("Activation biométrique impossible.")); }
     }
   }
 
   async function biometricSwitchProfile(target) {
     const result = await biometricClient(target.id).unlock();
-    if (result.offline) throw new Error("Connexion nécessaire pour changer de profil.");
+    if (result.offline) throw new Error(tr("Connexion nécessaire pour changer de profil."));
     setSwitchTarget(null); await applyProfileSwitch(target.id);
   }
 
@@ -11220,12 +11247,12 @@ function App() {
   async function enableNotifications() {
     if (isNative) { try {
       const status = await api("/api/mobile/push-status");
-      if (status.configured?.[window.Capacitor?.getPlatform?.()]) { if (await enableNativePush(api, deviceId())) { setPermission("active"); setNotificationInfo("Alertes serveur activées sur cet appareil."); } }
+      if (status.configured?.[window.Capacitor?.getPlatform?.()]) { if (await enableNativePush(api, deviceId())) { setPermission("active"); setNotificationInfo(tr("Alertes serveur activées sur cet appareil.")); } }
       else { await enableNativeLocalAlerts(activeProfileId()); setPermission("local"); setNotificationInfo("Alertes locales activées quand l’app fonctionne ; alertes serveur en arrière-plan non configurées."); }
     } catch (error) { window.alert(error.message); } return; }
     try {
       if (!window.isSecureContext) throw new Error("HTTPS requis pour notifications iPhone.");
-      if (typeof Notification === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) throw new Error("Notifications push non prises en charge.");
+      if (typeof Notification === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) throw new Error(tr("Notifications push non prises en charge."));
       const granted = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
       if (granted !== "granted") {
         setPermission(granted);
@@ -11274,7 +11301,7 @@ function App() {
   }
 
   async function deleteProject(project) {
-    if (!window.confirm(`Supprimer projet « ${project.name} » ? Agents seront détachés, pas arrêtés.`)) return;
+    if (!window.confirm(tr("Supprimer projet « {0} » ? Agents seront détachés, pas arrêtés.", project.name))) return;
     await api(`/api/projects/${project.id}`, { method: "DELETE" });
     refresh();
   }
@@ -11338,7 +11365,7 @@ function App() {
       <NativeDownloads api={api} />
       {TOUCH_MODE && !offlineMode && <TouchSystemBar sessions={orderedSessions} onHome={() => { setActiveId(null); setView("dashboard"); }} onNew={() => setModal(true)} />}
       {!offlineMode && <Sidebar sessions={orderedSessions} projects={projects} activeId={activeId} view={view} onOpen={openAgentSession} onView={setView} onOpenMap={openProjectMap} onNew={() => setModal(true)} onLogout={logout} open={menu} onClose={() => setMenu(false)} profiles={profiles} profileId={profileId} onSwitchProfile={requestSwitchProfile} todoUnread={todoUnread} sortMode={agentSortMode} onCycleSort={cycleAgentSort} lastInteractedMap={lastInteractedMap} />}
-      {menu && !offlineMode && <button className="menu-backdrop" onClick={() => setMenu(false)} aria-label="Fermer menu" />}
+      {menu && !offlineMode && <button className="menu-backdrop" onClick={() => setMenu(false)} aria-label={tr("Fermer menu")} />}
       <main className="content">
         {offlineMode && (
           <aside className="offline-top-banner" role="status">
@@ -11346,7 +11373,7 @@ function App() {
               <div className="offline-banner-head">
                 <span className="offline-status-text">
                   <span className="offline-pulse-dot" />
-                  <strong>Mode hors-ligne</strong>
+                  <strong>{tr("Mode hors-ligne")}</strong>
                 </span>
                 <div className="offline-top-banner-actions">
                   <button
@@ -11354,56 +11381,56 @@ function App() {
                     className="ghost mini offline-btn"
                     onClick={() => { setVpnError(""); openWireGuard().catch((error) => setVpnError(error.message)); }}
                   >
-                     WireGuard
+                     {tr("WireGuard")}
                   </button>
-                  <button type="button" className="primary mini offline-btn" onClick={tryReconnect}> Reconnecter</button>
+                  <button type="button" className="primary mini offline-btn" onClick={tryReconnect}>{" "}{tr("Reconnecter")}</button>
                 </div>
               </div>
-              {isNative && Capacitor.getPlatform() === "ios" && <p className="offline-native-hint">Une seule fois : crée dans Raccourcis « Noyau WireGuard » avec l’action « Ouvrir l’app » → WireGuard.</p>}
+              {isNative && Capacitor.getPlatform() === "ios" && <p className="offline-native-hint">{tr("Une seule fois : crée dans Raccourcis « Noyau WireGuard » avec l’action « Ouvrir l’app » → WireGuard.")}</p>}
               {vpnError && <p className="offline-native-hint" role="status">{vpnError}</p>}
-              {isNative && <p className="offline-native-hint">{nativeNetwork ? networkLabel(nativeNetwork) : "Réseau à vérifier"} · VPN : état non vérifiable. Tâches et calendrier en lecture seule ; Courses reste modifiable{!cachedView("todos") ? " · première synchronisation nécessaire" : ""}.</p>}
+              {isNative && <p className="offline-native-hint">{nativeNetwork ? networkLabel(nativeNetwork) : tr("Réseau à vérifier")}{" "}{tr("· VPN : état non vérifiable. Tâches et calendrier en lecture seule ; Courses reste modifiable")}{!cachedView("todos") ? tr(" · première synchronisation nécessaire") : ""}.</p>}
               <div className="offline-top-banner-tabs">
                 <button
                   type="button"
                   className={`offline-tab-btn ${view === "calendar" ? "active" : ""}`}
                   onClick={() => setView("calendar")}
                 >
-                   Calendrier
+                   {tr("Calendrier")}
                 </button>
                 <button
                   type="button"
                   className={`offline-tab-btn ${view === "todos" ? "active" : ""}`}
                   onClick={() => setView("todos")}
                 >
-                   Tâches
+                   {tr("Tâches")}
                 </button>
-                <button type="button" className={`offline-tab-btn ${view === "groceries" ? "active" : ""}`} onClick={() => setView("groceries")}> Courses</button>
-                {isNative && <button type="button" className="offline-tab-btn" onClick={() => setAuth(false)}>Connexion complète</button>}
+                <button type="button" className={`offline-tab-btn ${view === "groceries" ? "active" : ""}`} onClick={() => setView("groceries")}>{" "}{tr("Courses")}</button>
+                {isNative && <button type="button" className="offline-tab-btn" onClick={() => setAuth(false)}>{tr("Connexion complète")}</button>}
               </div>
             </div>
           </aside>
         )}
         {power?.sleeping && (
           <aside className="power-sleeping-banner" role="alert">
-            <span> <strong>Mode basse consommation actif</strong> ({power.pausedContainers?.length || 0} conteneurs Docker gelés pour rafraîchir le PC)</span>
-            <button onClick={togglePower} className="power-wake-btn">Sortir de veille</button>
+            <span> <strong>{tr("Mode basse consommation actif")}</strong> ({power.pausedContainers?.length || 0}{" "}{tr("conteneurs Docker gelés pour rafraîchir le PC)")}</span>
+            <button onClick={togglePower} className="power-wake-btn">{tr("Sortir de veille")}</button>
           </aside>
         )}
         <ViewBoundary viewKey={`${view}:${activeId || ""}`}>
         {!active ? (
           <>
-            {view === "dashboard" && <><Header title="Accueil" subtitle="Vue générale" onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} profileName={profiles.find((profile) => profile.id === profileId)?.name} onProject={(id) => { setSelectedProjectId(id); setView("projects"); }} onView={setView} quotas={quotas} onSessionsChanged={refresh} onRefreshQuotas={refreshQuotas} onOpen={openAgentSession} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onArchive={archiveAgent} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} onProjects={() => setView("projects")} onFinances={() => setView("finances")} power={power} onTogglePower={togglePower} powerBusy={powerBusy} sortMode={agentSortMode} onSetSortMode={changeAgentSortMode} profileId={profileId} lastInteractedMap={lastInteractedMap} /></>}
-            {view === "projects" && <><Header title={selectedProjectId ? projects.find((item) => item.id === selectedProjectId)?.name || "Projet" : "Projets"} subtitle="Agents et modules" onMenu={() => setMenu(true)} actionLabel="Nouveau projet" onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} selectedProjectId={selectedProjectId} onShowAllProjects={() => setSelectedProjectId(null)} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onModuleEnvironment={setModuleEnvironment} onModuleRemove={removeModule} onOpenAgent={openAgentSession} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onModuleBuild={buildModule} onModuleBuildRefresh={refreshModuleBuilds} onOpenTodos={() => setView("todos")} onOpenMap={openProjectMap} onReorder={reorderProjects} onRefresh={refresh} profileId={profileId} /></>}
-            {view === "map" && <><Header title="Carte" subtitle={`${projects.find((project) => project.id === mapProjectId)?.name || "Projet"} · qui tourne, qui parle à qui`} onMenu={() => setMenu(true)} /><AgentMapView projects={projects} projectId={mapProjectId} onProjectChange={setMapProjectId} api={api} onOpenAgent={openAgentSession} /></>}
-            {view === "calendar" && <>{!offlineMode && <Header title="Calendrier" subtitle="Agenda et échéances" onMenu={() => setMenu(true)} />}<CalendarView projects={projects} onView={setView} /></>}
-            {view === "groceries" && <>{!offlineMode && <Header title="Courses" subtitle="À cuisiner, à aimer, à économiser" onMenu={() => setMenu(true)} />}<GroceriesView profileId={profileId || activeProfileId() || "local"} /></>}
-            {view === "todos" && <>{!offlineMode && <Header title="Todo" subtitle="Obsidian · NAS" onMenu={() => setMenu(true)} />}<TodosView projects={projects} onView={setView} /></>}
-            {view === "finances" && <><Header title="Budget" subtitle="Dépenses et épargne" onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
-            {view === "finance-transactions" && <><Header title="Budget · Opérations" subtitle="Saisie et historique" onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
-            {view === "finance-agent" && <><Header title="Budget · Agent" subtitle="Charges et prévisions" onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}
-            {view === "finance-modules" && <><Header title="Budget · Modules" subtitle="Actifs et règles" onMenu={() => setMenu(true)} /><FinanceModulesView onView={setView} /></>}
-            {view === "finance-banking" && <><Header title="Budget · Banques" subtitle="Connexions et synchronisation" onMenu={() => setMenu(true)} /><FinanceBankingView onView={setView} /></>}
-            {view === "settings" && <><Header title="Réglages" subtitle="Application" onMenu={() => setMenu(true)} /><SettingsView notificationInfo={notificationInfo} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} profiles={profiles} profileId={profileId} onSwitchProfile={requestSwitchProfile} onProfilesChanged={refreshProfiles} /></>}
+            {view === "dashboard" && <><Header title={tr("Accueil")} subtitle={tr("Vue générale")} onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} profileName={profiles.find((profile) => profile.id === profileId)?.name} onProject={(id) => { setSelectedProjectId(id); setView("projects"); }} onView={setView} quotas={quotas} onSessionsChanged={refresh} onRefreshQuotas={refreshQuotas} onOpen={openAgentSession} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onArchive={archiveAgent} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} onProjects={() => setView("projects")} onFinances={() => setView("finances")} power={power} onTogglePower={togglePower} powerBusy={powerBusy} sortMode={agentSortMode} onSetSortMode={changeAgentSortMode} profileId={profileId} lastInteractedMap={lastInteractedMap} /></>}
+            {view === "projects" && <><Header title={selectedProjectId ? projects.find((item) => item.id === selectedProjectId)?.name || tr("Projet") : tr("Projets")} subtitle={tr("Agents et modules")} onMenu={() => setMenu(true)} actionLabel={tr("Nouveau projet")} onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} selectedProjectId={selectedProjectId} onShowAllProjects={() => setSelectedProjectId(null)} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onModuleEnvironment={setModuleEnvironment} onModuleRemove={removeModule} onOpenAgent={openAgentSession} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onModuleBuild={buildModule} onModuleBuildRefresh={refreshModuleBuilds} onOpenTodos={() => setView("todos")} onOpenMap={openProjectMap} onReorder={reorderProjects} onRefresh={refresh} profileId={profileId} /></>}
+            {view === "map" && <><Header title={tr("Carte")} subtitle={tr("{0} · qui tourne, qui parle à qui", projects.find((project) => project.id === mapProjectId)?.name || tr("Projet"))} onMenu={() => setMenu(true)} /><AgentMapView projects={projects} projectId={mapProjectId} onProjectChange={setMapProjectId} api={api} onOpenAgent={openAgentSession} /></>}
+            {view === "calendar" && <>{!offlineMode && <Header title={tr("Calendrier")} subtitle={tr("Agenda et échéances")} onMenu={() => setMenu(true)} />}<CalendarView projects={projects} onView={setView} /></>}
+            {view === "groceries" && <>{!offlineMode && <Header title={tr("Courses")} subtitle={tr("À cuisiner, à aimer, à économiser")} onMenu={() => setMenu(true)} />}<GroceriesView profileId={profileId || activeProfileId() || "local"} /></>}
+            {view === "todos" && <>{!offlineMode && <Header title={tr("Todo")} subtitle={tr("Obsidian · NAS")} onMenu={() => setMenu(true)} />}<TodosView projects={projects} onView={setView} /></>}
+            {view === "finances" && <><Header title={tr("Budget")} subtitle={tr("Dépenses et épargne")} onMenu={() => setMenu(true)} /><FinanceView onView={setView} /></>}
+            {view === "finance-transactions" && <><Header title={tr("Budget · Opérations")} subtitle={tr("Saisie et historique")} onMenu={() => setMenu(true)} /><FinanceTransactionsView onView={setView} /></>}
+            {view === "finance-agent" && <><Header title={tr("Budget · Agent")} subtitle={tr("Charges et prévisions")} onMenu={() => setMenu(true)} /><FinanceAgentView onView={setView} /></>}
+            {view === "finance-modules" && <><Header title={tr("Budget · Modules")} subtitle={tr("Actifs et règles")} onMenu={() => setMenu(true)} /><FinanceModulesView onView={setView} /></>}
+            {view === "finance-banking" && <><Header title={tr("Budget · Banques")} subtitle={tr("Connexions et synchronisation")} onMenu={() => setMenu(true)} /><FinanceBankingView onView={setView} /></>}
+            {view === "settings" && <><Header title={tr("Réglages")} subtitle={tr("Application")} onMenu={() => setMenu(true)} /><SettingsView notificationInfo={notificationInfo} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} profiles={profiles} profileId={profileId} onSwitchProfile={requestSwitchProfile} onProfilesChanged={refreshProfiles} /></>}
           </>
         ) : (
           <TerminalView session={active} sessions={orderedSessions} draftStore={conversationDrafts} onSwitchAgent={(id) => { registerAgentInteraction(id); openAgentSession(id); }} quotas={quotas} assistants={assistants} voice={voice} onVoice={(next) => setVoice((current) => ({ ...current, ...next }))} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { registerAgentInteraction(id); openAgentSession(id); refresh(); }} onRefresh={refresh} onEdit={() => setEditingId(active.id)} onInteract={() => registerAgentInteraction(active.id)} />

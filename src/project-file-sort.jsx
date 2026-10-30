@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from "react";
 import "./project-file-sort.css";
+import { tr } from "./i18n.js";
 
 function bytes(value) {
   if (!value) return "0 o";
-  const units = ["o", "Ko", "Mo", "Go"];
+  const units = ["o", tr("Ko"), tr("Mo"), tr("Go")];
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
   return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
 }
@@ -32,7 +33,7 @@ export function FileSortButton({ project, api, sort, onStarted, onOpenAgent }) {
       if (sort.agentId) onOpenAgent?.(sort.agentId);
       return;
     }
-    if (!window.confirm("Lancer un agent qui trie les fichiers partagés de ce projet ?\n\nLes fichiers inutiles (doublons, versions intermédiaires, essais, captures de debug, fichiers vides) partent à la corbeille, restaurables 30 jours. Les fichiers de moins de 48 h et tes uploads (sauf doublon exact) sont gardés.")) return;
+    if (!window.confirm(tr("Lancer un agent qui trie les fichiers partagés de ce projet ?\n\nLes fichiers inutiles (doublons, versions intermédiaires, essais, captures de debug, fichiers vides) partent à la corbeille, restaurables 30 jours. Les fichiers de moins de 48 h et tes uploads (sauf doublon exact) sont gardés."))) return;
     setBusy(true);
     try {
       await api(`/api/projects/${encodeURIComponent(project.id)}/files/sort`, { method: "POST", body: JSON.stringify({}) });
@@ -44,8 +45,8 @@ export function FileSortButton({ project, api, sort, onStarted, onOpenAgent }) {
     }
   }
   return (
-    <button type="button" className={`file-sort-btn${running ? " running" : ""}`} onClick={start} disabled={busy} title={running ? "Tri en cours : ouvrir l'agent" : "Trier les fichiers avec un agent"}>
-      {busy ? "Lancement…" : running ? "Tri en cours…" : "Trier"}
+    <button type="button" className={`file-sort-btn${running ? " running" : ""}`} onClick={start} disabled={busy} title={running ? tr("Tri en cours : ouvrir l'agent") : tr("Trier les fichiers avec un agent")}>
+      {busy ? tr("Lancement…") : running ? tr("Tri en cours…") : tr("Trier")}
     </button>
   );
 }
@@ -68,7 +69,7 @@ export function FileSortPanel({ project, api, sort, onChanged }) {
     setRestoring(item.id);
     try {
       const result = await api(`/api/projects/${encodeURIComponent(project.id)}/files/trash/${encodeURIComponent(item.id)}/restore`, { method: "POST", body: JSON.stringify({}) });
-      if (result.restoredAs !== item.name) window.alert(`Restauré sous « ${result.restoredAs} » (le nom était repris).`);
+      if (result.restoredAs !== item.name) window.alert(tr("Restauré sous « {0} » (le nom était repris).", result.restoredAs));
       await onChanged?.();
     } catch (error) {
       window.alert(error.message);
@@ -78,7 +79,7 @@ export function FileSortPanel({ project, api, sort, onChanged }) {
   }
 
   async function deleteForever(item) {
-    if (!window.confirm(`Supprimer définitivement « ${item.name} » (${bytes(item.size)}) ?\n\nSuppression définitive, irréversible : le fichier ne pourra plus être restauré.`)) return;
+    if (!window.confirm(tr("Supprimer définitivement « {0} » ({1}) ?\n\nSuppression définitive, irréversible : le fichier ne pourra plus être restauré.", item.name, bytes(item.size)))) return;
     setRestoring(item.id);
     try {
       await api(`/api/projects/${encodeURIComponent(project.id)}/files/trash/${encodeURIComponent(item.id)}`, { method: "DELETE" });
@@ -92,7 +93,7 @@ export function FileSortPanel({ project, api, sort, onChanged }) {
 
   async function emptyTrash() {
     const size = bytes(trash.reduce((sum, item) => sum + (item.size || 0), 0));
-    if (!window.confirm(`Vider la corbeille : ${trash.length} fichier${trash.length > 1 ? "s" : ""} (${size}) ?\n\nSuppression définitive, irréversible : aucun de ces fichiers ne pourra plus être restauré.`)) return;
+    if (!window.confirm(tr("Vider la corbeille : {0} fichier{1} ({2}) ?\n\nSuppression définitive, irréversible : aucun de ces fichiers ne pourra plus être restauré.", trash.length, trash.length > 1 ? "s" : "", size))) return;
     setRestoring("all");
     try {
       await api(`/api/projects/${encodeURIComponent(project.id)}/files/trash`, { method: "DELETE" });
@@ -108,35 +109,35 @@ export function FileSortPanel({ project, api, sort, onChanged }) {
     <div className="file-sort">
       {status === "running" && (
         <div className="file-sort-running">
-          <i /> Tri en cours… {deleted.length > 0 && `${deleted.length} à la corbeille pour l'instant`}
+          <i />{" "}{tr("Tri en cours…")}{" "}{deleted.length > 0 && tr("{0} à la corbeille pour l'instant", deleted.length)}
         </div>
       )}
-      {status === "stale" && <div className="file-sort-running stale">Le dernier tri ne s'est pas terminé. Tu peux en relancer un.</div>}
+      {status === "stale" && <div className="file-sort-running stale">{tr("Le dernier tri ne s'est pas terminé. Tu peux en relancer un.")}</div>}
       {status === "done" && sort.finishedAt && dismissed !== sort.finishedAt && (
         <div className="file-sort-done">
-          <span>{deleted.length} fichier{deleted.length > 1 ? "s" : ""} en corbeille, {bytes(sort.freedBytes)} libérés</span>
-          <button type="button" onClick={dismiss} aria-label="Fermer" title="Fermer">×</button>
+          <span>{deleted.length} {tr(deleted.length > 1 ? "fichiers" : "fichier")}{" "}{tr("en corbeille,")}{" "}{bytes(sort.freedBytes)}{" "}{tr("libérés")}</span>
+          <button type="button" onClick={dismiss} aria-label={tr("Fermer")} title={tr("Fermer")}>×</button>
         </div>
       )}
       {trash.length > 0 && (
         <details className="file-sort-trash">
           <summary>
-            <span>Corbeille</span>
-            <strong>{trash.length} fichier{trash.length > 1 ? "s" : ""} · {bytes(trash.reduce((sum, item) => sum + (item.size || 0), 0))}</strong>
+            <span>{tr("Corbeille")}</span>
+            <strong>{trash.length} {tr(trash.length > 1 ? "fichiers" : "fichier")} · {bytes(trash.reduce((sum, item) => sum + (item.size || 0), 0))}</strong>
           </summary>
           <div className="file-sort-trash-actions">
-            <small>Purge automatique après 30 jours.</small>
-            <button type="button" className="danger" onClick={emptyTrash} disabled={Boolean(restoring)}>{restoring === "all" ? "Suppression…" : "Vider la corbeille"}</button>
+            <small>{tr("Purge automatique après 30 jours.")}</small>
+            <button type="button" className="danger" onClick={emptyTrash} disabled={Boolean(restoring)}>{restoring === "all" ? tr("Suppression…") : tr("Vider la corbeille")}</button>
           </div>
           <ul>
             {[...trash].reverse().map((item) => (
               <li key={item.id}>
                 <span>
                   <b title={item.name}>{item.name}</b>
-                  <small>{bytes(item.size)} · {item.reason} · effacé dans {daysLeft(item.expiresAt)} j</small>
+                  <small>{bytes(item.size)} · {item.reason}{" "}{tr("· effacé dans")}{" "}{daysLeft(item.expiresAt)} j</small>
                 </span>
-                <button type="button" onClick={() => restore(item)} disabled={Boolean(restoring)}>{restoring === item.id ? "…" : "Restaurer"}</button>
-                <button type="button" className="danger" onClick={() => deleteForever(item)} disabled={Boolean(restoring)}>Supprimer définitivement</button>
+                <button type="button" onClick={() => restore(item)} disabled={Boolean(restoring)}>{restoring === item.id ? "…" : tr("Restaurer")}</button>
+                <button type="button" className="danger" onClick={() => deleteForever(item)} disabled={Boolean(restoring)}>{tr("Supprimer définitivement")}</button>
               </li>
             ))}
           </ul>

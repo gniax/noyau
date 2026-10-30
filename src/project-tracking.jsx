@@ -1,29 +1,30 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import "./project-tracking.css";
+import { tr, LOCALE } from "./i18n.js";
 
 const COLUMNS = [
-  { id: "waiting", label: "Décision fondateur" },
-  { id: "inProgress", label: "En cours" },
-  { id: "planned", label: "Prévu" },
-  { id: "done", label: "Fait" },
+  { id: "waiting", label: tr("Décision fondateur") },
+  { id: "inProgress", label: tr("En cours") },
+  { id: "planned", label: tr("Prévu") },
+  { id: "done", label: tr("Fait") },
 ];
 const REFRESH_MS = 60_000;
 
 function ago(value) {
-  if (!value) return "jamais";
+  if (!value) return tr("jamais");
   const minutes = Math.round((Date.now() - Date.parse(value)) / 60_000);
-  if (minutes < 1) return "à l'instant";
-  if (minutes < 60) return `il y a ${minutes} min`;
+  if (minutes < 1) return tr("à l'instant");
+  if (minutes < 60) return tr("il y a {0} {1}", minutes, "min");
   const hours = Math.round(minutes / 60);
-  if (hours < 48) return `il y a ${hours} h`;
-  return `il y a ${Math.round(hours / 24)} j`;
+  if (hours < 48) return tr("il y a {0} {1}", hours, "h");
+  return tr("il y a {0} {1}", Math.round(hours / 24), tr("j"));
 }
 
 function shortDate(value) {
   if (!value) return "";
   const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00` : value);
-  return date.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+  return date.toLocaleDateString(LOCALE, { day: "numeric", month: "short" });
 }
 
 function reportKind(report) {
@@ -37,7 +38,7 @@ function DecisionButtons({ projectId, boardId, item, api, onDone }) {
   const [busy, setBusy] = useState("");
   async function decide(decision) {
     const label = decision === "go" ? "GO" : "NON";
-    const note = window.prompt(`${label} pour « ${item.title} ».\nNote pour l'agent (facultatif) :`, "");
+    const note = window.prompt(tr("{0} pour « {1} ».\nNote pour l'agent (facultatif) :", label, item.title), "");
     if (note === null) return;
     setBusy(decision);
     try {
@@ -51,8 +52,8 @@ function DecisionButtons({ projectId, boardId, item, api, onDone }) {
   }
   return (
     <span className="tracking-decide">
-      <button type="button" className="go" disabled={Boolean(busy)} onClick={() => decide("go")}>{busy === "go" ? "…" : "Go"}</button>
-      <button type="button" className="no" disabled={Boolean(busy)} onClick={() => decide("no")}>{busy === "no" ? "…" : "Non"}</button>
+      <button type="button" className="go" disabled={Boolean(busy)} onClick={() => decide("go")}>{busy === "go" ? "…" : tr("Go")}</button>
+      <button type="button" className="no" disabled={Boolean(busy)} onClick={() => decide("no")}>{busy === "no" ? "…" : tr("Non")}</button>
     </span>
   );
 }
@@ -65,15 +66,15 @@ function ItemCard({ item, projectId, boardId, api, onChanged }) {
         <strong>{item.title}</strong>
         <small>
           {item.date && <time>{shortDate(item.date)}</time>}
-          {item.decision && <b className={`tracking-verdict ${item.decision.value}`}>{item.decision.value === "go" ? "Go" : "Non"} · {shortDate(item.decision.at)}</b>}
+          {item.decision && <b className={`tracking-verdict ${item.decision.value}`}>{item.decision.value === "go" ? tr("Go") : tr("Non")} · {shortDate(item.decision.at)}</b>}
           <span className="tracking-id">#{item.id}</span>
         </small>
       </button>
       {item.detail && <p className={open ? "open" : ""}>{item.detail}</p>}
-      {item.decision?.note && <p className="tracking-note">Note : {item.decision.note}</p>}
+      {item.decision?.note && <p className="tracking-note">{tr("Note :")}{" "}{item.decision.note}</p>}
       {(item.link || item.column === "waiting") && (
         <footer>
-          {item.link && <a href={item.link} target="_blank" rel="noreferrer">Ouvrir ↗</a>}
+          {item.link && <a href={item.link} target="_blank" rel="noreferrer">{tr("Ouvrir ↗")}</a>}
           {item.column === "waiting" && <DecisionButtons projectId={projectId} boardId={boardId} item={item} api={api} onDone={onChanged} />}
         </footer>
       )}
@@ -91,7 +92,7 @@ function ReportViewer({ report, src, onClose }) {
   return createPortal(
     <div className="modal-backdrop tracking-report-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="tracking-report-viewer" role="dialog" aria-modal="true" aria-label={report.title}>
-        <header><strong>{report.title}</strong><a href={src} target="_blank" rel="noreferrer">Nouvel onglet ↗</a><button type="button" onClick={onClose} aria-label="Fermer">×</button></header>
+        <header><strong>{report.title}</strong><a href={src} target="_blank" rel="noreferrer">{tr("Nouvel onglet ↗")}</a><button type="button" onClick={onClose} aria-label={tr("Fermer")}>×</button></header>
         {kind === "image" ? <img src={src} alt={report.title} /> : <iframe title={report.title} src={src} sandbox={kind === "html" ? "" : undefined} />}
       </section>
     </div>,
@@ -122,20 +123,20 @@ function BoardModal({ projectId, boardId, api, onClose, onOpenAgent, onChanged }
   const fileUrl = (report) => report.url || `${base}/files/${encodeURIComponent(report.file)}`;
   return createPortal(
     <div className="modal-backdrop tracking-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="tracking-modal" role="dialog" aria-modal="true" aria-label={board?.title || "Suivi"}>
+      <section className="tracking-modal" role="dialog" aria-modal="true" aria-label={board?.title || tr("Suivi")}>
         <header className="tracking-modal-head">
           <div>
             <h3>{board?.title || boardId}</h3>
             <small>
               {board?.agentName && (board.agentId && onOpenAgent ? <button type="button" className="tracking-agent" onClick={() => { onClose(); onOpenAgent(board.agentId); }}>{board.agentName} ›</button> : <span>{board.agentName}</span>)}
-              <span>mis à jour {ago(board?.updatedAt)}</span>
+              <span>{tr("mis à jour")}{" "}{ago(board?.updatedAt)}</span>
             </small>
           </div>
-          <button type="button" className="tracking-close" onClick={onClose} aria-label="Fermer">×</button>
+          <button type="button" className="tracking-close" onClick={onClose} aria-label={tr("Fermer")}>×</button>
         </header>
         <div className="tracking-modal-body">
           {error && <p className="tracking-empty">{error}</p>}
-          {!board && !error && <p className="tracking-empty">Chargement…</p>}
+          {!board && !error && <p className="tracking-empty">{tr("Chargement…")}</p>}
           {board?.objective && <p className="tracking-objective">{board.objective}</p>}
           {board?.kpis.length > 0 && (
             <div className="tracking-kpis">
@@ -144,7 +145,7 @@ function BoardModal({ projectId, boardId, api, onClose, onOpenAgent, onChanged }
           )}
           {board && (
             <>
-              <nav className="tracking-tabs" aria-label="Colonnes">
+              <nav className="tracking-tabs" aria-label={tr("Colonnes")}>
                 {COLUMNS.map((column) => {
                   const count = items.filter((item) => item.column === column.id).length;
                   return <button type="button" key={column.id} className={`${mobileColumn === column.id ? "active" : ""} ${column.id}`} onClick={() => setMobileColumn(column.id)}>{column.label}<b>{count}</b></button>;
@@ -158,20 +159,20 @@ function BoardModal({ projectId, boardId, api, onClose, onOpenAgent, onChanged }
                     <section key={column.id} className={`tracking-column ${column.id} ${mobileColumn === column.id ? "mobile-active" : ""}`}>
                       <h4>{column.label}<b>{list.length}</b></h4>
                       {list.map((item) => <ItemCard key={item.id} item={item} projectId={projectId} boardId={boardId} api={api} onChanged={changed} />)}
-                      {!list.length && <p className="tracking-empty">Rien ici.</p>}
+                      {!list.length && <p className="tracking-empty">{tr("Rien ici.")}</p>}
                     </section>
                   );
                 })}
               </div>
               <section className="tracking-reports">
-                <h4>Rapports<b>{reports.length}</b></h4>
+                <h4>{tr("Rapports")}<b>{reports.length}</b></h4>
                 {reports.map((report) => {
                   const kind = reportKind(report);
                   return report.url
                     ? <a key={report.id} className="tracking-report" href={report.url} target="_blank" rel="noreferrer"><span className="kind">{kind}</span><strong>{report.title}</strong><time>{shortDate(report.date)}</time><b>↗</b></a>
                     : <button key={report.id} type="button" className="tracking-report" onClick={() => setViewing(report)}><span className="kind">{kind}</span><strong>{report.title}</strong><time>{shortDate(report.date)}</time><b>›</b></button>;
                 })}
-                {!reports.length && <p className="tracking-empty">Aucun rapport.</p>}
+                {!reports.length && <p className="tracking-empty">{tr("Aucun rapport.")}</p>}
               </section>
             </>
           )}
@@ -213,22 +214,22 @@ export default function ProjectTracking({ project, api, onOpenAgent, storageKey,
   return (
     <details className="project-modules project-tracking" open={open} onToggle={toggle}>
       <summary>
-        <span>Planification</span>
-        <small>{waiting.length > 0 && <em className="tracking-pending">{waiting.length} décision{waiting.length > 1 ? "s" : ""} à prendre</em>}{parts}</small>
+        <span>{tr("Planification")}</span>
+        <small>{waiting.length > 0 && <em className="tracking-pending">{waiting.length}{" "}{tr("décision")}{waiting.length > 1 ? "s" : ""}{" "}{tr("à prendre")}</em>}{parts}</small>
         <b>›</b>
       </summary>
       <div className="tracking-body">
         {error && <p className="tracking-empty">{error}</p>}
         {waiting.length > 0 && (
           <section className="tracking-waiting">
-            <h4>Décisions en attente<b>{waiting.length}</b></h4>
+            <h4>{tr("Décisions en attente")}<b>{waiting.length}</b></h4>
             {waiting.map((item) => (
               <article key={`${item.boardId}-${item.id}`} className="tracking-waiting-item">
                 <div>
                   <button type="button" className="tracking-waiting-board" onClick={() => setOpenBoard(item.boardId)}>{item.boardTitle}{item.agentName ? ` · ${item.agentName}` : ""}</button>
                   <strong>{item.title}</strong>
-                  {item.detail && <p title="Afficher tout" onClick={(event) => event.currentTarget.classList.toggle("open")}>{item.detail}</p>}
-                  {item.link && <a href={item.link} target="_blank" rel="noreferrer">Ouvrir ↗</a>}
+                  {item.detail && <p title={tr("Afficher tout")} onClick={(event) => event.currentTarget.classList.toggle("open")}>{item.detail}</p>}
+                  {item.link && <a href={item.link} target="_blank" rel="noreferrer">{tr("Ouvrir ↗")}</a>}
                 </div>
                 <DecisionButtons projectId={project.id} boardId={item.boardId} item={item} api={api} onDone={load} />
               </article>

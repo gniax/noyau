@@ -1750,6 +1750,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
   background: #232726;
 }
 
+.pdf-preview { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; background: #232726; padding: 12px; }
+.pdf-preview-pages { display: grid; justify-items: center; gap: 12px; }
+.pdf-preview-page { max-width: 100%; height: auto; background: #fff; border-radius: 3px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45); }
+.pdf-preview-more { margin: 12px 0 0; text-align: center; color: var(--muted); font-size: 13px; }
+
 /* Audio & Video preview */
 .project-file-preview-media-container {
   flex: 1;
@@ -6712,3 +6717,8 @@ html.native-platform, html.native-platform body { overscroll-behavior-y: none; b
 .terminal-agent-switcher button[aria-current="page"] { border-color: var(--green); background: var(--c-b8ff5e-0c); color: var(--green); }
 .terminal-agent-switcher button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 720px) { .native-app .terminal-page.has-agent-switcher { grid-template-rows: calc(62px + var(--safe-top)) 46px minmax(0, 1fr) auto; } }
+
+.module-toggles { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.module-toggles label { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.module-toggles label.on { color: var(--text, #eef2ee); border-color: var(--accent, #b6f36a); }
+.module-toggles input { margin: 0; accent-color: var(--accent, #b6f36a); }

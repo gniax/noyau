@@ -7,6 +7,8 @@ import { transformWithEsbuild } from "vite";
 
 const source = (await fs.readFile(new URL("../src/telegram-growth-chat.jsx", import.meta.url), "utf8"))
   .replace('import "./telegram-growth-chat.css";', "")
+  // Module charge hors Vite: i18n remplace par l'identite francaise.
+  .replace('import { tr } from "./i18n.js";', 'const tr = (key, ...values) => key.replace(/\\{(\\d+)\\}/g, (match, index) => values[index] ?? "");')
   .replace('from "react"', `from ${JSON.stringify(import.meta.resolve("react"))}`);
 const { code } = await transformWithEsbuild(source, "telegram-growth-chat.jsx", { jsx: "transform" });
 const { default: TelegramGrowthChat, newMessageCount } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
