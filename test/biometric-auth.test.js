@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import express from "express";
@@ -77,4 +78,12 @@ test("offline access requires biometric approval; HTTP failures and foreign scop
 test("local disable remains possible offline or with malformed metadata", async () => {
   const f = clientFixture(); await f.enroll(); f.client.request = async () => { throw new Error("offline"); }; assert.deepEqual(await f.client.disable(), { revoked: false }); assert.equal(f.values.size, 0);
   f.metadata.get = async () => { throw new Error("invalid JSON"); }; assert.deepEqual(await f.client.disable(), { revoked: false });
+});
+test("native vault implementations bind secret access to OS biometric cryptography", { skip: !existsSync("android") }, async () => {
+  const java = await fs.readFile(new URL("../android/app/src/main/java/com/noyau/app/BiometricVaultPlugin.java", import.meta.url), "utf8");
+  const swift = await fs.readFile(new URL("../ios/App/App/BiometricVaultPlugin.swift", import.meta.url), "utf8");
+  for (const code of ["AndroidKeyStore", "setUserAuthenticationRequired(true)", "AUTH_BIOMETRIC_STRONG", "new BiometricPrompt.CryptoObject(cipher)", "setInvalidatedByBiometricEnrollment(true)", "getCryptoObject()", "AES/GCM/NoPadding"]) assert.ok(java.includes(code));
+  for (const code of [".biometryCurrentSet", "kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly", "SecItemCopyMatching", "deviceOwnerAuthenticationWithBiometrics"]) assert.ok(swift.includes(code));
+  const index = await fs.readFile(new URL("../server/index.js", import.meta.url), "utf8");
+  assert.equal(index.split("!verified.biometricDeviceId || biometricAuth.active(verified.biometricDeviceId, verified.profileId)").length - 1, 2);
 });

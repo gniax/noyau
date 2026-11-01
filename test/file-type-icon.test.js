@@ -1,0 +1,2 @@
+import test from 'node:test'; import assert from 'node:assert/strict'; import {fileTypeIcon} from '../src/file-type-icon.js';
+test('file types map to vector icons, without textual placeholders',()=>{for(const [ext,name] of [['.PNG','image'],['.pdf','file'],['.mp4','video'],['.zip','archive'],['.js','code'],['.unknown','file']])assert.equal(fileTypeIcon(ext),name);assert.equal(fileTypeIcon('',true),'folder');});

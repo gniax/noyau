@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 
 const source = process.argv[2];
-const dataDir = process.env.NOYAU_DATA_DIR || "/home/user/projects/noyau/.data";
+const dataDir = process.env.NOYAU_DATA_DIR || new URL("../.data", import.meta.url).pathname;
 const sessionId = process.env.NOYAU_SESSION_ID || null;
 
 if (!sessionId) process.exit(0);

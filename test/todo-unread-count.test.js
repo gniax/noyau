@@ -1,0 +1,2 @@
+import test from 'node:test'; import assert from 'node:assert/strict'; import {totalTodoUnread} from '../shared/todo-unread.js';
+test('completed tasks keep their unread markers but are excluded from counts',()=>{const rows=[{status:'done',unread:8},{completed:true,unread:2},{status:'review',unread:3},{status:'todo',unread:1}];assert.equal(totalTodoUnread(rows),4);assert.equal(rows[0].unread,8);});

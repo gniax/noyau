@@ -16,7 +16,9 @@ export class SessionReaper {
   }
 
   isProtected(entry) {
-    return Boolean(entry.migrationState === "summarizing" || entry.permissionRestartPending);
+    // Un agent autonome tombé est relancé par sa boucle, tant qu'elle n'a pas renoncé.
+    const keptAlive = entry.autonomy?.enabled && !entry.autonomy.paused && !entry.autonomy.keepAliveExhausted;
+    return Boolean(entry.migrationState === "summarizing" || entry.permissionRestartPending || keptAlive);
   }
 
   async tick() {

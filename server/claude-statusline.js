@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 
 const statusline = process.argv[2];
-const dataDir = process.env.NOYAU_DATA_DIR || "/home/user/projects/noyau/.data";
+const dataDir = process.env.NOYAU_DATA_DIR || new URL("../.data", import.meta.url).pathname;
 let raw = "";
 for await (const chunk of process.stdin) raw += chunk;
 

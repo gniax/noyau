@@ -4,6 +4,8 @@ import "./agent-map.css";
 import { tr, LOCALE } from "./i18n.js";
 
 const REFRESH_MS = 30_000;
+const EXCHANGES_REFRESH_MS = 5_000;
+const PACKET_MS = 1_700;
 const STORAGE_KEY = "noyau.map";
 const TYPES = [
   { id: "agent", label: tr("Agents"), tone: "agent" },
@@ -381,6 +383,217 @@ function ChatBubbles({ events, nodeLabel }) {
   );
 }
 
+// Flux live des messages entre agents: lecture pure, on peut ouvrir l'agent pour intervenir.
+function ExchangesPanel({ activeProject, projectName, span, api, onCollapse, onOpenAgent, onFresh, onHoverNode, onItems, onScope, agentFilter = null, onClearAgent, initialScope = "project" }) {
+  const [scope, setScope] = useState(initialScope);
+  const [items, setItems] = useState(null);
+  const [error, setError] = useState(null);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(() => new Set());
+  useEffect(() => onScope?.(scope), [scope, onScope]);
+  const known = useRef(null);
+  const [fresh, setFresh] = useState(() => new Set());
+  const target = scope === "all" || !activeProject ? "all" : activeProject;
+  useEffect(() => {
+    let active = true;
+    known.current = null;
+    setItems(null);
+    const load = async () => {
+      if (document.hidden) return;
+      try {
+        const result = await api(`/api/map/exchanges?project=${encodeURIComponent(target)}&window=${span}`);
+        if (!active) return;
+        const list = result.exchanges || [];
+        if (known.current) {
+          const added = list.filter((item) => !known.current.has(item.id));
+          if (added.length) {
+            onFresh?.(added);
+            setFresh(new Set(added.map((item) => item.id)));
+          }
+        }
+        known.current = new Set(list.map((item) => item.id));
+        setItems(list);
+        onItems?.(list);
+        setError(null);
+      } catch (failure) {
+        if (active) setError(failure.message);
+      }
+    };
+    void load();
+    const timer = setInterval(load, EXCHANGES_REFRESH_MS);
+    return () => { active = false; clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, target, span]);
+  const text = query.trim().toLocaleLowerCase(LOCALE);
+  const shown = (items || []).filter((item) => !agentFilter || item.from === agentFilter || item.to === agentFilter).filter((item) => !text || `${item.from} ${item.to} ${item.text} ${item.reply || ""}`.toLocaleLowerCase(LOCALE).includes(text)).slice().reverse();
+  const toggle = (id) => setOpen((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  return (
+    <aside className="amap-panel amap-exchanges" aria-label={tr("Échanges entre agents")}>
+      <div className="amap-list-head">
+        <div className="amap-list-title">
+          <i className="amap-live-dot" aria-hidden="true" />
+          <b>{tr("Échanges")}</b>
+          {items && <small>{shown.length}</small>}
+          {onCollapse && <button className="amap-close" onClick={onCollapse} aria-label={tr("Réduire")}>›</button>}
+        </div>
+        <div className="amap-list-tools">
+          <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tr("Filtrer par agent ou contenu…")} aria-label={tr("Filtrer les échanges")} />
+        </div>
+        <div className="amap-seg amap-exchange-scope" role="group" aria-label={tr("Portée")}>
+          <button className={scope === "project" && activeProject ? "on" : ""} disabled={!activeProject} onClick={() => setScope("project")} title={projectName}>{tr("Ce projet")}</button>
+          <button className={scope === "all" || !activeProject ? "on" : ""} onClick={() => setScope("all")}>{tr("Tous les projets")}</button>
+        </div>
+        {agentFilter && <button type="button" className="amap-exchange-agent-filter" onClick={onClearAgent}>{shortLabel(agentFilter, 30)}<b aria-hidden="true">×</b></button>}
+      </div>
+      <div className="amap-exchange-list">
+        {error && <div className="amap-chat-empty">{error}</div>}
+        {!error && !items && <div className="amap-chat-empty">{tr("Chargement…")}</div>}
+        {!error && items && !shown.length && <div className="amap-chat-empty">{tr("Aucun échange sur la période.")}</div>}
+        {shown.map((item) => {
+          const expanded = open.has(item.id);
+          return (
+            <article key={item.id} className={`amap-exchange ${item.kind === "subagent" ? "subagent" : ""} ${fresh.has(item.id) ? "fresh" : ""}`} onPointerEnter={() => item.toId && onHoverNode?.(`agent:${item.toId}`)} onPointerLeave={() => onHoverNode?.(null)}>
+              <header>
+                <span className="amap-exchange-route"><b>{shortLabel(item.from, 22)}</b><i aria-hidden="true">→</i><b>{shortLabel(item.to, 22)}</b>{item.kind === "subagent" && <em>{item.running ? tr("sous-agent en cours") : tr("sous-agent")}</em>}</span>
+                <time title={dayTime(item.at)}>{timeOf(item.at)}</time>
+              </header>
+              <button type="button" className={`amap-exchange-text ${expanded ? "open" : ""}`} onClick={() => toggle(item.id)} aria-expanded={expanded}>{plainText(item.text)}</button>
+              {expanded && item.reply && <div className="amap-exchange-reply"><small>{tr("Réponse de {0}", shortLabel(item.to, 26))}</small><p>{plainText(item.reply)}</p></div>}
+              <footer>
+                {!expanded && item.reply && <span className="amap-exchange-answered">{tr("Répondu")}</span>}
+                {item.toId && !item.toArchived && <button type="button" onClick={() => onOpenAgent?.(item.toId)}>{tr("Ouvrir {0}", shortLabel(item.to, 22))}</button>}
+                {item.kind === "subagent" && item.fromId && <button type="button" onClick={() => onOpenAgent?.(item.fromId)}>{tr("Ouvrir {0}", shortLabel(item.from, 22))}</button>}
+              </footer>
+            </article>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
+const ROOM_RECENT_MS = 15 * 60_000;
+const ROOM_BUBBLES = 5;
+
+// Places agents around the room, busiest towards the centre; two rings beyond a dozen.
+function roomSeats(names, width, height) {
+  const seats = new Map();
+  const cx = width / 2;
+  const cy = height / 2 + 14;
+  const outer = names.length > 12 ? names.slice(0, Math.ceil(names.length * 0.62)) : names;
+  const inner = names.length > 12 ? names.slice(outer.length) : [];
+  const ring = (list, rx, ry, offset) => list.forEach((name, index) => {
+    const angle = offset + (index / list.length) * Math.PI * 2;
+    seats.set(name, { x: cx + Math.cos(angle) * rx, y: cy + Math.sin(angle) * ry });
+  });
+  ring(outer, Math.max(100, width * 0.4), Math.max(90, height * 0.36), -Math.PI / 2);
+  ring(inner, Math.max(60, width * 0.2), Math.max(50, height * 0.17), -Math.PI / 3);
+  return seats;
+}
+
+function AgentFigure({ name, seat, logo, status, active, speaking, count, foreign, onPick, onHover }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <button type="button" className={`amap-room-agent ${status || "idle"} ${active ? "on" : ""} ${speaking ? "speaking" : ""}`} style={{ left: seat.x, top: seat.y }} onClick={() => onPick(name)} onPointerEnter={() => onHover(name)} onPointerLeave={() => onHover(null)} aria-label={tr("Voir les échanges de {0}", name)} aria-pressed={active}>
+      <span className="amap-room-figure" aria-hidden="true">
+        <span className="amap-room-head">{logo && !failed ? <img src={logo} alt="" onError={() => setFailed(true)} /> : <b>{initials(name)}</b>}<i /></span>
+        <span className="amap-room-body" />
+      </span>
+      <strong>{shortLabel(name, 18)}</strong>
+      <small>{foreign || (count ? tr(count > 1 ? "{0} messages" : "{0} message", count) : "")}</small>
+    </button>
+  );
+}
+
+function ExchangeRoom({ items, sessions, projects, scopeProject, selected, onSelect, packets }) {
+  const stage = useRef(null);
+  const size = useSize(stage);
+  const [hover, setHover] = useState(null);
+  const byName = useMemo(() => new Map(sessions.map((session) => [session.name, session])), [sessions]);
+  const humans = (items || []).filter((item) => item.kind !== "subagent");
+  const names = useMemo(() => {
+    const counts = new Map();
+    for (const item of humans) for (const name of [item.from, item.to]) counts.set(name, (counts.get(name) || 0) + 1);
+    for (const session of sessions) if (scopeProject ? session.projectId === scopeProject : false) { if (!counts.has(session.name) && session.assistant !== "shell") counts.set(session.name, 0); }
+    return counts;
+  }, [items, sessions, scopeProject]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Stable seats: alphabetical, so nobody jumps when a new message arrives.
+  const order = useMemo(() => [...names.keys()].sort((a, b) => a.localeCompare(b, "fr")).slice(0, 26), [names]);
+  const seats = useMemo(() => roomSeats(order, size.width, size.height), [order, size.width, size.height]);
+  const pairs = useMemo(() => {
+    const map = new Map();
+    for (const item of humans) {
+      if (!seats.has(item.from) || !seats.has(item.to) || item.from === item.to) continue;
+      const key = [item.from, item.to].sort().join("|");
+      const pair = map.get(key) || { key, a: item.from, b: item.to, count: 0, lastAt: 0 };
+      pair.count += 1;
+      pair.lastAt = Math.max(pair.lastAt, Date.parse(item.at));
+      map.set(key, pair);
+    }
+    return [...map.values()];
+  }, [items, seats]); // eslint-disable-line react-hooks/exhaustive-deps
+  const now = Date.now();
+  const bubbles = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    for (const item of [...humans].reverse()) {
+      if (seen.has(item.from) || !seats.has(item.from)) continue;
+      seen.add(item.from);
+      list.push(item);
+      if (list.length >= ROOM_BUBBLES) break;
+    }
+    return list;
+  }, [items, seats]); // eslint-disable-line react-hooks/exhaustive-deps
+  const focus = hover || selected;
+  const running = (items || []).filter((item) => item.kind === "subagent" && item.running && seats.has(item.from));
+  const projectName = (session) => (session?.projectId && session.projectId !== scopeProject ? projects.find((project) => project.id === session.projectId)?.name || null : null);
+  return (
+    <div className="amap-room" ref={stage}>
+      <div className="amap-room-floor" aria-hidden="true" />
+      <svg className="amap-room-links" width={size.width} height={size.height} aria-hidden="true">
+        {pairs.map((pair) => {
+          const a = seats.get(pair.a);
+          const b = seats.get(pair.b);
+          const live = now - pair.lastAt < ROOM_RECENT_MS;
+          const dim = focus && pair.a !== focus && pair.b !== focus;
+          return <line key={pair.key} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className={`${live ? "live" : ""} ${dim ? "dim" : ""}`} style={{ strokeWidth: 0.8 + Math.log2(1 + pair.count) * 0.8 }} />;
+        })}
+        {packets.map((packet) => {
+          const a = seats.get(packet.from);
+          const b = seats.get(packet.to);
+          return a && b ? <circle key={packet.key} className="amap-packet" r={4}><animateMotion dur={`${PACKET_MS - 200}ms`} fill="freeze" path={`M${a.x},${a.y}L${b.x},${b.y}`} /></circle> : null;
+        })}
+      </svg>
+      {order.map((name) => {
+        const session = byName.get(name);
+        const seat = seats.get(name);
+        return seat ? <AgentFigure key={name} name={name} seat={seat} logo={session?.logoUrl} status={session ? (session.agentStatus?.subagents ? "working" : session.agentStatus?.state) : "gone"} active={selected === name} speaking={bubbles.some((item) => item.from === name && now - Date.parse(item.at) < ROOM_RECENT_MS)} count={names.get(name)} foreign={projectName(session)} onPick={(value) => onSelect(selected === value ? null : value)} onHover={setHover} /> : null;
+      })}
+      {bubbles.map((item) => {
+        const seat = seats.get(item.from);
+        const dim = focus && item.from !== focus && item.to !== focus;
+        const fresh = now - Date.parse(item.at) < ROOM_RECENT_MS;
+        const flip = seat.x > size.width - 170;
+        const below = seat.y < 130;
+        return <button type="button" key={item.id} className={`amap-room-bubble ${fresh ? "fresh" : ""} ${dim ? "dim" : ""} ${flip ? "flip" : ""} ${below ? "below" : ""}`} style={{ left: seat.x, top: seat.y }} onClick={() => onSelect(item.from)}>
+          <small>{tr("à {0}", shortLabel(item.to, 18))} · {timeOf(item.at)}</small>
+          <span>{plainText(item.text).slice(0, 90)}</span>
+        </button>;
+      })}
+      {running.map((item, index) => {
+        const seat = seats.get(item.from);
+        return <span key={item.id} className="amap-room-sub" style={{ left: seat.x + 30 + index * 8, top: seat.y + 8 }} title={tr("Sous-agent en cours : {0}", item.to)} aria-label={tr("Sous-agent en cours : {0}", item.to)} />;
+      })}
+      {!order.length && <div className="amap-loading">{items ? tr("Aucun échange sur la période.") : tr("Chargement…")}</div>}
+    </div>
+  );
+}
+
 const COST_OPTIONS = [["", "— (carte / scan)"], ["free", tr("Gratuit")], ["subscription", tr("Payant · abonnement")], ["usage", tr("Payant · à l'usage")], ["commission", tr("Commission par transaction")], ["unknown", tr("À confirmer")]];
 const LIFECYCLE_OPTIONS = ["", "actif", tr("en pause"), "sandbox", tr("obsolète ?"), tr("non utilisé"), "secours", tr("plus détecté")];
 
@@ -699,7 +912,7 @@ function DetailPanel({ projectId, span, node, graph, onBack, onCollapse, onOpenA
   );
 }
 
-export default function AgentMapView({ projects = [], projectId: requestedProject = null, onProjectChange, api, onOpenAgent }) {
+export default function AgentMapView({ projects = [], projectId: requestedProject = null, onProjectChange, api, onOpenAgent, sessions = [], initialMode = "map" }) {
   const prefs = useMemo(readPrefs, []);
   const projectList = useMemo(() => projects.filter((project) => project?.id), [projects]);
   const [projectId, setProjectId] = useState(requestedProject || prefs.projectId || null);
@@ -709,6 +922,14 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
   const [span, setSpan] = useState(prefs.window === "7d" ? "7d" : "24h");
   const [filter, setFilter] = useState(null);
   const [panelOpen, setPanelOpen] = useState(prefs.panelOpen !== false);
+  const [mode, setMode] = useState(initialMode);
+  useEffect(() => setMode(initialMode), [initialMode]);
+  const [roomItems, setRoomItems] = useState(null);
+  const [roomAgent, setRoomAgent] = useState(null);
+  const [roomPackets, setRoomPackets] = useState([]);
+  const [roomScope, setRoomScope] = useState("project");
+  const room = mode === "room";
+  const [packets, setPackets] = useState([]);
   const [exploring, setExploring] = useState(false);
   const [search, setSearch] = useState("");
   const [data, setData] = useState(null);
@@ -813,6 +1034,18 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
     });
   };
 
+  // Un message arrivé traverse son lien une fois; le lien lui-même n'apparaît qu'après relecture de la carte.
+  const onFreshExchanges = useCallback((added) => {
+    void load();
+    const next = added.filter((item) => item.fromId).map((item) => ({ key: item.id, source: `agent:${item.fromId}`, target: `agent:${item.toId}` }));
+    const flying = added.map((item) => ({ key: item.id, from: item.from, to: item.to }));
+    setRoomPackets((current) => [...current, ...flying].slice(-12));
+    setTimeout(() => setRoomPackets((current) => current.filter((packet) => !flying.includes(packet))), PACKET_MS);
+    if (!next.length) return;
+    setPackets((current) => [...current, ...next].slice(-12));
+    setTimeout(() => setPackets((current) => current.filter((packet) => !next.includes(packet))), PACKET_MS);
+  }, [load]);
+
   const onWheel = (event) => {
     const rect = stage.current.getBoundingClientRect();
     const px = event.clientX - rect.left - rect.width / 2 - shift;
@@ -853,7 +1086,7 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
   const now = Date.now();
 
   return (
-    <section className={`amap ${panelOpen ? "has-panel" : "panel-collapsed"}`}>
+    <section className={`amap ${room ? "room-mode has-panel" : panelOpen ? "has-panel" : "panel-collapsed"}`}>
       {exploring && activeProject && <ScanDialog projectId={activeProject} projectName={data?.project?.name || ""} api={api} onClose={() => { setExploring(false); void load(); }} onApplied={load} />}
       <div className="amap-toolbar">
         <div className="amap-chips amap-projects" role="tablist" aria-label={tr("Projet")}>
@@ -861,21 +1094,28 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
             <button key={project.id} className={`amap-chip ${project.id === activeProject ? "on" : ""}`} onClick={() => { setProjectId(project.id); onProjectChange?.(project.id); }}>{project.name}</button>
           ))}
         </div>
-        <div className="amap-chips amap-types" aria-label={tr("Types de nœuds")}>
+        {!room && <div className="amap-chips amap-types" aria-label={tr("Types de nœuds")}>
           {TYPES.map((type) => (
             <button key={type.id} className={`amap-chip ${filter === type.id ? "on" : ""}`} onClick={() => pickFilter(type.id)} aria-pressed={filter === type.id}><i className={`tone-${type.tone}`} />{type.label}{data ? <small>{data.nodes.filter((node) => matchesFilter(node, type.id)).length}</small> : null}</button>
           ))}
           <button className={`amap-chip paid ${filter === "paid" ? "on" : ""}`} onClick={() => pickFilter("paid")} aria-pressed={filter === "paid"} title={tr("Ce qui coûte de l'argent")}><b>$</b>{tr("Payants")}{data ? <small>{data.nodes.filter((node) => matchesFilter(node, "paid")).length}</small> : null}</button>
           <button className={`amap-chip ${filter === "archived" ? "on" : ""}`} onClick={() => pickFilter("archived")} aria-pressed={filter === "archived"}><i className="tone-archived" />{tr("Archivés")}{data ? <small>{data.nodes.filter((node) => node.archived).length}</small> : null}</button>
+        </div>}
+        <div className="amap-seg amap-mode" role="group" aria-label={tr("Affichage")}>
+          <button className={!room ? "on" : ""} onClick={() => setMode("map")}>{tr("Carte")}</button>
+          <button className={room ? "on" : ""} onClick={() => { setMode("room"); setSelectedId(null); }}><i className="amap-live-dot" aria-hidden="true" />{tr("Échanges")}</button>
         </div>
+        {!room && <>
         <button className={`amap-explore ${data?.scan?.running ? "running" : ""}`} onClick={() => setExploring(true)} title={tr("Scanner le projet : clés .env (noms), APIs, SDK, services, crons")}>{tr("Explorer")}{data?.scan?.pending > 0 && <b>{data.scan.pending}</b>}</button>
         <input className="amap-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr("Rechercher un nœud…")} aria-label={tr("Rechercher un nœud")} />
+        </>}
         <div className="amap-seg" role="group" aria-label={tr("Fenêtre de temps")}>
           {["24h", "7d"].map((value) => <button key={value} className={span === value ? "on" : ""} onClick={() => setSpan(value)}>{value === "24h" ? "24 h" : tr("7 j")}</button>)}
         </div>
       </div>
       <div className="amap-body">
-        <div className="amap-stage" ref={stage} onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+        {room && <ExchangeRoom items={roomItems} sessions={sessions} projects={projectList} scopeProject={roomScope === "all" ? null : activeProject} selected={roomAgent} onSelect={setRoomAgent} packets={roomPackets} />}
+        <div className="amap-stage" hidden={room} ref={stage} onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
           {kpis && (
             <div className="amap-kpis">
               <div className="amap-kpi"><small>{tr("Agents actifs")}</small><b>{kpis.agents}</b><em className="run">{kpis.working ? `● ${kpis.working} en cours` : tr("au repos")}</em></div>
@@ -910,6 +1150,14 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
                       {link.live && <path className="amap-flow" d={d} style={{ strokeWidth: Math.max(1.2, width * 0.55) }} />}
                     </g>
                   );
+                })}
+              </g>
+              <g className="amap-packets">
+                {packets.map((packet) => {
+                  const source = positions.get(packet.source);
+                  const target = positions.get(packet.target);
+                  if (!source || !target) return null;
+                  return <circle key={packet.key} className="amap-packet" r={3.4}><animateMotion dur={`${PACKET_MS - 200}ms`} fill="freeze" path={linkPath(source, target, "message")} /></circle>;
                 })}
               </g>
               <g className="amap-nodes">
@@ -972,7 +1220,9 @@ export default function AgentMapView({ projects = [], projectId: requestedProjec
           {error && <div className="amap-loading error">{error}</div>}
           {data && <div className="amap-updated">maj {timeOf(data.generatedAt)}{now - Date.parse(data.generatedAt) > REFRESH_MS * 3 ? tr(" · données anciennes") : ""}</div>}
         </div>
-        {panelOpen ? (
+        {room
+          ? <ExchangesPanel key={activeProject || "all"} activeProject={activeProject} projectName={data?.project?.name || ""} span={span} api={api} onOpenAgent={onOpenAgent} onFresh={onFreshExchanges} onItems={setRoomItems} onScope={setRoomScope} agentFilter={roomAgent} onClearAgent={() => setRoomAgent(null)} />
+          : panelOpen ? (
           selected
             ? <DetailPanel key={selected.id} projectId={activeProject} span={span} node={selected} graph={graph} api={api} onBack={() => setSelectedId(null)} onCollapse={() => setPanelOpen(false)} onOpenAgent={onOpenAgent} onChanged={load} />
             : <ListPanel nodes={(data?.nodes || []).filter((node) => node.type !== "founder" && (filter === "archived" || !node.archived))} filter={filter} onClearFilter={() => setFilter(null)} onPick={focusNode} onCollapse={() => setPanelOpen(false)} />

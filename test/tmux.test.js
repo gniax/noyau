@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TmuxController, chainCommands, classifyAssistant, createSessionId, literalKeyCommands, validSessionId } from "../server/tmux.js";
+import { TmuxController, batchTmuxCommands, chainCommands, classifyAssistant, createSessionId, literalKeyCommands, validSessionId } from "../server/tmux.js";
 
 test("session identifiers stay tmux-safe", () => {
   const id = createSessionId("codex");
@@ -172,7 +172,7 @@ test("boot restore resumes exact agent contexts", async () => {
   const result = await controller.restorePersisted();
   assert.deepEqual(result.failed, []);
   assert.equal(result.restored.length, 3);
-  assert.deepEqual(commands[0], ["new-session", "-d", "-s", "noyau-codex-safe", "-c", os.tmpdir(), "-e", "NOYAU_SESSION_ID=noyau-codex-safe", "codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false", "resume", "codex-thread"]);
+  assert.deepEqual(commands[0], ["new-session", "-d", "-s", "noyau-codex-safe", "-c", os.tmpdir(), "-e", "NOYAU_SESSION_ID=noyau-codex-safe", "codex", "--no-alt-screen", "--yolo", "-c", "check_for_update_on_startup=false", "--dangerously-bypass-hook-trust", "resume", "codex-thread"]);
   assert.deepEqual(commands[1], ["new-session", "-d", "-s", "noyau-claude-safe", "-c", os.tmpdir(), "-e", "NOYAU_SESSION_ID=noyau-claude-safe", "claude", "--dangerously-skip-permissions", "--resume", "claude-session"]);
   assert.deepEqual(commands[2], ["new-session", "-d", "-s", "noyau-shell-safe", "-c", os.tmpdir(), "-e", "NOYAU_SESSION_ID=noyau-shell-safe"]);
 });
@@ -233,4 +233,23 @@ test("la saisie litterale garde un point-virgule final que tmux prendrait pour u
   assert.deepEqual(literalKeyCommands("s", ";"), [["send-keys", "-t", "s", "-H", "3b"]]);
   assert.deepEqual(literalKeyCommands("s", ""), []);
   assert.deepEqual(chainCommands([["a"], ["b", "c"]]), ["a", ";", "b", "c"]);
+});
+
+
+test("long unicode prompts are split into bounded tmux batches without losing text", () => {
+ const text = `${"é🍜abc".repeat(4000)};`; const commands = literalKeyCommands("test", text); const batches = batchTmuxCommands(commands);
+ assert.ok(batches.length > 1); assert.ok(batches.every(batch => batch.reduce((n, part) => n + Buffer.byteLength(part) + 1, 0) <= 6000));
+ const rebuilt = commands.map(command => command.includes("-H") ? ";".repeat(command.filter(x => x === "3b").length) : command.at(-1)).join(""); assert.equal(rebuilt,text);
+});
+
+test("tmux output stays tab-separated without a UTF-8 locale", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-tmux-args-"));
+  const binary = path.join(directory, "tmux");
+  // tmux replaces -F tabs by "_" unless -u forces UTF-8: the fake mirrors that behaviour.
+  await fs.writeFile(binary, `#!/bin/sh\nif [ "$1" = "-u" ]; then printf 's1\\t1793541891\\t1\\tzsh\\t/tmp\\t42\\n'; else printf 's1_1793541891_1_zsh_/tmp_42\\n'; fi\n`, { mode: 0o755 });
+  const controller = new TmuxController({ binary, store: { get: () => null, all: () => ({}) }, workspaceRoot: os.tmpdir() });
+  const [session] = await controller.list();
+  assert.equal(session.id, "s1");
+  assert.equal(session.activityAt, new Date(1793541891 * 1000).toISOString());
+  await fs.rm(directory, { recursive: true, force: true });
 });

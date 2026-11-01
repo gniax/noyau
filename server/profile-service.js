@@ -47,13 +47,15 @@ export function sanitizeProfile(profile) {
   };
 }
 
+const FIRST_ADMIN_ID = "admin";
+
 export class ProfileService {
-  constructor({ store, dataDir, primaryTodoFile, primaryTodoMountUri = null, primaryName = "Main" }) {
+  constructor({ store, dataDir, primaryTodoFile, primaryTodoMountUri = null, primaryName = "Admin" }) {
     this.store = store;
     this.dataDir = path.resolve(dataDir);
     this.primaryTodoFile = path.resolve(primaryTodoFile);
     this.primaryTodoMountUri = primaryTodoMountUri || null;
-    this.primaryName = cleanName(primaryName) || "Main";
+    this.primaryName = cleanName(primaryName) || "Admin";
   }
 
   profileTodoFile(id) {
@@ -64,11 +66,9 @@ export class ProfileService {
     const entries = Object.entries(this.store.all());
     if (!entries.length) {
       const now = new Date().toISOString();
-      await this.store.setMany([
-        ["main", { name: this.primaryName, theme: "noyau", primary: true, todoFile: this.primaryTodoFile, todoMountUri: this.primaryTodoMountUri, quotaResetNotify: cleanQuotaResetNotify(), passwordHash: null, passwordSalt: null, passwordUpdatedAt: null, createdAt: now, updatedAt: now }],
-        ["aurora", { name: "Aurora", theme: "moving-castle", primary: false, todoFile: this.profileTodoFile("aurora"), todoMountUri: null, quotaResetNotify: cleanQuotaResetNotify(), passwordHash: null, passwordSalt: null, passwordUpdatedAt: null, createdAt: now, updatedAt: now }],
-      ]);
-      return { created: 2, migrated: 0 };
+      // Fresh install: one admin, named and secured by whoever holds the setup code.
+      await this.store.set(FIRST_ADMIN_ID, { name: this.primaryName, theme: "noyau", primary: true, setupPending: true, todoFile: this.primaryTodoFile, todoMountUri: this.primaryTodoMountUri, quotaResetNotify: cleanQuotaResetNotify(), passwordHash: null, passwordSalt: null, passwordUpdatedAt: null, createdAt: now, updatedAt: now });
+      return { created: 1, migrated: 0 };
     }
     const primaryId = entries.find(([, profile]) => profile.primary)?.[0] || entries[0][0];
     const updates = entries.map(([id, profile]) => [id, {
@@ -88,8 +88,37 @@ export class ProfileService {
     return { created: 0, migrated: updates.length };
   }
 
+  setupNeeded() {
+    return Object.values(this.store.all()).some((profile) => profile.primary && profile.setupPending);
+  }
+
+  // Only ever runs once: it clears the flag that allowed it.
+  async completeSetup({ name, password } = {}) {
+    const id = this.primaryId();
+    const current = this.store.get(id);
+    if (!current?.setupPending) throw new Error("Installation déjà terminée.");
+    const cleanedName = cleanName(name);
+    if (!cleanedName) throw new Error("Nom requis.");
+    const clean = String(password || "").trim();
+    validatePasswordStrength(clean);
+    const hashed = hashPassword(clean);
+    const now = new Date().toISOString();
+    const { setupPending, ...rest } = current;
+    const next = { ...rest, name: cleanedName, passwordHash: hashed.hash, passwordSalt: hashed.salt, passwordUpdatedAt: now, updatedAt: now };
+    await this.store.set(id, next);
+    return sanitizeProfile({ id, ...next });
+  }
+
+  // Keeps the profile's folder on disk: removing an account must not destroy its data.
+  async remove(id) {
+    const current = this.get(id);
+    if (!current) throw new Error("Profil introuvable.");
+    if (current.primary) throw new Error("Le profil administrateur ne peut pas être supprimé.");
+    await this.store.remove(id);
+  }
+
   primaryId() {
-    return Object.entries(this.store.all()).find(([, profile]) => profile.primary)?.[0] || Object.keys(this.store.all())[0] || "main";
+    return Object.entries(this.store.all()).find(([, profile]) => profile.primary)?.[0] || Object.keys(this.store.all())[0] || FIRST_ADMIN_ID;
   }
 
   get(id) {
@@ -223,10 +252,9 @@ export class ProfileService {
     if (!current) throw new Error("Profil introuvable.");
     const name = input.name === undefined ? current.name : cleanName(input.name);
     if (!name) throw new Error("Nom profil requis.");
-    const isAurora = id.toLowerCase().includes("bellin") || name.toLowerCase().includes("bellin");
     const rawTheme = input.theme === undefined ? current.theme : String(input.theme);
     if (!THEMES.has(rawTheme)) throw new Error("Thème profil invalide.");
-    const theme = isAurora ? "moving-castle" : rawTheme;
+    const theme = rawTheme;
     let passwordHash = current.passwordHash || null;
     let passwordSalt = current.passwordSalt || null;
     let passwordUpdatedAt = current.passwordUpdatedAt || null;

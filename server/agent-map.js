@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describeCalendar, describeCron, nextCronRun } from "./schedule-text.js";
 import { diffInventories, keyLines, scanDirs, sheetPrompt } from "./map-scanner.js";
+import { parseDelegate } from "../shared/delegate.js";
 
 // Carte projet: agents, services, timers, cron, modules et APIs, en lecture seule. Noms et statuts seulement.
 const WINDOWS = { "24h": 86_400_000, "7d": 7 * 86_400_000 };
@@ -14,10 +15,14 @@ const LIVE_LINK_MS = 3_600_000;
 const TRANSCRIPT_TAIL_BYTES = 8 * 1024 * 1024;
 const CHAT_TEXT_CHARS = 1200;
 const CHAT_LIMIT = 80;
+const EXCHANGE_TTL_MS = 4_000;
+const EXCHANGE_TEXT_CHARS = 8000;
+const EXCHANGE_LIMIT = 300;
 const MAX_SHEETS_PER_SCAN = 80;
 const SHEET_BATCH = 8;
 const UNIT_PROPS = "Id,Description,ActiveState,SubState,Result,Type,WorkingDirectory,ExecStart,Triggers,NextElapseUSecRealtime,LastTriggerUSec,ExecMainStartTimestamp,ExecMainExitTimestamp,ExecMainStatus,TimersCalendar,EnvironmentFiles";
 const INTER_AGENT = /\[Message inter-agent de « ([^»]+?) »\]:?\s*/;
+const INCIDENT = /^\[(?:Incident|Contrôle)\]\s*/;
 const SKIPPED_USER = /^(<(command-|local-command|task-notification|bash-|user-prompt-submit-hook)|\[Request interrupted|Caveat: |This session is being continued)/;
 const SCRIPT_FILE = /\.(m?js|cjs|ts|py|sh|php|rb)$/i;
 const ASSISTANT_COST = { claude: "Claude (Anthropic)", "claude-design": "Claude (Anthropic)", codex: "Codex (OpenAI)", antigravity: "Antigravity (Google)" };
@@ -128,6 +133,10 @@ export function classifyUserText(raw, creator = null) {
   if (!text) return null;
   const inter = text.match(INTER_AGENT);
   if (inter) return { from: senderName(inter[1]), kind: "agent", text: text.slice(inter.index + inter[0].length).trim() || text };
+  // Envoyé par la surveillance de Noyau, jamais par le fondateur.
+  if (INCIDENT.test(text)) return { from: "Noyau", kind: "incident", text: text.replace(INCIDENT, "").trim() || text };
+  const delegate = parseDelegate(text);
+  if (delegate.delegated) return { from: null, kind: "founder", delegated: true, text: delegate.text };
   if (SKIPPED_USER.test(text)) return null;
   if (creator?.prompt && creator.prompt.length >= 12 && text.startsWith(creator.prompt.slice(0, 40))) return { from: creator.name, kind: "agent", text };
   return { from: null, kind: "founder", text };
@@ -141,7 +150,7 @@ function blockText(content) {
 
 // Une ligne de transcript → événement neutre { role, text, at, final }.
 export function parseTranscriptLine(line, assistant) {
-  if (!line || (!line.includes('"user"') && !line.includes('"assistant"') && !line.includes('"USER_INPUT"') && !line.includes('"PLANNER_RESPONSE"'))) return null;
+  if (!line || (!line.includes('"user"') && !line.includes('"assistant"') && !line.includes('"queued_command"') && !line.includes('"USER_INPUT"') && !line.includes('"PLANNER_RESPONSE"'))) return null;
   let entry;
   try {
     entry = JSON.parse(line);
@@ -153,7 +162,7 @@ export function parseTranscriptLine(line, assistant) {
     const payload = entry.payload || entry;
     if (payload.type !== "message" || !["user", "assistant"].includes(payload.role)) return null;
     const text = blockText(payload.content);
-    return text.trim() ? { role: payload.role, text, at, final: null } : null;
+    return text.trim() ? { role: payload.role, text, at, final: payload.role === "assistant" && payload.phase === "final_answer" ? true : null } : null;
   }
   if (assistant === "antigravity") {
     if (entry.type === "USER_INPUT") {
@@ -163,6 +172,13 @@ export function parseTranscriptLine(line, assistant) {
     if (entry.type === "PLANNER_RESPONSE" && entry.source === "MODEL" && entry.content) return { role: "assistant", text: String(entry.content), at, final: null };
     return null;
   }
+  // Un message envoyé pendant que l'agent travaille n'est écrit que sous cette forme.
+  if (entry.type === "attachment") {
+    const queued = entry.attachment;
+    if (queued?.type !== "queued_command" || (queued.commandMode && queued.commandMode !== "prompt") || (queued.origin?.kind && queued.origin.kind !== "human")) return null;
+    const text = blockText(queued.prompt);
+    return text.trim() ? { role: "user", text, at, final: null } : null;
+  }
   if (!["user", "assistant"].includes(entry.type) || entry.isMeta || entry.isSidechain || entry.isCompactSummary) return null;
   const text = blockText(entry.message?.content);
   if (!text.trim()) return null;
@@ -171,28 +187,33 @@ export function parseTranscriptLine(line, assistant) {
 }
 
 // Garde les demandes (fondateur, agents) et la réponse finale de chaque tour, pas le travail intermédiaire.
-export function conversationEvents(entries, { creator = null, since = 0, working = false } = {}) {
+// notes: the founder also reads what the agent writes between two actions, as progress messages.
+export function conversationEvents(entries, { creator = null, since = 0, working = false, notes = false } = {}) {
   const events = [];
   let pending = null;
   const flush = () => {
-    if (pending) events.push({ at: pending.at, direction: "out", kind: "reply", from: null, text: pending.text });
+    if (pending) events.push({ at: pending.at, direction: "out", kind: "reply", from: null, text: pending.text, final: pending.final === true });
     pending = null;
   };
   for (const entry of entries) {
     if (entry.role === "assistant") {
       if (entry.text.startsWith("You've hit your session limit")) continue;
       if (entry.final === true) {
+        if (notes) flush();
         pending = entry;
         flush();
+      } else if (notes) {
+        flush();
+        pending = { ...entry, final: false };
       } else if (entry.final === null) pending = entry;
       continue;
     }
     const classified = classifyUserText(entry.text, creator);
     if (!classified) continue;
     flush();
-    events.push({ at: entry.at, direction: "in", kind: classified.kind, from: classified.from, text: classified.text });
+    events.push({ at: entry.at, direction: "in", kind: classified.kind, from: classified.from, text: classified.text, ...(classified.delegated ? { delegated: true } : {}) });
   }
-  if (!working) flush();
+  if (!working || notes) flush();
   return events.filter((event) => !since || (event.at && event.at >= since));
 }
 
@@ -434,7 +455,7 @@ export function parseCronListing(text) {
 }
 
 export class AgentMapService {
-  constructor({ store, projects, tmux, archives, handover, moduleService, workspaceRoot, noyauRoot = null, run, agentState = async () => null, now = () => Date.now(), scanStore = null, llm = null }) {
+  constructor({ store, projects, tmux, archives, handover, moduleService, workspaceRoot, noyauRoot = null, run, agentState = async () => null, subagents = null, now = () => Date.now(), scanStore = null, llm = null }) {
     this.scanStore = scanStore;
     this.llm = llm;
     this.scanJobs = new Map();
@@ -448,6 +469,7 @@ export class AgentMapService {
     this.noyauDir = noyauRoot ? topDir(noyauRoot, this.workspaceRoot) : null;
     this.run = run;
     this.agentState = agentState;
+    this.subagents = subagents;
     this.now = now;
     this.snapshots = new Map();
     this.transcripts = new Map();
@@ -754,6 +776,7 @@ export class AgentMapService {
 
   invalidate() {
     this.snapshots.clear();
+    this.exchangeCache?.clear();
   }
 
   async snapshot({ projectId, window = "24h", visibleProjects, sessionVisible }) {
@@ -764,6 +787,61 @@ export class AgentMapService {
     const value = await this.build({ projectId, span, window, visibleProjects, sessionVisible });
     this.snapshots.set(key, { at: this.now(), value });
     return value;
+  }
+
+  // Léger, sans services ni journaux: la vue live le relit toutes les quelques secondes.
+  // projectId null = tous les projets visibles, agents sans projet compris.
+  async exchanges({ projectId = null, window = "24h", visibleProjects, sessionVisible, agentId = null }) {
+    const since = this.now() - (WINDOWS[window] || WINDOWS["24h"]);
+    const key = `${projectId}:${window}:${Object.keys(visibleProjects).sort().join(",")}`;
+    const cached = this.exchangeCache?.get(key);
+    let list = cached && this.now() - cached.at < EXCHANGE_TTL_MS ? cached.value : null;
+    if (!list) {
+      const inScope = (id) => (projectId ? id === projectId : !id || Boolean(visibleProjects[id]));
+      const agents = Object.entries(this.store.all())
+        .filter(([id, metadata]) => inScope(metadata.projectId) && sessionVisible(id) && metadata.assistant !== "shell")
+        .map(([id, metadata]) => ({ id, ...metadata }));
+      for (const entry of await this.archives.list().catch(() => [])) {
+        if (!inScope(entry.projectId) || (!entry.projectId && !projectId) || agents.some((agent) => agent.id === entry.id)) continue;
+        if (this.now() - Date.parse(entry.archivedAt || 0) <= ARCHIVE_RECENT_MS) agents.push({ ...entry, archived: true });
+      }
+      const idByName = new Map();
+      for (const [id, metadata] of Object.entries(this.store.all())) if (metadata.name && sessionVisible(id)) idByName.set(metadata.name, id);
+      list = [];
+      for (const agent of agents) {
+        const file = await this.transcriptFile(agent);
+        if (!file) continue;
+        const events = conversationEvents(await this.transcriptEntries(file, agent.assistant), { creator: creatorOf(agent.description), since });
+        events.forEach((event, index) => {
+          if (event.direction !== "in" || event.kind !== "agent" || !event.at) return;
+          const next = events[index + 1];
+          list.push({
+            id: `${event.at}:${agent.id}`, at: new Date(event.at).toISOString(),
+            from: event.from, fromId: idByName.get(event.from) || null,
+            to: agent.name || agent.id, toId: agent.id, toArchived: Boolean(agent.archived), projectId: agent.projectId || null,
+            text: clip(redact(event.text), EXCHANGE_TEXT_CHARS),
+            reply: next?.direction === "out" ? clip(redact(next.text), EXCHANGE_TEXT_CHARS) : null,
+          });
+        });
+      }
+      for (const agent of agents) {
+        for (const item of agent.transcriptPath && this.subagents ? await this.subagents(agent) : []) {
+          const at = item.startedAt || item.updatedAt;
+          if (Date.parse(item.updatedAt) < since) continue;
+          list.push({
+            id: `sub:${item.id}`, at, kind: "subagent", running: item.running,
+            from: agent.name || agent.id, fromId: agent.id,
+            to: item.description || item.type || item.id, toId: null, toArchived: true, projectId: agent.projectId || null,
+            text: clip(redact(item.prompt), EXCHANGE_TEXT_CHARS),
+            reply: item.running ? null : clip(redact(item.lastText), EXCHANGE_TEXT_CHARS) || null,
+          });
+        }
+      }
+      list.sort((a, b) => a.at.localeCompare(b.at));
+      list = list.slice(-EXCHANGE_LIMIT);
+      (this.exchangeCache ||= new Map()).set(key, { at: this.now(), value: list });
+    }
+    return agentId ? list.filter((item) => item.fromId === agentId || item.toId === agentId) : list;
   }
 
   async build({ projectId, span, window, visibleProjects, sessionVisible, withScan = true }) {
@@ -848,7 +926,9 @@ export class AgentMapService {
       const events = conversationEvents(await this.transcriptEntries(file, agent.assistant), { creator, since, working });
       const list = chats.get(nodeId) || [];
       for (const event of events) {
-        if (event.direction === "in") {
+        if (event.direction === "in" && event.kind === "incident") {
+          nodes.get(nodeId).activity += 1;
+        } else if (event.direction === "in") {
           const source = event.kind === "founder" ? "founder" : resolveAgent(event.from);
           addLink(source, nodeId, event.kind === "founder" ? "founder" : "message", { at: event.at });
           nodes.get(nodeId).activity += 1;
@@ -1129,7 +1209,7 @@ export class AgentMapService {
         .filter((event) => event.at)
         .sort((a, b) => a.at - b.at)
         .slice(-CHAT_LIMIT)
-        .map((event) => ({ at: new Date(event.at).toISOString(), direction: event.direction, kind: event.kind, from: event.from, to: event.to || null, text: clip(redact(event.text), CHAT_TEXT_CHARS) })));
+        .map((event) => ({ at: new Date(event.at).toISOString(), direction: event.direction, kind: event.kind, from: event.from, to: event.to || null, text: clip(redact(event.text), CHAT_TEXT_CHARS), ...(event.delegated ? { delegated: true } : {}) })));
     }
     for (const [nodeId, list] of chatEvents) {
       const node = nodes.get(nodeId);

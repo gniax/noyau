@@ -302,6 +302,19 @@ export class ModuleService {
     }
   }
 
+  // Léger, pour la surveillance: uniquement systemctl show, sans discover ni builds.
+  async failedModules(projectIds) {
+    const wanted = new Set(projectIds);
+    const modules = Object.values(this.store.all()).filter((module) => wanted.has(module.projectId) && !module.removed && module.controlUnits?.length);
+    const results = await Promise.all(modules.map(async (module) => {
+      // Sans passer par inspect: un systemctl en erreur doit remonter, pas ressembler à « rien en échec ».
+      const { stdout } = await this.systemctl(["show", ...module.controlUnits, "--no-pager", "--property=Id,ActiveState"]);
+      const failed = parseSystemdShow(stdout).filter((state) => state.ActiveState === "failed").map((state) => state.Id);
+      return failed.length ? { id: module.id, projectId: module.projectId, name: module.name, units: failed } : null;
+    }));
+    return results.filter(Boolean);
+  }
+
   async payload(module) {
     const states = await this.inspect(module);
     const primary = states.find((state) => state.Id === module.primaryUnit);

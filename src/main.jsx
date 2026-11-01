@@ -1,3 +1,15 @@
+import { todoDropChange } from "../shared/todo-drop.js";
+import { AssigneeOptions, primaryAssigneeId, resolveAssignee, setAssigneeProfiles } from "./assignees.jsx";
+import { groupProjectModules, projectStats } from "../shared/project-modules.js";
+import "./projects-workspace.css";
+import { TodoCardMenu } from "./todo-card-menu.jsx";
+import { countedTodoUnread, totalTodoUnread } from "../shared/todo-unread.js";
+import { FileTypeIcon } from "./file-type-icon.jsx";
+import { TodoCommandMenu } from "./todo-command-menu.jsx";
+import { cachedProjectImage, readProjectThumb } from "./project-image-cache.js";
+import { registerNativeOfflineShell } from "./native-offline-shell.js";
+import { version as RUNNING_VERSION } from "../package.json";
+import { clientUpdateDecision } from "./client-version.js";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -25,10 +37,10 @@ import ProjectTracking from "./project-tracking.jsx";
 import { FileSortButton, FileSortPanel, useFileSort } from "./project-file-sort.jsx";
 import AgentMemory from "./agent-memory.jsx";
 import GroceriesView from "./groceries.jsx";
-import { isNative, nativeServer, nativeSocketUrl, openTerminalSocket, enableNativePush, enableNativeLocalAlerts, nativeLocalAlertsEnabled, scheduleNativeAgentAlert, forgetNativeSession, nativeNetworkStatus, shareNativeProjectFile, openWireGuard } from "./native-mobile.js";
+import { isNative, nativeServer, nativeSocketUrl, openTerminalSocket, enableNativePush, enableNativeLocalAlerts, enableNativeBackgroundAlerts, upgradeNativeBackgroundAlerts, nativeLocalAlertsEnabled, scheduleNativeAgentAlert, forgetNativeSession, nativeNetworkStatus, shareNativeProjectFile, openWireGuard } from "./native-mobile.js";
 import { networkLabel } from "./native-connection.js";
 import { readProjectFile } from "./project-file-transport.js";
-import { ProjectFilePreviewModal, formatFileBytes, getFileIcon, getFileCategory, downloadProjectFile } from "./project-file-preview.jsx";
+import { ProjectFilePreviewModal, formatFileBytes, getFileCategory, downloadProjectFile } from "./project-file-preview.jsx";
 import { advanceAgentAlert } from "./agent-alert-transition.js";
 import { readNativeNavigation, saveNativeNavigation, clearNativeNavigation } from "./native-navigation-state.js";
 import { NativeDownloads, NativeServerSetup, MobileApplicationSettings } from "./mobile-setup.jsx";
@@ -38,7 +50,7 @@ import { canQueueOffline } from "./offline-policy.js";
 import { loginNavigation } from "./login-navigation.js";
 import { calendarSnapshot, sameSnapshotScope } from "./offline-snapshots.js";
 import { tr, LANGUAGES, currentLanguage, setLanguage, LOCALE } from "./i18n.js";
-import { useModules, setModules, moduleEnabled, viewModule } from "./app-modules.js";
+import { useModules, setModules, setModules as setFeatureModules, moduleEnabled, viewModule } from "./app-modules.js";
 
 const assistantMeta = {
   codex: { label: tr("Codex"), glyph: "C", color: "green" },
@@ -62,6 +74,7 @@ function activeProfileId() {
   try { return localStorage.getItem(PROFILE_KEY) || ""; } catch { return ""; }
 }
 
+const SIGNED_IN_KEY = "noyau:signed-in";
 function profileCacheKey(key) {
   return `${isNative ? `${nativeServer()}:` : ""}${activeProfileId() || "primary"}:${key}`;
 }
@@ -423,7 +436,60 @@ function Boot({ percent, step, offline, detail, attempts, onRetry, onReset, onEn
   );
 }
 
+function FirstRunSetup({ onLogin }) {
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const feedback = getPasswordFeedback(password);
+  const mismatch = confirm && confirm !== password;
+  async function submit(event) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/setup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: code.trim(), name, password }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || tr("Installation impossible."));
+      try {
+        if (data.profile?.id) localStorage.setItem(PROFILE_KEY, data.profile.id);
+        if (data.token) { localStorage.setItem("noyau:token", data.token); localStorage.setItem("token", data.token); }
+      } catch { /* The session cookie still carries the login. */ }
+      onLogin();
+    } catch (reason) {
+      setError(reason.message);
+      setLoading(false);
+    }
+  }
+  return (
+    <main className="login-shell">
+      <section className="login-card">
+        <Mark />
+        <h1>{tr("Bienvenue sur Noyau")}</h1>
+        <p className="login-hint">{tr("Crée le compte administrateur. Le code d’installation s’affiche dans le terminal où Noyau a démarré.")}</p>
+        <form className="login-setup-form" onSubmit={submit}>
+          <label htmlFor="setup-code">{tr("Code d’installation")}</label>
+          <input id="setup-code" value={code} onChange={(event) => setCode(event.target.value)} autoFocus autoComplete="off" spellCheck={false} />
+          <label htmlFor="setup-name">{tr("Ton nom")}</label>
+          <input id="setup-name" value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" />
+          <label htmlFor="setup-password">{tr("Mot de passe administrateur")}</label>
+          <input id="setup-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" />
+          {feedback && <div className="profile-pwd-strength"><div className={`profile-pwd-meter ${feedback.level}`}><span></span><span></span><span></span></div><span className={`profile-pwd-strength-label ${feedback.level}`}>{feedback.label}</span></div>}
+          <label htmlFor="setup-confirm">{tr("Confirme le mot de passe")}</label>
+          <input id="setup-confirm" type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} autoComplete="new-password" />
+          {mismatch && <p className="form-error">{tr("Les mots de passe ne correspondent pas.")}</p>}
+          {error && <p className="form-error">{error}</p>}
+          <button className="primary wide" disabled={!code.trim() || !name.trim() || !password || password !== confirm || loading}>{loading ? tr("Création…") : tr("Créer le compte")}</button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 function Login({ onLogin, onOffline }) {
+  const [setupNeeded, setSetupNeeded] = useState(false);
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -442,6 +508,7 @@ function Login({ onLogin, onOffline }) {
     fetch("/api/auth/profiles", { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
+        setSetupNeeded(data?.setupNeeded === true);
         if (data?.profiles?.length) {
           setProfiles(data.profiles);
           setSelectedProfileId((current) => {
@@ -489,6 +556,7 @@ function Login({ onLogin, onOffline }) {
 
   const selectedProfile = profiles.find((p) => p.id === selectedProfileId);
 
+  if (setupNeeded) return <FirstRunSetup onLogin={onLogin} />;
   if (biometricOffer) return <main className="login-shell"><section className="login-card"><Mark /><h1>{tr("Connexion plus rapide")}</h1><p>{tr("Activer")}{" "}{biometricOffer.label}{" "}{tr("pour ce profil sur cet appareil ? Votre mot de passe ne sera pas enregistré.")}</p>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary wide" type="button" disabled={loading} onClick={async () => { setLoading(true); setError(""); try { await enableBiometric(biometricOffer.profileId, token); setToken(""); setBiometricOffer(null); onLogin(); } catch (reason) { setError(reason.message || tr("Activation impossible.")); } finally { setLoading(false); } }}>{loading ? tr("Activation…") : `Activer ${biometricOffer.label}`}</button><button className="ghost wide" type="button" disabled={loading} onClick={() => { setToken(""); setBiometricOffer(null); onLogin(); }}>{tr("Plus tard")}</button></section></main>;
 
   return (
@@ -686,11 +754,7 @@ const projectImageCache = new Map();
 function preloadProjectImage(src) {
   if (!isNative || !src || typeof src !== "string" || !src.startsWith("/api/")) return;
   if (projectImageCache.has(src)) return;
-  fetch(src, { credentials: "include" })
-    .then((response) => {
-      if (!response.ok) throw new Error(tr("Image indisponible"));
-      return response.blob();
-    })
+  cachedProjectImage(src, profileCacheKey("images"))
     .then((blob) => {
       if (!projectImageCache.has(src)) {
         projectImageCache.set(src, URL.createObjectURL(blob));
@@ -700,21 +764,19 @@ function preloadProjectImage(src) {
 }
 
 function useProjectImage(src) {
+  const local = typeof src === "string" && src.startsWith("/api/");
   const cached = projectImageCache.get(src);
-  const [resolved, setResolved] = useState(() => cached || (isNative && src?.startsWith("/api/") ? "" : src));
+  // Vignette gardee en local: le logo s'affiche au premier rendu, sans attendre le cache asynchrone ni le reseau.
+  const [resolved, setResolved] = useState(() => cached || (local ? readProjectThumb(src) || "" : src));
   useEffect(() => {
-    if (!isNative || !src?.startsWith("/api/")) { setResolved(src); return; }
+    if (!local) { setResolved(src); return; }
     if (projectImageCache.has(src)) {
       setResolved(projectImageCache.get(src));
       return;
     }
+    setResolved(readProjectThumb(src) || "");
     let disposed = false;
-    const controller = new AbortController();
-    fetch(src, { credentials: "include", signal: controller.signal })
-      .then((response) => {
-        if (!response.ok) throw new Error(tr("Image indisponible"));
-        return response.blob();
-      })
+    cachedProjectImage(src, profileCacheKey("images"))
       .then((blob) => {
         if (disposed) return;
         let objectUrl = projectImageCache.get(src);
@@ -725,8 +787,8 @@ function useProjectImage(src) {
         setResolved(objectUrl);
       })
       .catch(() => {});
-    return () => { disposed = true; controller.abort(); };
-  }, [src]);
+    return () => { disposed = true; };
+  }, [src, local]);
   return cached || resolved;
 }
 
@@ -1102,7 +1164,7 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
     <button className={activeId === session.id ? "active" : ""} onClick={() => { onOpen(session.id); onClose(); }} key={session.id}>
       <AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small />
       <span><strong>{session.favorite && <b className="favorite-star">★</b>}{session.name}{(session.shared || session.canEdit === false) && <b className="shared-star" title={session.canEdit === false ? tr("Partagé par {0}", session.owner?.name || "autre profil") : tr("Partagé avec les autres profils")}>⇄</b>}</strong><small>{session.canEdit === false ? `${session.owner?.name || tr("Autre profil")} · ` : ""}{assistantMeta[session.assistant]?.label || tr("Terminal")} · {tr(session.agentStatus?.label || "Disponible")}</small></span>
-      <i className={`live-dot ${session.agentStatus?.state || "available"}`} title={tr(session.agentStatus?.label || "Disponible")} />
+      <i className={`live-dot ${session.agentStatus?.subagents ? "working" : session.agentStatus?.state || "available"}`} title={tr(session.agentStatus?.label || "Disponible")} />
     </button>
   );
 
@@ -1153,7 +1215,7 @@ function Sidebar({ sessions, projects = [], activeId, view, onOpen, onView, onOp
       <div className="session-list">
         {projectGroups.map((group) => {
           // Un projet a agent unique n'a pas besoin d'accordeon: l'agent s'affiche directement.
-          const mapButton = group.projectId ? <button className="sidebar-map-btn" title={`Carte ${group.name}`} aria-label={`Carte ${group.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenMap?.(group.projectId); onClose(); }}><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="2.5" /><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="7" r="1.8" /><circle cx="6" cy="18.5" r="1.8" /><circle cx="18.5" cy="18" r="1.8" /><path d="M6.5 7.2l3.6 3.3M17.4 8l-3.5 2.6M7.4 17.4l2.8-3.6M16.9 16.8l-3-3" /></svg></button> : null;
+          const mapButton = group.projectId ? <span className="sidebar-map-actions"><button className="sidebar-map-btn" title={tr("Échanges {0}", group.name)} aria-label={tr("Échanges {0}", group.name)} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenMap?.(group.projectId, "room"); onClose?.(); }}><AppIcon name="people" size={14}/></button><button className="sidebar-map-btn" title={`Carte ${group.name}`} aria-label={`Carte ${group.name}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenMap?.(group.projectId); onClose(); }}><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="2.5" /><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="7" r="1.8" /><circle cx="6" cy="18.5" r="1.8" /><circle cx="18.5" cy="18" r="1.8" /><path d="M6.5 7.2l3.6 3.3M17.4 8l-3.5 2.6M7.4 17.4l2.8-3.6M16.9 16.8l-3-3" /></svg></button></span> : null;
           if (group.sessions.length === 1) return mapButton ? <div className="sidebar-single-agent" key={group.sessions[0].id}>{renderSessionButton(group.sessions[0])}{mapButton}</div> : renderSessionButton(group.sessions[0]);
           const hasActive = activeId && group.sessions.some((s) => s.id === activeId);
           const isOpen = Boolean(expandedProjects[group.projectId]) || Boolean(hasActive);
@@ -1313,6 +1375,21 @@ function ContextControl({ session, onRefresh }) {
   const level = advice?.level || "ok";
   const auditable = ["claude", "claude-design", "codex", "antigravity"].includes(session.assistant);
 
+  async function startFresh() {
+    if (!window.confirm(tr("Relancer {0} sur un contexte propre ? Il reprend seul ce qu'il faisait et ce qui reste à faire ; sa mémoire, ses demandes et l'historique affiché sont conservés.", session.name))) return;
+    setBusy("fresh");
+    try {
+      window.dispatchEvent(new CustomEvent("noyau:context-transition", { detail: { kind: "fresh", sessionId: session.id } }));
+      await api(`/api/sessions/${session.id}/fresh`, { method: "POST" });
+      setOpen(false);
+      onRefresh?.();
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function optimize(mode) {
     setBusy(mode);
     try {
@@ -1390,6 +1467,7 @@ function ContextControl({ session, onRefresh }) {
             {advice?.message || tr("Contexte encore large: rien à faire pour l'instant.")}
             {session.usage?.remainingTokens != null ? <em>{session.usage.estimated ? tr("Environ ") : ""}{new Intl.NumberFormat(LOCALE).format(session.usage.remainingTokens)}{" "}{tr("tokens de contexte restants")}</em> : <em>{tr("Nombre de tokens restant indisponible pour cet agent.")}</em>}
           </p>
+          <button className={advice?.action === "fresh" || advice?.action === "clear" ? "primary" : ""} disabled={busy === "fresh"} onClick={startFresh} title={tr("Contexte vidé, puis reprise automatique du travail en cours")}>{tr("Relancer sans rien perdre")}</button>
           <button className={advice?.action === "compact" ? "primary" : ""} disabled={busy === "compact"} onClick={() => optimize("compact")}>
             {busy === "compact" ? "…" : tr("Réduire le contexte")}<small>{tr("Résume la conversation et garde l'essentiel")}</small>
           </button>
@@ -1464,7 +1542,7 @@ function DashboardAgentCard({ session, onOpen, onEdit, onFavorite, onArchive }) 
           ) : (
             <small>{session.project?.name || tr("Sans projet")} · {session.cwd || session.id}</small>
           )}
-          <em><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {tr(session.agentStatus?.label || "Disponible")} · {session.contextAdvice ? <ContextGauge advice={session.contextAdvice} small /> : <>{session.usage?.contextPercent ?? "—"}{tr("% contexte")}</>} · <RelativeTime date={session.activityAt} /></em>
+          <em><i className={`agent-state-dot ${session.agentStatus?.subagents ? "working" : session.agentStatus?.state || "available"}`} /> {tr(session.agentStatus?.label || "Disponible")} · {session.contextAdvice ? <ContextGauge advice={session.contextAdvice} small /> : <>{session.usage?.contextPercent ?? "—"}{tr("% contexte")}</>} · <RelativeTime date={session.activityAt} /></em>
         </span>
         <span className="open-arrow">›</span>
       </button>
@@ -1617,9 +1695,7 @@ function TodoDetailOverlay({ todo, onClose, onTag }) {
           title={tr("Changer l'attribution")}
           aria-label={tr("Attribution de la tâche")}
         >
-          <option value="aurora">{" "}{tr("Aurora")}</option>
-          <option value="main">{" "}{tr("Moi")}</option>
-          <option value="all">{" "}{tr("Tout le monde")}</option>
+          <AssigneeOptions />
         </select>
         {onTag && <button className="ghost" onClick={() => { onTag(entry); onClose(); }}>{tr("Taguer dans la conversation")}</button>}
       </header>
@@ -1787,7 +1863,8 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
       if (document.visibilityState === "visible") {
         try {
           const next = await api("/api/system/resources");
-          if (!disposed) { setData(next); setError(""); }
+          // An incomplete payload must not take the whole home screen down.
+          if (!disposed) { setData(next?.cpu && next?.memory ? next : null); setError(""); }
         } catch (reason) {
           if (!disposed) setError(reason.message);
         }
@@ -1962,7 +2039,7 @@ function ResourcesPanel({ onOpen, onSessionsChanged }) {
 function Dashboard({ sessions, projects, onProject, onView, profileName, quotas, onSessionsChanged, onOpen, onNew, onEdit, onFavorite, onArchive, onProjects, onFinances, onRefreshQuotas, voice, onVoice, muted, onMuted, power, onTogglePower, powerBusy, sortMode = "recent", onSetSortMode, profileId, lastInteractedMap = {} }) {
   const [refreshingQuotas, setRefreshingQuotas] = useState(false);
   const [quotaRefreshState, setQuotaRefreshState] = useState("");
-  const [hardware, setHardware] = useState(null);
+  const [hardware, setHardware] = useState(() => cachedView("hardware"));
   const [weather, setWeather] = useState(() => {
     try {
       const cached = JSON.parse(localStorage.getItem("noyau-weather"));
@@ -2087,7 +2164,7 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
     const fetchHw = () => {
       api("/api/system/hardware")
         .then((data) => {
-          if (!disposed && data) setHardware(data);
+          if (!disposed && data) { setHardware(data); storeView("hardware", data); }
         })
         .catch(() => {});
     };
@@ -2193,7 +2270,7 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
 
       <section className="metrics">
         <article className="active-agents-metric"><span className="metric-symbol green">◎</span><div className="active-agents-content"><small>{tr("AGENTS ACTIFS")}</small><div className="active-agents-data"><div className="active-total-block"><strong className="active-total">{sessions.length}</strong><em>{tr("en ligne")}</em></div><div className="agent-breakdown"><span><b>{codexCount}</b><em>{tr("Codex")}</em></span><span><b>{claudeCount}</b><em>{tr("Claude")}</em></span>{antigravityCount > 0 && <span><b>{antigravityCount}</b><em>{tr("Antigravity")}</em></span>}<span><b>{shellCount}</b><em>{tr("Terminal")}</em></span></div></div><p className="active-agents-footer"><span>{linkedProjects} {tr(linkedProjects > 1 ? "projets" : "projet")}{" "}{tr(linkedProjects > 1 ? "liés" : "lié")}</span><span>{favoriteCount} {tr(favoriteCount > 1 ? "favoris" : "favori")}</span></p></div></article>
-        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">{tr("QUOTAS IA")}<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); setQuotaRefreshState(tr("Actualisation…")); try { const result = await onRefreshQuotas(); const failed = Object.entries(result?.refreshed || {}).filter(([, state]) => !state.ok).map(([provider]) => provider); setQuotaRefreshState(failed.length ? tr("Échec: {0}", failed.join(", ")) : tr("Actualisé {0}", new Date().toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit", second: "2-digit" }))); } catch (error) { setQuotaRefreshState(error.message || tr("Actualisation impossible")); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label={tr("Rafraîchir quotas")} title={tr("Rafraîchir quotas")}><span aria-hidden="true">↻</span></button><em className="quota-refresh-state">{quotaRefreshState}</em></small><div className="quota-providers"><div className="quota-codex"><span>{tr("CODEX")}</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>{tr("Relevé indisponible")}</em></div>}</div><div className="quota-antigravity"><span>{tr("ANTIGRAVITY")}</span>{antigravityWindows.length ? <div className="quota-dials">{antigravityWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>{tr("Relevé indisponible")}</em></div>}</div><div className="quota-claude"><span>{tr("CLAUDE")}</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={formatReset(item.resetsAt)}>{resetCountdown(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? tr("Déconnecté") : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? tr("Reconnecte Claude") : tr("Reset inconnu")}</em></div>}</div></div></div></article>
+        <article className="quota-metric"><span className="metric-symbol blue">↗</span><div><small className="quota-title">{tr("QUOTAS IA")}<button className={refreshingQuotas ? "quota-refresh updating" : "quota-refresh"} onClick={async () => { setRefreshingQuotas(true); setQuotaRefreshState(tr("Actualisation…")); try { const result = await onRefreshQuotas(); const failed = Object.entries(result?.refreshed || {}).filter(([, state]) => !state.ok).map(([provider]) => provider); setQuotaRefreshState(failed.length ? tr("Échec: {0}", failed.join(", ")) : tr("Actualisé {0}", new Date().toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit", second: "2-digit" }))); } catch (error) { setQuotaRefreshState(error.message || tr("Actualisation impossible")); } finally { setRefreshingQuotas(false); } }} disabled={refreshingQuotas} aria-label={tr("Rafraîchir quotas")} title={tr("Rafraîchir quotas")}><span aria-hidden="true">↻</span></button><em className="quota-refresh-state">{quotaRefreshState}</em></small><div className="quota-providers"><div className="quota-codex"><span>{tr("CODEX")}</span>{codexWindows.length ? <div className="quota-dials">{codexWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={resetCountdown(item.resetsAt)}>{formatReset(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>{tr("Relevé indisponible")}</em></div>}</div><div className="quota-antigravity"><span>{tr("ANTIGRAVITY")}</span>{antigravityWindows.length ? <div className="quota-dials">{antigravityWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={resetCountdown(item.resetsAt)}>{formatReset(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>—</strong><em>{tr("Relevé indisponible")}</em></div>}</div><div className="quota-claude"><span>{tr("CLAUDE")}</span>{claudeWindows.length ? <div className="quota-dials">{claudeWindows.map((item) => <div className="quota-dial" key={item.label}><div className={`quota-ring ${quotaTone(item.remainingPercent)}`} style={{ "--quota": Math.max(0, Math.min(100, item.remainingPercent || 0)) }}><strong>{item.remainingPercent}%</strong></div><span>{item.label}</span><em title={resetCountdown(item.resetsAt)}>{formatReset(item.resetsAt)}</em></div>)}</div> : <div className="quota-empty"><strong>{quotas.claude?.status === "loggedOut" ? tr("Déconnecté") : "—"}</strong><em>{quotas.claude?.status === "loggedOut" ? tr("Reconnecte Claude") : tr("Reset inconnu")}</em></div>}</div></div></div></article>
       </section>
 
       <ResourcesPanel onOpen={onOpen} onSessionsChanged={onSessionsChanged} />
@@ -2325,6 +2402,19 @@ function Dashboard({ sessions, projects, onProject, onView, profileName, quotas,
       </div>
     </div>
   );
+}
+
+// Action labels come from module manifests: the icon only hints at what they do, the label stays in the tooltip.
+function moduleActionIcon(label) {
+  const text = String(label || "").toLocaleLowerCase("fr");
+  if (/kill|arr[eê]t|\boff\b|rejeter|stop/.test(text)) return "stop";
+  if (/build|t[eé]l[eé]charg|import|export/.test(text)) return "download";
+  if (/journal|log|cron|terminal|test/.test(text)) return "terminal";
+  if (/red[eé]marr|recharg|synchron|actualis|rafra[iî]ch|v[eé]rifi|valider|audit|[eé]valuer/.test(text)) return "refresh";
+  if (/aper[cç]u|statut|[eé]tat|vue d|sant[eé]|rapport|file|liste|voir/.test(text)) return "eye";
+  if (/mode|mix|on\/off|maintenance|\bon\b/.test(text)) return "settings";
+  if (/lancer|jouer|proposer|approuver|suivant|scraper|pr[eé]parer/.test(text)) return "arrowUp";
+  return "task";
 }
 
 function ModuleSchedule({ moduleId, schedule, onSave }) {
@@ -2920,6 +3010,9 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
       setBusy(false);
     }
   }
+  const shortActions = (module.actions || []).filter((action) => !action.longRunning);
+  const quickActions = shortActions.slice(0, 2);
+  const moreActions = shortActions.length - quickActions.length;
   const latestAction = (module.actions || []).filter((action) => action.run && !action.longRunning).sort((left, right) => String(right.run.startedAt).localeCompare(String(left.run.startedAt)))[0];
   const latestRun = latestAction?.run;
   const chatRun = (module.actions || []).find((action) => action.longRunning && action.run)?.run;
@@ -2929,12 +3022,13 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
       ? tr("{0} · terminé{1}", latestAction.label, latestRun.output ? ` · ${latestRun.output}` : "")
       : latestRun ? `${latestAction.label} · erreur: ${latestRun.output || tr("échec")}` : actionNotice;
   return (
-    <details className="project-module" style={{ "--module-accent": module.accent }}>
+    <details className="project-module" name="project-module" style={{ "--module-accent": module.accent }}>
       <summary>
         <span className="module-glyph">{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span>
         <div>
           <strong>{module.name}</strong>
-          <small>{module.environment === "production" ? `${module.executionHost || tr("Ce PC")} · ${{ active: tr("Actif"), inactive: tr("Arrêté"), failed: tr("En échec"), activating: tr("Démarrage"), deactivating: tr("Arrêt en cours"), unknown: tr("État inconnu") }[module.state] || module.state} · ` : ""}{module.description}</small>
+          {module.environment === "production" && <em className={`module-card-state ${module.state || "unknown"}`}><i />{`${{ active: tr("Actif"), inactive: tr("Arrêté"), failed: tr("En échec"), activating: tr("Démarrage"), deactivating: tr("Arrêt en cours"), unknown: tr("État inconnu") }[module.state] || module.state} · ${module.executionHost || tr("Ce PC")}`}</em>}
+          <small>{module.description}</small>
         </div>
         {module.controllable ? (
           <button
@@ -2953,6 +3047,10 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
           </span>
         )}
         <b className="module-chevron">›</b>
+        {quickActions.length > 0 && <span className="module-quick">
+          {quickActions.map((action) => <button type="button" key={action.id} className={action.tone} title={action.label} aria-label={action.label} disabled={busy || action.run?.state === "running"} onClick={(event) => { event.preventDefault(); event.stopPropagation(); actionRun(action); }}><AppIcon name={moduleActionIcon(action.label)} size={14}/><span>{action.label}</span></button>)}
+          {moreActions > 0 && <small>{tr("+{0}", moreActions)}</small>}
+        </span>}
       </summary>
       <div className="project-module-body">
         <div className="module-config">
@@ -2986,7 +3084,7 @@ function ProjectModule({ module, onEnvironment, onRemove, onToggle, onAction, on
             ))}
             {(module.actions || []).filter((action) => !action.longRunning).map((action) => (
               <button key={action.id} className={action.tone} onClick={() => actionRun(action)} disabled={busy || action.run?.state === "running"}>
-                {action.run?.state === "running" ? tr("Exécution…") : action.label}
+                <AppIcon name={moduleActionIcon(action.label)} size={14}/><span>{action.run?.state === "running" ? tr("Exécution…") : action.label}</span>
               </button>
             ))}
           </div>
@@ -3112,7 +3210,7 @@ function ProjectReporting({ project, agents, todos, onRefresh }) {
         <b>›</b>
       </summary>
       <div className="project-reporting-body">
-        <p className="project-reporting-hint">{tr("Chaque demande envoyée à un agent suivi crée un to-do du projet, ou commente celui qui existe déjà. L'agent le passe ensuite en « À tester / valider » — jamais en « Terminé », c'est toi qui valides.")}</p>
+        <p className="project-reporting-hint">{tr("Chaque demande envoyée à un agent suivi crée un to-do du projet, ou commente celui qui existe déjà. Il est coché quand la réponse finale de l'agent le déclare livré.")}</p>
         <label className="reporting-switch">
           <input
             type="checkbox"
@@ -3140,7 +3238,7 @@ function ProjectReporting({ project, agents, todos, onRefresh }) {
   );
 }
 
-function ProjectFilesSection({ project, agents, onOpenAgent }) {
+function ProjectFilesSection({ project, agents, onOpenAgent, startOpen = false }) {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -3310,7 +3408,7 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
   }
 
   return (
-    <details className="project-files">
+    <details className="project-files" open={startOpen || undefined}>
       <summary>
         <span>{tr("Fichiers partagés")}</span>
         <small>{sort?.status === "running" ? tr("tri en cours…") : loading ? tr("chargement…") : `${files.length} fichier${files.length > 1 ? "s" : ""}`}</small>
@@ -3422,7 +3520,7 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
               }}
               title={tr("Cliquer pour prévisualiser dans le navigateur")}
             >
-              <span className="project-file-icon">{getFileIcon(file.extension)}</span>
+              <span className="project-file-icon"><FileTypeIcon extension={file.extension} directory={file.isDirectory || file.kind === "folder"} size={20}/></span>
               <div className="project-file-info">
                 <span className="project-file-name" title={file.name}>{file.name}</span>
                 <span className="project-file-meta">{formatFileBytes(file.size)}</span>
@@ -3498,6 +3596,11 @@ function ProjectFilesSection({ project, agents, onOpenAgent }) {
       )}
     </details>
   );
+}
+
+function projectMonthlyBudget(project) {
+  const perMonth = { yearly: 1 / 12, weekly: 4.333, once: 0 };
+  return (project.budget?.items || []).filter((item) => item.active !== false).reduce((sum, item) => sum + (Number(item.amount) || 0) * (perMonth[item.cadence] ?? 1), 0);
 }
 
 function ProjectBudgetSection({ project, onRefresh }) {
@@ -3872,7 +3975,7 @@ function ProjectBudgetSection({ project, onRefresh }) {
   );
 }
 
-function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, sessions, modules, moduleProposals, onModuleEnvironment, onModuleRemove, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onModuleBuild, onModuleBuildRefresh, onOpenTodos, onOpenMap, onReorder, onRefresh, profileId }) {
+function ProjectsView({ projects, onNewAgent, selectedProjectId = null, onShowAllProjects, onSelectProject, sessions, modules, moduleProposals, onModuleEnvironment, onModuleRemove, onOpenAgent, onNew, onEdit, onDelete, onInstallModule, onModuleToggle, onModuleAction, onModuleSchedule, onModuleBuild, onModuleBuildRefresh, onOpenTodos, onOpenMap, onReorder, onRefresh, profileId }) {
   // Le cache Todo porte { todos, folders } depuis la refonte par dossier: on accepte les deux formes.
   const [todos, setTodos] = useState(() => {
     const cached = cachedView("todos");
@@ -3919,12 +4022,17 @@ function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, s
 
   function openMobileProjectSection(projectId, section) {
     setMobileProjectSections((old) => ({ ...old, [projectId]: section }));
-    if (section === "agents") toggleProjectAgents(projectId, true);
-    requestAnimationFrame(() => {
-      const node = cardRefs.current.get(projectId);
-      if (section === "modules" || section === "files") node?.querySelectorAll(`.project-mobile-section[data-section="${section}"] > details`).forEach((detail) => { detail.open = true; });
-    });
   }
+
+  const [waitingDecisions, setWaitingDecisions] = useState({});
+  const projectIds = projects.map((project) => project.id).join();
+  useEffect(() => {
+    let active = true;
+    for (const id of projectIds.split(",").filter(Boolean)) {
+      api(`/api/projects/${encodeURIComponent(id)}/tracking`).then((data) => { if (active) setWaitingDecisions((old) => ({ ...old, [id]: data?.waiting?.length || 0 })); }).catch(() => {});
+    }
+    return () => { active = false; };
+  }, [projectIds]);
 
   const loadTodos = useCallback(async () => {
     try {
@@ -3983,66 +4091,39 @@ function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, s
     }
   }
 
-  return (
-    <div className={`page projects-page ${selectedProjectId ? "single-project" : ""}`}>
-      <section className="hero-row"><div><p className="eyebrow">{tr("ORGANISATION")}</p><h1>{selectedProjectId ? projects.find((project) => project.id === selectedProjectId)?.name || tr("Projet") : tr("Projets.")}</h1><p className="muted">{selectedProjectId ? tr("Agents, tâches et fichiers du projet.") : tr("Regroupe agents liés au même travail, sans imposer dossier.")}</p>{selectedProjectId ? <span className="mobile-project-switch-actions"><button type="button" className="ghost" onClick={onShowAllProjects}>{tr("← Tous les projets")}</button><button type="button" className="ghost mobile-project-switch" onClick={() => window.dispatchEvent(new Event("noyau:choose-project"))}>{tr("Changer de projet")}</button></span> : <button type="button" className="ghost mobile-project-create" onClick={onNew}>{tr("+ Nouveau projet")}</button>}</div></section>
-      <div className={`projects-grid ${selectedProjectId ? "single-project" : ""}`}>
-        {projects.filter((project) => !selectedProjectId || project.id === selectedProjectId).map((project) => {
+  const moduleProps = { onEnvironment: onModuleEnvironment, onRemove: onModuleRemove, onToggle: onModuleToggle, onAction: onModuleAction, onSchedule: onModuleSchedule, onBuild: onModuleBuild, onRefreshBuilds: onModuleBuildRefresh, onRefresh };
+  const proposalButton = (module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>{tr("Ajouter")}{" "}{module.name}</strong><small>{module.executionHost ? `${module.executionHost} · ` : ""}{module.description}</small></div><b>＋</b></button>;
+  const moduleGroup = (title, list, hint) => list.length > 0 && <section className="pw-module-group" key={title}><h3>{title}<small>{hint || list.length}</small></h3><div className="project-module-list">{list.map((module) => <ProjectModule key={module.id} module={module} {...moduleProps} />)}</div></section>;
+  const shown = projects.filter((project) => !selectedProjectId || project.id === selectedProjectId);
+
+  if (!selectedProjectId) return (
+    <div className="page projects-page pw-list-page">
+      <section className="pw-list-head"><h1>{tr("Projets")}</h1><small>{projects.length} · {tr("agents, tâches et modules par projet")}</small></section>
+      <div className="pw-grid">
+        {shown.map((project) => {
           const agents = sessions.filter((session) => session.projectId === project.id);
-          const isProd = (module) => module.environment === "production";
-          const projectModules = modules
-            .filter((module) => module.projectId === project.id && !isProd(module))
-            .sort((a, b) => (b.deviceBuild ? 1 : 0) - (a.deviceBuild ? 1 : 0));
-          const proposals = moduleProposals
-            .filter((module) => module.projectId === project.id && !isProd(module))
-            .sort((a, b) => (b.id?.includes("build") ? 1 : 0) - (a.id?.includes("build") ? 1 : 0));
-          const prodModules = modules.filter((module) => module.projectId === project.id && isProd(module));
-          const prodProposals = moduleProposals.filter((module) => module.projectId === project.id && isProd(module));
-          const prodHosts = [...new Set([...prodModules, ...prodProposals].map((module) => module.executionHost).filter(Boolean))];
-          const prodActive = prodModules.filter((module) => module.enabled).length;
-          const prodAlerts = prodModules.filter((module) => module.state === "failed" || module.setup?.status === "required").length;
-          const projectTodos = todos.filter((todo) => todo.projectId === project.id);
-          const hasPlanning = modules.some((module) => module.projectId === project.id && module.hasPlanning);
+          const stats = projectStats({ agents, todos: todos.filter((todo) => todo.projectId === project.id), modules: modules.filter((module) => module.projectId === project.id) });
+          const decisions = waitingDecisions[project.id] || 0;
           return (
             <article
-              className={`panel project-card ${draggedProject === project.id ? "dragging" : ""}`}
+              className={`panel project-card pw-card ${draggedProject === project.id ? "dragging" : ""}`}
               key={project.id}
               ref={(node) => { if (node) cardRefs.current.set(project.id, node); else cardRefs.current.delete(project.id); }}
             >
-              <header>{!selectedProjectId && <button className="project-drag" onPointerDown={(event) => startDrag(event, project)} onPointerMove={dragOver} onPointerUp={endDrag} onPointerCancel={endDrag} title={tr("Glisser pour changer ordre")} aria-label={tr("Déplacer {0}", project.name)}>⠿</button>}<ProjectIcon project={project} /><span><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={tr("Projet partagé par {0}", project.owner?.name || "autre profil")}>⇄ {project.owner?.name || tr("partagé")}</b> : project.shared ? <b className="shared-chip own" title={tr("Projet partagé avec les autres profils")}>{tr("⇄ partagé")}</b> : null}</strong><small>{project.rootPath || tr("Dossiers propres aux agents")}</small></span>{project.canEdit !== false && <div><button onClick={() => onEdit(project.id)}>{tr("Éditer")}</button><button className="project-delete" onClick={() => onDelete(project)}>×</button></div>}</header>
-              <nav className="project-mobile-tabs" aria-label={tr("Sections de {0}", project.name)}>{[["overview", tr("Vue d’ensemble")], ["agents", tr("Agents")], ["modules", tr("Modules")], ["files", tr("Fichiers")]].map(([id, label]) => <button type="button" key={id} aria-pressed={(mobileProjectSections[project.id] || "overview") === id} onClick={() => openMobileProjectSection(project.id, id)}>{label}</button>)}</nav>
-              <div className="project-mobile-section" data-section="overview" data-selected={(mobileProjectSections[project.id] || "overview") === "overview"}>
-              <button className="project-map-tab" onClick={() => onOpenMap?.(project.id)}><span className="nav-icon"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="2.5" /><circle cx="5" cy="6" r="1.8" /><circle cx="19" cy="7" r="1.8" /><circle cx="6" cy="18.5" r="1.8" /><circle cx="18.5" cy="18" r="1.8" /><path d="M6.5 7.2l3.6 3.3M17.4 8l-3.5 2.6M7.4 17.4l2.8-3.6M16.9 16.8l-3-3" /></svg></span><span>{tr("Carte")}</span><small>{tr("agents, services, timers et échanges")}</small><b>›</b></button>
-              <ProjectTracking project={project} api={api} onOpenAgent={onOpenAgent} storageKey={profileCacheKey(`planification-open-${project.id}`)} publications={hasPlanning ? <ProjectPlanning project={project} nested /> : null} />
-              <ProjectReporting project={project} agents={agents} todos={projectTodos} onRefresh={onRefresh} />
-              <ProjectBudgetSection project={project} onRefresh={onRefresh} />
-              </div>
-              <div className="project-mobile-section" data-section="agents" data-selected={mobileProjectSections[project.id] === "agents"}>
-              <details
-                className="project-agents-accordion"
-                open={Boolean(expandedProjectAgents[project.id])}
-                onToggle={(e) => toggleProjectAgents(project.id, e.currentTarget.open)}
-              >
-                <summary>
-                  <span>{tr("Agents")}</span>
-                  <small>{agents.length} {tr(agents.length > 1 ? "actifs" : "actif")}{agents.some((s) => s.agentStatus?.state === "working") ? " · en cours" : ""}</small>
-                  <b>›</b>
-                </summary>
-                <div className="project-agents">
-                  {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {tr(session.agentStatus?.label || "Disponible")}</small></span><b>›</b></button>)}
-                  {!agents.length && <span className="project-empty">{tr("Aucun agent rattaché.")}</span>}
-                </div>
-              </details>
-              </div>
-              <div className="project-mobile-section" data-section="modules" data-selected={mobileProjectSections[project.id] === "modules"}>
-              {(projectModules.length > 0 || proposals.length > 0) && <details className="project-modules"><summary><span>{tr("Modules")}</span><small>{projectModules.length}{" "}{tr("installé")}{projectModules.length > 1 ? "s" : ""}{projectModules.some((module) => module.enabled) ? " · actif" : ""}</small><b>›</b></summary><div className="project-module-list">{projectModules.map((module) => <ProjectModule key={module.id} module={module} onEnvironment={onModuleEnvironment} onRemove={onModuleRemove} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{proposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>{tr("Ajouter")}{" "}{module.name}</strong><small>{module.description}</small></div><b>＋</b></button>)}</div></details>}
-              {(prodModules.length > 0 || prodProposals.length > 0) && <details className="project-modules project-production"><summary><span>{tr("Production")}</span><small className={prodAlerts ? "warn" : ""}>{prodModules.length} {tr(prodModules.length > 1 ? "services" : "service")} · {prodActive} {tr(prodActive > 1 ? "actifs" : "actif")}{prodAlerts ? tr(" · {0} à vérifier", prodAlerts) : ""}{prodHosts.length ? ` · ${prodHosts.join(", ")}` : ""}</small><b>›</b></summary><div className="project-module-list">{prodModules.map((module) => <ProjectModule key={module.id} module={module} onEnvironment={onModuleEnvironment} onRemove={onModuleRemove} onToggle={onModuleToggle} onAction={onModuleAction} onSchedule={onModuleSchedule} onBuild={onModuleBuild} onRefreshBuilds={onModuleBuildRefresh} onRefresh={onRefresh} />)}{prodProposals.map((module) => <button className="module-proposal" key={module.id} onClick={() => onInstallModule(module.id)} style={{ "--module-accent": module.accent }}><span>{/\p{Extended_Pictographic}/u.test(String(module.glyph || "")) ? <AppIcon name="settings" size={16}/> : module.glyph}</span><div><strong>{tr("Ajouter")}{" "}{module.name}</strong><small>{module.executionHost ? `${module.executionHost} · ` : ""}{module.description}</small></div><b>＋</b></button>)}</div></details>}
-
-              {projectModules.length + proposals.length + prodModules.length + prodProposals.length === 0 && <p className="project-mobile-empty">{tr("Aucun module installé pour ce projet.")}</p>}
-              </div>
-              <div className="project-mobile-section" data-section="files" data-selected={mobileProjectSections[project.id] === "files"}>
-              <ProjectFilesSection project={project} agents={agents} onOpenAgent={onOpenAgent} />
-              </div>
+              <button type="button" className="project-drag" onPointerDown={(event) => startDrag(event, project)} onPointerMove={dragOver} onPointerUp={endDrag} onPointerCancel={endDrag} title={tr("Glisser pour changer ordre")} aria-label={tr("Déplacer {0}", project.name)}>⠿</button>
+              <button type="button" className="pw-card-open" onClick={() => onSelectProject?.(project.id)} aria-label={tr("Ouvrir {0}", project.name)}>
+                <span className="pw-card-title"><ProjectIcon project={project} /><strong>{project.name}</strong></span>
+                <span className="pw-card-stats">
+                  <span className={stats.working ? "live" : ""}><b>{stats.agents}</b> {tr(stats.agents > 1 ? "agents" : "agent")}{stats.working > 0 && <i> · {stats.working} {tr("en cours")}</i>}</span>
+                  <span><b>{stats.openTodos}</b> {tr(stats.openTodos > 1 ? "tâches" : "tâche")}</span>
+                  <span><b>{stats.modules}</b> {tr(stats.modules > 1 ? "modules" : "module")}</span>
+                </span>
+                {(decisions > 0 || stats.alerts > 0 || stats.waiting > 0) && <span className="pw-card-alerts">
+                  {decisions > 0 && <em>{tr("{0} à décider", decisions)}</em>}
+                  {stats.alerts > 0 && <em className="bad">{tr("{0} module à vérifier", stats.alerts)}</em>}
+                  {stats.waiting > 0 && <em>{tr("{0} agent attend", stats.waiting)}</em>}
+                </span>}
+              </button>
             </article>
           );
         })}
@@ -4050,6 +4131,91 @@ function ProjectsView({ projects, selectedProjectId = null, onShowAllProjects, s
       </div>
     </div>
   );
+
+  return (
+    <div className="page projects-page single-project pw-page">
+      {shown.map((project) => {
+        const agents = sessions.filter((session) => session.projectId === project.id);
+        const ownModules = modules.filter((module) => module.projectId === project.id);
+        const ownProposals = moduleProposals.filter((module) => module.projectId === project.id);
+        const groups = groupProjectModules(ownModules, ownProposals);
+        const projectTodos = todos.filter((todo) => todo.projectId === project.id);
+        const stats = projectStats({ agents, todos: projectTodos, modules: ownModules });
+        const hasPlanning = ownModules.some((module) => module.hasPlanning);
+        const decisions = waitingDecisions[project.id] || 0;
+        const tab = mobileProjectSections[project.id] || "overview";
+        const busyAgents = agents.filter((session) => ["working", "waiting"].includes(session.agentStatus?.state));
+        const tabs = [["overview", tr("Vue d’ensemble")], ["agents", tr("Agents"), stats.agents], ["modules", tr("Modules"), stats.alerts ? `!${stats.alerts}` : stats.modules], ["planning", tr("Planification"), decisions || null], ["budget", tr("Budget")], ["files", tr("Fichiers")]];
+        return (
+          <article className="project-card pw-workspace" key={project.id}>
+            <header className="pw-head">
+              <ProjectIcon project={project} />
+              <span className="pw-head-title"><strong>{project.name}{project.canEdit === false ? <b className="shared-chip" title={tr("Projet partagé par {0}", project.owner?.name || "autre profil")}>⇄ {project.owner?.name || tr("partagé")}</b> : project.shared ? <b className="shared-chip own" title={tr("Projet partagé avec les autres profils")}>{tr("⇄ partagé")}</b> : null}</strong><small>{project.rootPath || tr("Dossiers propres aux agents")}</small></span>
+              <span className="pw-head-actions">
+                <button type="button" className="ghost" onClick={onShowAllProjects}>{tr("← Tous les projets")}</button>
+                <button type="button" className="ghost mobile-project-switch" onClick={() => window.dispatchEvent(new Event("noyau:choose-project"))}>{tr("Changer de projet")}</button>
+                <button type="button" className="ghost pw-head-tool" onClick={() => onOpenMap?.(project.id, "room")}><AppIcon name="people" size={14}/>{tr("Échanges")}</button>
+                <button type="button" className="ghost pw-head-tool" onClick={() => onOpenMap?.(project.id)}><AppIcon name="map" size={14}/>{tr("Carte")}</button>
+                {project.canEdit !== false && <button type="button" className="ghost" onClick={() => onEdit(project.id)}>{tr("Éditer")}</button>}
+                {project.canEdit !== false && <button type="button" className="ghost project-delete" aria-label={tr("Supprimer {0}", project.name)} onClick={() => onDelete(project)}>×</button>}
+              </span>
+            </header>
+            <nav className="pw-tabs" aria-label={tr("Sections de {0}", project.name)}>{tabs.map(([id, label, badge]) => <button type="button" key={id} aria-pressed={tab === id} onClick={() => openMobileProjectSection(project.id, id)}>{label}{badge ? <b className={String(badge).startsWith("!") ? "bad" : ""}>{String(badge).replace("!", "")}</b> : null}</button>)}</nav>
+            {tab === "overview" && <ProjectTabPanel key="overview">
+              <div className="pw-tiles">
+                <button type="button" onClick={() => openMobileProjectSection(project.id, "agents")}><b>{stats.agents}</b><span>{tr(stats.agents > 1 ? "agents" : "agent")}</span><small>{stats.working ? `${stats.working} ${tr("en cours")}` : tr("au repos")}</small></button>
+                <button type="button" onClick={() => onOpenTodos?.(project.id)}><b>{stats.openTodos}</b><span>{tr(stats.openTodos > 1 ? "tâches" : "tâche")}</span><small>{tr("à faire")}</small></button>
+                <button type="button" onClick={() => openMobileProjectSection(project.id, "modules")}><b>{stats.activeModules}/{stats.modules}</b><span>{tr("modules actifs")}</span><small className={stats.alerts ? "bad" : ""}>{stats.alerts ? tr("{0} à vérifier", stats.alerts) : tr("tout va bien")}</small></button>
+                <button type="button" onClick={() => openMobileProjectSection(project.id, "budget")}><b>{projectMonthlyBudget(project).toLocaleString(LOCALE, { maximumFractionDigits: 0 })} €</b><span>{tr("budget")}</span><small>{tr("par mois")}</small></button>
+                <button type="button" onClick={() => openMobileProjectSection(project.id, "planning")}><b>{decisions}</b><span>{tr(decisions > 1 ? "décisions" : "décision")}</span><small className={decisions ? "warn" : ""}>{decisions ? tr("à prendre") : tr("rien à trancher")}</small></button>
+              </div>
+              {groups.attention.length > 0 && <section className="pw-now">
+                <h3>{tr("À vérifier")}</h3>
+                {groups.attention.map((module) => <button type="button" key={module.id} className="bad" onClick={() => openMobileProjectSection(project.id, "modules")}><i /><span>{module.name}</span><small>{module.setup?.status === "required" ? tr("Configuration requise") : tr("En échec")}</small></button>)}
+              </section>}
+              <div className="pw-overview">
+                <section className="pw-overview-box">
+                  <header><h3>{tr("Agents")}</h3><button type="button" onClick={() => onNewAgent?.(project.id)}><AppIcon name="plus" size={13}/>{tr("Nouvel agent")}</button></header>
+                  <div className="pw-overview-agents">
+                    {[...busyAgents, ...agents.filter((session) => !busyAgents.includes(session))].map((session) => <button type="button" key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span>{session.favorite && <i className="favorite-star">★</i>}{session.name}</span><small><i className={`agent-state-dot ${session.agentStatus?.subagents ? "working" : session.agentStatus?.state || "available"}`} />{tr(session.agentStatus?.label || "Disponible")}</small></button>)}
+                    {!agents.length && <p className="project-empty">{tr("Aucun agent rattaché.")}</p>}
+                  </div>
+                </section>
+                <section className="pw-overview-box">
+                  <header><h3>{tr("Modules")}</h3><button type="button" onClick={() => openMobileProjectSection(project.id, "modules")}>{tr("Tout voir")}</button></header>
+                  <div className="pw-overview-modules">
+                    {ownModules.map((module) => <button type="button" key={module.id} onClick={() => openMobileProjectSection(project.id, "modules")}><i className={`module-card-dot ${module.state || (module.setup?.status === "required" ? "failed" : "ready")}`} /><span>{module.name}</span><small>{module.environment === "production" ? { active: tr("Actif"), inactive: tr("Arrêté"), failed: tr("En échec") }[module.state] || "" : tr("Outil")}</small></button>)}
+                    {!ownModules.length && <p className="project-empty">{tr("Aucun module installé pour ce projet.")}</p>}
+                  </div>
+                </section>
+              </div>
+              </ProjectTabPanel>}
+            {tab === "agents" && <ProjectTabPanel key="agents"><div className="project-agents">
+              {agents.map((session) => <button key={session.id} onClick={() => onOpenAgent(session.id)}><AgentIcon assistant={session.assistant} logoUrl={session.logoUrl} small /><span><strong>{session.favorite && <i className="favorite-star">★</i>}{session.name}</strong><small><i className={`agent-state-dot ${session.agentStatus?.state || "available"}`} /> {assistantMeta[session.assistant]?.label} · {tr(session.agentStatus?.label || "Disponible")}</small></span><b>›</b></button>)}
+              {!agents.length && <span className="project-empty">{tr("Aucun agent rattaché.")}</span>}
+            </div><div className="pw-secondary"><ProjectReporting project={project} agents={agents} todos={projectTodos} onRefresh={onRefresh} /></div></ProjectTabPanel>}
+            {tab === "modules" && <ProjectTabPanel key="modules">
+              {moduleGroup(tr("À vérifier"), groups.attention)}
+              {moduleGroup(tr("Production"), groups.production)}
+              {moduleGroup(tr("Outils"), groups.tools)}
+              {groups.proposals.length > 0 && <section className="pw-module-group"><h3>{tr("À ajouter")}</h3><div className="project-module-list">{groups.proposals.map(proposalButton)}</div></section>}
+              {!ownModules.length && !ownProposals.length && <p className="project-empty">{tr("Aucun module installé pour ce projet.")}</p>}
+            </ProjectTabPanel>}
+            {tab === "planning" && <ProjectTabPanel key="planning"><ProjectTracking project={project} api={api} onOpenAgent={onOpenAgent} storageKey={profileCacheKey(`planification-open-${project.id}`)} publications={hasPlanning ? <ProjectPlanning project={project} nested /> : null} /></ProjectTabPanel>}
+            {tab === "budget" && <ProjectTabPanel key="budget"><ProjectBudgetSection project={project} onRefresh={onRefresh} /></ProjectTabPanel>}
+            {tab === "files" && <ProjectTabPanel key="files"><ProjectFilesSection project={project} agents={agents} onOpenAgent={onOpenAgent} startOpen /></ProjectTabPanel>}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+// A tab shows one section at a time, so its accordion has nothing left to hide.
+function ProjectTabPanel({ children }) {
+  const node = React.useRef(null);
+  React.useLayoutEffect(() => { node.current?.querySelectorAll(":scope > details").forEach((detail) => { detail.open = true; }); });
+  return <div className="pw-panel" ref={node}>{children}</div>;
 }
 
 function BankingPanel({ banks, month, onSynced }) {
@@ -5210,9 +5376,9 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
   const [newTodoProjectId, setNewTodoProjectId] = useState("");
   const [newTodoAssignee, setNewTodoAssignee] = useState(() => {
     try {
-      return localStorage.getItem("noyau-todo-last-assignee") || "main";
+      return localStorage.getItem("noyau-todo-last-assignee") || primaryAssigneeId();
     } catch {
-      return "main";
+      return primaryAssigneeId();
     }
   });
   const [addingTodo, setAddingTodo] = useState(false);
@@ -5731,9 +5897,7 @@ function TodoCalendar({ todos = [], folders = [], projects = [], onSelectDate, o
                 title={tr("Attribuer la tâche (Aurora, Moi, ou tout le monde)")}
                 aria-label={tr("Attribution de la tâche")}
               >
-                <option value="aurora">{" "}{tr("Aurora")}</option>
-                <option value="main">{" "}{tr("Moi")}</option>
-                <option value="all">{" "}{tr("Tout le monde")}</option>
+                <AssigneeOptions />
               </select>
               <button type="submit" className="primary mini quick-add-btn" disabled={addingTodo || !newTodoText.trim()}>
                 {addingTodo ? "…" : tr("Ajouter")}
@@ -5937,14 +6101,7 @@ function CalendarView({ projects = [], onView }) {
   );
 }
 
-function getTodoAssignee(todo) {
-  if (!todo) return "main";
-  if (todo.assignee === "all" || todo.assignee === "both" || (todo.shared && !todo.assignee)) return "all";
-  if (todo.assignee === "aurora") return "aurora";
-  if (todo.assignee === "main" || todo.assignee === "moi") return "main";
-  if (todo.ownerProfileId === "aurora" || (todo.ownerName && /bellin/i.test(todo.ownerName))) return "aurora";
-  return "main";
-}
+const getTodoAssignee = resolveAssignee;
 
 function TodosView({ projects = [], onView }) {
   const cached = cachedView("todos");
@@ -5954,9 +6111,9 @@ function TodosView({ projects = [], onView }) {
   const [text, setText] = useState("");
   const [assignee, setAssignee] = useState(() => {
     try {
-      return localStorage.getItem("noyau-todo-last-assignee") || "main";
+      return localStorage.getItem("noyau-todo-last-assignee") || primaryAssigneeId();
     } catch {
-      return "main";
+      return primaryAssigneeId();
     }
   });
   const [busy, setBusy] = useState("");
@@ -6027,7 +6184,7 @@ function TodosView({ projects = [], onView }) {
     setColumns(nextColumns);
     setCorrection(nextCorrection);
     storeView("todos", { todos: nextTodos, folders: nextFolders, columns: nextColumns, correction: nextCorrection });
-    window.dispatchEvent(new CustomEvent("noyau:todos-unread", { detail: nextTodos.reduce((total, todo) => total + (todo.unread || 0), 0) }));
+    window.dispatchEvent(new CustomEvent("noyau:todos-unread", { detail: totalTodoUnread(nextTodos) }));
   }, []);
 
   const load = useCallback(async () => {
@@ -6290,30 +6447,33 @@ function TodosView({ projects = [], onView }) {
 
   function renderViewSwitcher() {
     return (
-      <div className="todo-view-switcher">
+      <div className="todo-view-switcher" role="group" aria-label={tr("Vue des tâches")}>
         <button
           type="button"
           className={viewMode === "board" ? "active" : ""}
+          aria-pressed={viewMode === "board"}
           onClick={() => switchViewMode("board")}
           title={tr("Vue Tableau Trello (Kanban)")}
         >
-          <span className="view-icon">⊞</span>{" "}{tr("Trello")}
+          <AppIcon name="board" size={14}/>{tr("Trello")}
         </button>
         <button
           type="button"
           className={viewMode === "classic" ? "active" : ""}
+          aria-pressed={viewMode === "classic"}
           onClick={() => switchViewMode("classic")}
           title={tr("Vue Liste classique")}
         >
-          <span className="view-icon"><AppIcon name="file" size={16}/></span>{" "}{tr("Classique")}
+          <AppIcon name="list" size={14}/>{tr("Classique")}
         </button>
         <button
           type="button"
           className={viewMode === "raw" ? "active" : ""}
+          aria-pressed={viewMode === "raw"}
           onClick={() => switchViewMode("raw")}
           title={tr("Vue Markdown brut (édition et copie)")}
         >
-          <span className="view-icon"><AppIcon name="file" size={16}/></span>{" "}{tr(".MD")}
+          <AppIcon name="file" size={14}/>{tr(".MD")}
         </button>
       </div>
     );
@@ -6321,10 +6481,11 @@ function TodosView({ projects = [], onView }) {
 
   function renderSortSwitcher() {
     return (
-      <div className="todo-sort-switcher">
+      <div className="todo-sort-switcher" role="group" aria-label={tr("Tri des tâches")}>
         <button
           type="button"
           className={`todo-sort-btn ${sortMode === "priority" ? "active" : ""}`}
+          aria-pressed={sortMode === "priority"}
           onClick={() => switchSortMode(sortMode === "priority" ? "activity" : "priority")}
           title={tr("Trier par priorité ( Haute,  Moyenne,  Basse)")}
         >
@@ -6333,11 +6494,45 @@ function TodosView({ projects = [], onView }) {
         <button
           type="button"
           className={`todo-sort-btn ${sortMode === "activity" ? "active" : ""}`}
+          aria-pressed={sortMode === "activity"}
           onClick={() => switchSortMode("activity")}
           title={tr("Trier par récents / activité")}
         >
-           {tr("Récents")}
+          {tr("Récents")}
         </button>
+      </div>
+    );
+  }
+
+  function renderCommandBar(folderActions) {
+    return (
+      <div className="todo-hero-right todo-command-bar" role="group" aria-label={tr("Commandes des tâches")}>
+        {renderViewSwitcher()}
+        <TodoCommandMenu sort={renderSortSwitcher()} folderActions={folderActions} tools={<>
+
+          <button
+            type="button"
+            className={`todo-command-btn ${showCalendar ? "active" : ""}`}
+            aria-pressed={showCalendar}
+            onClick={() => setShowCalendar(!showCalendar)}
+            title={showCalendar ? tr("Masquer agenda") : tr("Afficher/masquer le calendrier")}
+          >
+            <AppIcon name="calendar" size={14}/>{tr("Agenda")}
+          </button>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={correction}
+            aria-label={tr("Correction IA")}
+            className={`todo-command-btn todo-correction-toggle ${correction ? "active" : ""}`}
+            onClick={toggleCorrection}
+            disabled={busy === "correction"}
+            title={correction ? tr("Correction IA active — cliquer pour désactiver") : tr("Correction IA désactivée — cliquer pour activer")}
+          >
+            <span>{tr("IA")}</span>
+            <span className="todo-switch-track" aria-hidden="true"/>
+          </button>
+        </>} />
       </div>
     );
   }
@@ -6682,6 +6877,10 @@ function TodosView({ projects = [], onView }) {
     dragRef.current = null;
     setDragging("");
     event.currentTarget.releasePointerCapture?.(drag.pointerId);
+    if (event.type === "pointercancel") return;
+    const dropTarget = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-drop-folder], [data-drop-status]");
+    const sourceTodo = todos.find((item) => item.id === drag.id);
+    if (sourceTodo && dropTarget) { const changes = todoDropChange(sourceTodo, { folderId: dropTarget.dataset.dropFolder, status: dropTarget.dataset.dropStatus }); if (changes) update(sourceTodo, changes); return; }
     if (drag.targetIndex === drag.startIndex) return;
 
     const source = drag.items[drag.startIndex];
@@ -6714,6 +6913,26 @@ function TodosView({ projects = [], onView }) {
     if (currentStatus !== targetStatus) {
       update(targetTodo, { status: targetStatus });
     }
+  }
+
+  function handleFolderDrop(event, folderId) {
+    event.preventDefault(); event.stopPropagation();
+    const todo = todos.find((item) => item.id === event.dataTransfer.getData("text/plain"));
+    const changes = todoDropChange(todo, { folderId }); if (changes) update(todo, changes);
+  }
+  function boardTouchStart(event, todo) {
+    if (event.pointerType === "mouse") return;
+    event.preventDefault(); event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    dragRef.current = { id: todo.id, pointerId: event.pointerId, board: true }; setDragging(todo.id);
+  }
+  function boardTouchEnd(event) {
+    const drag = dragRef.current; if (!drag?.board) return;
+    dragRef.current = null; setDragging(""); event.currentTarget.releasePointerCapture?.(drag.pointerId);
+    if (event.type === "pointercancel") return;
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-drop-folder], [data-drop-status]");
+    const todo = todos.find((item) => item.id === drag.id); if (!todo || !target) return;
+    const changes = todoDropChange(todo, { folderId: target.dataset.dropFolder, status: target.dataset.dropStatus }); if (changes) update(todo, changes);
   }
 
   function renderBoardCard(todo, currentColumn) {
@@ -6752,6 +6971,7 @@ function TodosView({ projects = [], onView }) {
           className="todo-card-top"
           onClick={() => { if (overflows || expanded) setExpandedCards((prev) => ({ ...prev, [todo.id]: !prev[todo.id] })); }}
         >
+          <button type="button" className="todo-board-drag-handle" aria-label={tr("Déplacer {0}", todo.text)} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => boardTouchStart(event, todo)} onPointerUp={boardTouchEnd} onPointerCancel={boardTouchEnd}>⠿</button>
           <button
             type="button"
             className={`todo-tri-box status-${column?.kind || "custom"}`}
@@ -6782,9 +7002,8 @@ function TodosView({ projects = [], onView }) {
               aria-label={expanded ? tr("Replier le texte") : tr("Déplier le texte")}
             >{expanded ? "⌃" : "⌄"}</button>
           )}
-          <details className="todo-card-menu">
-            <summary title={tr("Actions sur la tâche")} aria-label={tr("Actions sur la tâche")}><AppIcon name="more" size={15} /></summary>
-            <div className="todo-card-menu-panel">
+          <button type="button" className="todo-card-delete" onClick={(event) => { event.stopPropagation(); removeTodo(todo); }} title={tr("Supprimer la tâche")} aria-label={tr("Supprimer la tâche")}><AppIcon name="trash" size={15}/></button>
+          <TodoCardMenu>
               {previousColumn && (
                 <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); update(todo, { status: previousColumn.id }); }}>
                   {tr("Déplacer vers :")}{" "}{previousColumn.name}
@@ -6821,9 +7040,7 @@ function TodosView({ projects = [], onView }) {
                   disabled={busy === todo.id}
                   aria-label={tr("Changer l'attribution")}
                 >
-                  <option value="aurora">{tr("Aurora")}</option>
-                  <option value="main">{tr("Moi")}</option>
-                  <option value="all">{tr("Tout le monde")}</option>
+                  <AssigneeOptions />
                 </select>
               </label>
               <label className="todo-card-menu-move">
@@ -6884,8 +7101,7 @@ function TodosView({ projects = [], onView }) {
               >
                 {tr("Supprimer la tâche")}
               </button>
-            </div>
-          </details>
+          </TodoCardMenu>
         </div>
 
         <div className="todo-card-meta">
@@ -7124,9 +7340,8 @@ function TodosView({ projects = [], onView }) {
               </button>
             )}
             {todo.unread > 0 && <button type="button" className="todo-unread-pill" onClick={() => markSeen(todo.id)} title={tr("Marquer comme lu")}>● {todo.unread}</button>}
-            <details className="todo-card-menu">
-              <summary title={tr("Actions sur la tâche")} aria-label={tr("Actions sur la tâche")}><AppIcon name="more" size={15} /></summary>
-              <div className="todo-card-menu-panel">
+            <button type="button" className="todo-card-delete" onClick={(event) => { event.stopPropagation(); removeTodo(todo); }} title={tr("Supprimer la tâche")} aria-label={tr("Supprimer la tâche")}><AppIcon name="trash" size={15}/></button>
+            <TodoCardMenu>
                 <button type="button" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setDatePanel((c) => (c === todo.id ? null : todo.id)); }}>
                   {todo.dueDate ? tr("Modifier la date limite") : tr("Ajouter une date limite")}
                 </button>
@@ -7163,9 +7378,7 @@ function TodosView({ projects = [], onView }) {
                     disabled={busy === todo.id}
                     aria-label={tr("Attribution de la tâche")}
                   >
-                    <option value="aurora">{tr("Aurora")}</option>
-                    <option value="main">{tr("Moi")}</option>
-                    <option value="all">{tr("Tout le monde")}</option>
+                    <AssigneeOptions />
                   </select>
                 </label>
                 <label className="todo-card-menu-move">
@@ -7211,8 +7424,7 @@ function TodosView({ projects = [], onView }) {
                 >
                   {tr("Supprimer la tâche")}
                 </button>
-              </div>
-            </details>
+            </TodoCardMenu>
           </div>
           {datePanel === todo.id && <div className="todo-inline-panel todo-date-panel"><span>{tr("Date limite")}</span><input type="date" value={todo.dueDate || ""} onChange={async (event) => { await update(todo, { dueDate: event.target.value || null }); setDatePanel(null); }} disabled={busy === todo.id} /><button onClick={async () => { await update(todo, { dueDate: null }); setDatePanel(null); }} disabled={busy === todo.id || !todo.dueDate}>{tr("Effacer")}</button></div>}
         </article>
@@ -7273,7 +7485,7 @@ function TodosView({ projects = [], onView }) {
   const openCount = todos.filter((todo) => (todo.status || (todo.completed ? "done" : "todo")) === "todo").length;
   const reviewCount = todos.filter((todo) => todo.status === "review").length;
   const doneCount = todos.filter((todo) => (todo.status === "done" || todo.completed)).length;
-  const globalUnread = todos.reduce((total, todo) => total + (todo.unread || 0), 0);
+  const globalUnread = totalTodoUnread(todos);
   const activeSection = sections.find((section) => section.folder.id === openFolder);
   const active = openFolder === "all"
     ? { folder: { id: "all", name: tr("Toutes les tâches") }, subFolders: [], items: todos, rawItems: todos }
@@ -7283,7 +7495,8 @@ function TodosView({ projects = [], onView }) {
           subFolders: activeSection.subFolders || [],
           items: subFolderFilter === "all"
             ? activeSection.items
-            : activeSection.items.filter((todo) => todo.folderId === subFolderFilter),
+            : subFolderFilter === "__unread__" ? activeSection.items.filter((todo) => countedTodoUnread(todo) > 0)
+            : activeSection.items.filter((todo) => todo.folderId === subFolderFilter || (subFolderFilter === activeSection.folder.id && (!todo.folderId || todo.folderId === ROOT_FOLDER))),
           rawItems: activeSection.items,
         }
       : null;
@@ -7341,29 +7554,9 @@ function TodosView({ projects = [], onView }) {
               {doneCount > 0 ? tr(" · {0} terminée{1}", doneCount, doneCount > 1 ? "s" : "") : ""} · {storage}
             </p>
           </div>
-          <div className="todo-hero-right">
-            {renderViewSwitcher()}
-            {renderSortSwitcher()}
-            <button
-              type="button"
-              className={`ghost ${showCalendar ? "active" : ""}`}
-              onClick={() => setShowCalendar(!showCalendar)}
-              title="Afficher/masquer le calendrier"
-            >
-               {showCalendar ? tr("Masquer agenda") : tr("Agenda")}
-            </button>
-            <button
-              type="button"
-              className={`todo-correction-toggle ${correction ? "active" : ""}`}
-              onClick={toggleCorrection}
-              disabled={busy === "correction"}
-              title={correction ? tr("Correction IA active — cliquer pour désactiver") : tr("Correction IA désactivée — cliquer pour activer")}
-            >
-              <AppIcon name="settings" size={13}/>
-              <span>{tr("IA")}</span>
-            </button>
-            <button className="ghost" onClick={createFolder} disabled={busy === "folder"}>{tr("+ Dossier")}</button>
-          </div>
+          {renderCommandBar(
+            <button type="button" className="todo-command-btn" onClick={createFolder} disabled={busy === "folder"}>{tr("+ Dossier")}</button>
+          )}
         </section>
         {error && <p className="finance-error todo-error">{error}</p>}
         {viewMode === "raw" ? (
@@ -7381,7 +7574,7 @@ function TodosView({ projects = [], onView }) {
             const folderReviews = items.filter((todo) => todo.status === "review");
             const folderDone = items.filter((todo) => todo.status === "done" || todo.completed);
             const late = folderTodos.filter((todo) => todo.dueDate && todo.dueDate < localIsoDate()).length;
-            const folderUnread = items.reduce((total, todo) => total + (todo.unread || 0), 0);
+            const folderUnread = totalTodoUnread(items);
             return (
               <div className="panel todo-folder-card" key={folder.id} role="button" tabIndex={0} onClick={() => selectFolder(folder.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectFolder(folder.id); } }}>
                 {folder.id !== ROOT_FOLDER && folder.ownerProfileId === undefined && (
@@ -7450,7 +7643,7 @@ function TodosView({ projects = [], onView }) {
 
   const { folder, items } = active;
   const selectedMobileColumn = columns.some((column) => column.id === mobileColumn) ? mobileColumn : (columns.find((column) => column.enabled !== false)?.id || columns[0]?.id);
-  const boardUnread = items.reduce((total, todo) => total + (todo.unread || 0), 0);
+  const boardUnread = totalTodoUnread(items);
   const todoItems = inColumn(items, "todo");
   const reviewItems = items.filter((todo) => statusOf(todo) === "review");
   const doneItems = items.filter((todo) => statusOf(todo) === "done" || todo.completed);
@@ -7519,45 +7712,26 @@ function TodosView({ projects = [], onView }) {
             {doneItems.length ? tr(" · {0} terminée{1}", doneItems.length, doneItems.length > 1 ? "s" : "") : ""}
           </p>
         </div>
-        <div className="todo-hero-right">
-          {renderViewSwitcher()}
-          {renderSortSwitcher()}
-          <button
-            type="button"
-            className={`ghost ${showCalendar ? "active" : ""}`}
-            onClick={() => setShowCalendar(!showCalendar)}
-            title="Afficher/masquer le calendrier"
-          >
-             {showCalendar ? tr("Masquer agenda") : tr("Agenda")}
-          </button>
-          <button
-            type="button"
-            className={`todo-correction-toggle ${correction ? "active" : ""}`}
-            onClick={toggleCorrection}
-            disabled={busy === "correction"}
-            title={correction ? tr("Correction IA active — cliquer pour désactiver") : tr("Correction IA désactivée — cliquer pour activer")}
-          >
-            <AppIcon name="settings" size={13}/>
-            <span>{tr("IA")}</span>
-          </button>
-          {!folder.projectId && folder.id !== ROOT_FOLDER && folder.id !== "all" && (
-            <div className="todo-folder-actions">
-              <button onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`Renommer ${folder.name}`}>{tr("Renommer")}</button>
-              <button onClick={() => setFolderToDelete(folder)} disabled={busy === folder.id} aria-label={`Supprimer ${folder.name}`}>{tr("Supprimer")}</button>
-            </div>
-          )}
-        </div>
+        {renderCommandBar(!folder.projectId && folder.id !== ROOT_FOLDER && folder.id !== "all" && (
+          <>
+            <button type="button" className="todo-command-btn" onClick={() => renameFolder(folder)} disabled={busy === folder.id} aria-label={`${tr("Renommer")} ${folder.name}`}>{tr("Renommer")}</button>
+            <button type="button" className="todo-command-btn danger" onClick={() => setFolderToDelete(folder)} disabled={busy === folder.id} aria-label={`${tr("Supprimer")} ${folder.name}`}>{tr("Supprimer")}</button>
+          </>
+        ))}
       </section>
 
       {(active.folder.projectId || (active.subFolders && active.subFolders.length > 0)) && active.folder.id !== "all" && (
-        <div className="todo-subfolder-bar">
+        <div className="todo-subfolder-bar" role="group" aria-label={tr("Sous-dossiers")}>
           <button
             type="button"
             className={`todo-subfolder-tab ${subFolderFilter === "all" ? "active" : ""}`}
+            aria-pressed={subFolderFilter === "all"}
             onClick={() => changeSubFolderFilter("all")}
           >
              {tr("Tout")}{" "}{active.folder.name} ({countOpenTodos(active.rawItems || active.items)})
           </button>
+          <div className={`todo-subfolder-tab-group ${subFolderFilter === "__unread__" ? "active" : ""}`}><button type="button" className="todo-subfolder-tab" aria-pressed={subFolderFilter === "__unread__"} onClick={() => changeSubFolderFilter("__unread__")}>{tr("Non lus")} ({totalTodoUnread(active.rawItems || active.items)})</button><button type="button" className="todo-subfolder-read-btn" disabled={!totalTodoUnread(active.rawItems || active.items)} aria-label={tr("Tout marquer comme lu")} title={tr("Tout marquer comme lu")} onClick={() => markSeen((active.rawItems || active.items).filter((todo) => countedTodoUnread(todo) > 0).map((todo) => todo.id))}><AppIcon name="task" size={15}/></button></div>
+          <button type="button" className={`todo-subfolder-tab ${subFolderFilter === active.folder.id ? "active" : ""}`} data-drop-folder={active.folder.id} onDragOver={handleBoardDragOver} onDrop={(event) => handleFolderDrop(event, active.folder.id)} onClick={() => changeSubFolderFilter(active.folder.id)}>{tr("Sans sous-dossier")}</button>
           {active.subFolders.map((sub) => {
             const count = countOpenTodos((active.rawItems || active.items).filter((t) => t.folderId === sub.id));
             return (
@@ -7565,6 +7739,10 @@ function TodosView({ projects = [], onView }) {
                 <button
                   type="button"
                   className="todo-subfolder-tab"
+                  data-drop-folder={sub.id}
+                  onDragOver={handleBoardDragOver}
+                  onDrop={(event) => handleFolderDrop(event, sub.id)}
+                  aria-pressed={subFolderFilter === sub.id}
                   onClick={() => changeSubFolderFilter(sub.id)}
                 >
                   {/^\p{Extended_Pictographic}/u.test(sub.name) ? "" : " "}{sub.name} ({count})
@@ -7573,13 +7751,15 @@ function TodosView({ projects = [], onView }) {
                   type="button"
                   className="todo-subfolder-edit-btn"
                   onClick={(e) => { e.stopPropagation(); renameFolder(sub); }}
-                  title={`Renommer ${sub.name}`}
+                  title={`${tr("Renommer")} ${sub.name}`}
+                  aria-label={`${tr("Renommer")} ${sub.name}`}
                 >✎</button>
                 <button
                   type="button"
                   className="todo-subfolder-del-btn"
                   onClick={(e) => { e.stopPropagation(); setFolderToDelete({ ...sub, count }); }}
-                  title={`Supprimer ${sub.name}`}
+                  title={`${tr("Supprimer")} ${sub.name}`}
+                  aria-label={`${tr("Supprimer")} ${sub.name}`}
                 >×</button>
               </div>
             );
@@ -7610,9 +7790,7 @@ function TodosView({ projects = [], onView }) {
           title={tr("Attribuer à Aurora, Moi, ou tout le monde (enregistré par défaut)")}
           aria-label={tr("Attribution de la tâche")}
         >
-          <option value="aurora">{" "}{tr("Aurora")}</option>
-          <option value="main">{" "}{tr("Moi")}</option>
-          <option value="all">{" "}{tr("Tout le monde")}</option>
+          <AssigneeOptions />
         </select>
         <button className="primary" disabled={busy === "new" || !text.trim()}>{busy === "new" ? "…" : tr("Ajouter")}</button>
       </form>
@@ -7628,10 +7806,10 @@ function TodosView({ projects = [], onView }) {
               {columns.length} {tr(columns.length > 1 ? "zones" : "zone")} · {countOpenTodos(items)}{" "}{tr("tâche")}{countOpenTodos(items) > 1 ? "s" : ""}{" "}{tr("en cours")}
               {boardUnread > 0 && <b className="todo-unread-inline"> · {boardUnread}{" "}{tr("non lu")}{boardUnread > 1 ? "s" : ""}</b>}
             </small>
-            {boardUnread > 0 && <button className="todo-mark-seen-btn" onClick={() => markSeen(items.filter((todo) => todo.unread).map((todo) => todo.id))} title={tr("Marquer toutes les nouveautés comme lues")}>{tr("Tout lu")}</button>}
-            <button className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title={tr("Ajouter une zone")} aria-label={tr("Ajouter une zone")}>{tr("＋ Zone")}</button>
+            {boardUnread > 0 && <button type="button" className="todo-mark-seen-btn" onClick={() => markSeen(items.filter((todo) => todo.unread).map((todo) => todo.id))} title={tr("Marquer toutes les nouveautés comme lues")}>{tr("Tout lu")}</button>}
+            <button type="button" className="todo-add-column-btn" onClick={addColumn} disabled={busy === "column"} title={tr("Ajouter une zone")} aria-label={tr("Ajouter une zone")}>{tr("＋ Zone")}</button>
           </div>
-          <nav className="todo-mobile-zones" aria-label={tr("Zones des tâches")}>{columns.map((column) => <button type="button" key={column.id} aria-pressed={selectedMobileColumn === column.id} onClick={() => { setMobileColumn(column.id); if (collapsedColumns[column.id]) toggleColumn(column); }}><span>{tr(column.name)}</span><b>{inColumn(items, column.id).length}</b></button>)}</nav>
+          <nav className="todo-mobile-zones" aria-label={tr("Zones des tâches")}>{columns.map((column) => <button type="button" key={column.id} data-drop-status={column.id} onDragOver={handleBoardDragOver} onDrop={(event) => handleBoardDrop(event, column.id)} aria-pressed={selectedMobileColumn === column.id} onClick={() => { setMobileColumn(column.id); if (collapsedColumns[column.id]) toggleColumn(column); }}><span>{tr(column.name)}</span><b>{inColumn(items, column.id).length}</b></button>)}</nav>
           <div className="todo-board">
             {columns.map((column, index) => {
               const columnItems = inColumn(items, column.id);
@@ -7643,6 +7821,7 @@ function TodosView({ projects = [], onView }) {
                   <button
                     key={column.id}
                     data-mobile-selected={selectedMobileColumn === column.id}
+                    data-drop-status={column.id}
                     className={`todo-board-column collapsed column-${column.kind} ${isColDisabled ? "disabled-zone" : ""}`}
                     onClick={() => toggleColumn(column)}
                     onDragOver={handleBoardDragOver}
@@ -7660,6 +7839,7 @@ function TodosView({ projects = [], onView }) {
                 <div
                   className={`todo-board-column column-${column.kind} ${column.kind === "done" ? "muted" : ""} ${isColDisabled ? "disabled-zone" : ""}`}
                   data-mobile-selected={selectedMobileColumn === column.id}
+                  data-drop-status={column.id}
                   key={column.id}
                   onDragOver={handleBoardDragOver}
                   onDrop={(e) => handleBoardDrop(e, column.id)}
@@ -7731,14 +7911,16 @@ function TodosView({ projects = [], onView }) {
         </div>
       ) : (
         <>
-          <div className="todo-filter-tabs">
-            <button className={filterTab === "all" ? "active" : ""} onClick={() => setFilterTab("all")}>{tr("Toutes (")}{countOpenTodos(items)})</button>
+          <div className="todo-filter-tabs" role="group" aria-label={tr("Zones des tâches")}>
+            <button type="button" className={filterTab === "all" ? "active" : ""} aria-pressed={filterTab === "all"} onClick={() => setFilterTab("all")}>{tr("Toutes (")}{countOpenTodos(items)})</button>
             {columns.map((col) => {
               const count = inColumn(items, col.id).length;
               return (
                 <button
+                  type="button"
                   key={col.id}
                   className={filterTab === col.id ? "active" : ""}
+                  aria-pressed={filterTab === col.id}
                   onClick={() => setFilterTab(col.id)}
                 >
                   {col.kind === "custom" ? ` ${tr(col.name)}` : col.name} ({count})
@@ -7852,6 +8034,15 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
     setMsg(tr("Profil créé."));
   });
 
+  const removeProfile = (item) => {
+    if (!window.confirm(tr("Supprimer le compte {0} ? Il ne pourra plus se connecter ; ses données restent sur le disque.", item.name))) return;
+    run(async () => {
+      await api(`/api/profiles/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      setMsg(tr("Compte supprimé."));
+    });
+  };
+
+  const isAdmin = Boolean(active?.primary);
   const activeName = active?.name || tr("Profil");
   return (
     <>
@@ -7866,6 +8057,7 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
             </button>
           ))}
         </div>
+        {isAdmin && profiles.some((item) => !item.primary) && <div className="profile-remove-list">{profiles.filter((item) => !item.primary).map((item) => <button type="button" className="ghost danger" key={item.id} disabled={busy} onClick={() => removeProfile(item)}>{tr("Supprimer {0}", item.name)}</button>)}</div>}
         {error && <p className="form-error">{error}</p>}
         {msg && <p className="form-success">{msg}</p>}
       </section>
@@ -7912,7 +8104,7 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
           <div className="modal-actions"><button className="primary" onClick={save} disabled={busy}>{busy ? tr("Application…") : tr("Enregistrer")}</button></div>
         </div>
       </details>
-      <details className="panel foldable settings-fold">
+      {isAdmin && <details className="panel foldable settings-fold">
         <summary className="panel-head"><div><h3>{tr("Nouveau profil")}</h3><p>{tr("Son propre espace, son thème et son mot de passe")}</p></div><i>›</i></summary>
         <div className="profile-form">
           <label htmlFor="profile-new">{tr("Prénom")}</label>
@@ -7938,7 +8130,7 @@ function ProfilesSettings({ profiles, profileId, onSwitch, onChanged }) {
           )}
           <div className="modal-actions"><button className="ghost" onClick={create} disabled={busy || !newName.trim()}>{tr("Créer le profil")}</button></div>
         </div>
-      </details>
+      </details>}
     </>
   );
 }
@@ -8179,7 +8371,7 @@ function SettingsView({ permission, notificationInfo, onNotifications, onRefresh
             {power?.schedule?.enabled ? tr("Activée") : tr("Désactivée")}
           </button>
         </article>
-        <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>{tr("Mise à jour interface")}</strong><small>{versionInfo ? `Version ${versionInfo.version} · build ${versionInfo.build}` : tr("Lecture version…")}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? tr("Actualisation…") : tr("Recharger dernière version")}</button></article>
+        <article><span className="setting-symbol update-symbol"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6.2M20 5v6h-6" /></svg></span><div><strong>{tr("Mise à jour interface")}</strong><small>{versionInfo ? tr("Interface {0} · serveur {1} · build {2}", RUNNING_VERSION, versionInfo.version, versionInfo.build) : tr("Interface {0} · serveur inaccessible", RUNNING_VERSION)}</small></div><button className="ghost" onClick={refreshApp} disabled={refreshing}>{refreshing ? tr("Actualisation…") : tr("Recharger dernière version")}</button></article>
         <MobileApplicationSettings api={api} />
         <BiometricSettings profileId={profileId} api={api} />
         <article><span className="setting-symbol">⌁</span><div><strong>{tr("Connexions bancaires")}</strong><small>{tr("Enable Banking: application ID, URL de retour, clé privée, banques liées.")}</small></div><button className="ghost" onClick={() => onView("finance-banking")}>{tr("Ouvrir réglages")}</button></article>
@@ -8218,12 +8410,12 @@ function SettingsView({ permission, notificationInfo, onNotifications, onRefresh
 }
 
 function VsCodeModal({ session, onClose }) {
-  const cwd = session.cwd || "/home/user/projects";
+  const cwd = session.cwd || "";
   const hostname = window.location.hostname;
   const isLocal = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 
   const [sshTarget, setSshTarget] = useState(() => {
-    return localStorage.getItem("noyau-vscode-ssh-target") || `user@${hostname}`;
+    return localStorage.getItem("noyau-vscode-ssh-target") || `${hostname}`;
   });
   const [directSsh, setDirectSsh] = useState(() => {
     return localStorage.getItem("noyau-vscode-direct-ssh") === "true";
@@ -8245,7 +8437,7 @@ function VsCodeModal({ session, onClose }) {
   };
 
   const handleCommitTarget = () => {
-    const trimmed = targetDraft.trim() || `user@${hostname}`;
+    const trimmed = targetDraft.trim() || `${hostname}`;
     saveSettings(trimmed, directSsh);
     setTargetDraft(trimmed);
     setEditingTarget(false);
@@ -8358,7 +8550,7 @@ function VsCodeModal({ session, onClose }) {
                       }
                     }}
                     autoFocus
-                    placeholder="user@noyau.lan"
+                    placeholder="user@host"
                   />
                   <button type="button" className="primary mini" onClick={handleCommitTarget}>{tr("OK")}</button>
                   <button type="button" className="ghost mini" onClick={() => { setTargetDraft(sshTarget); setEditingTarget(false); }}>✕</button>
@@ -8656,7 +8848,7 @@ function CreateFileModal({ session, onClose, onSend }) {
   );
 }
 
-function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMigrated, onRefresh, onEdit, quotas, assistants, voice, onVoice, onInteract, draftStore }) {
+function TerminalView({ session, sessions, projects = [], onOpenMap, onSwitchAgent, onBack, onKilled, onMigrated, onRefresh, onEdit, quotas, assistants, voice, onVoice, onInteract, draftStore }) {
   const showAgentSwitcher = agentsInSameProject(session, sessions).length > 1;
   const [conversationMode, setConversationMode] = useState(session.assistant !== "shell");
   // Chaque agent (nouveau ou bascule) s'ouvre en conversation, pas dans le mode du precedent.
@@ -8685,6 +8877,9 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
   const [restarting, setRestarting] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
   const [todoPicker, setTodoPicker] = useState(false);
+  const [projectFilesOpen, setProjectFilesOpen] = useState(false);
+  const attachedProject = projects.find((project) => project.id === session.projectId);
+  useEffect(() => setProjectFilesOpen(false), [session.id]);
   const [todoDetail, setTodoDetail] = useState(null);
   const [vscodeModal, setVscodeModal] = useState(false);
   const [createFileModal, setCreateFileModal] = useState(false);
@@ -8711,7 +8906,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
     const hostname = window.location.hostname;
     const isLocal = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
     const directSsh = localStorage.getItem("noyau-vscode-direct-ssh") === "true";
-    const sshTarget = localStorage.getItem("noyau-vscode-ssh-target") || `user@${hostname}`;
+    const sshTarget = localStorage.getItem("noyau-vscode-ssh-target") || `${hostname}`;
 
     if (e?.shiftKey || (!isLocal && !directSsh)) {
       setVscodeModal(true);
@@ -9227,6 +9422,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
     };
     const handleMessage = (event) => {
       const message = JSON.parse(event.data);
+      if (message.type === "input-error") { window.dispatchEvent(new CustomEvent("noyau:submit-failed", { detail: { sessionId: session.id, text: message.text || "", message: message.message || "" } })); return; }
       if (message.type === "held") {
         setHeld(Number(message.pending) || 0);
         return;
@@ -9732,6 +9928,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
     if (!confirmAction(tr("Basculer « {0} » vers {1} ? Le contexte de la conversation est transmis au nouvel agent.", session.name, assistantMeta[target]?.label || target))) return;
     setMigrating(true);
     try {
+      window.dispatchEvent(new CustomEvent("noyau:context-transition", { detail: { kind: "switch", from: session.assistant, to: target, sessionId: session.id } }));
       const result = await api(`/api/sessions/${session.id}/migrate`, { method: "POST", body: JSON.stringify({ target }) });
       if (result?.mode === "transcript" && result.session?.id) {
         migrationRef.current = false;
@@ -9794,6 +9991,9 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
           <small>{tr(session.agentStatus?.label || "Disponible")} · {connected ? tr("Connecté") : tr("Déconnecté")} · {session.cwd}</small>
         </div>
         <div className="terminal-actions">
+          {onOpenMap && <button type="button" className="ghost agent-project-files-button" aria-label={tr("Échanges entre agents")} title={tr("Échanges entre agents")} onClick={() => onOpenMap(attachedProject?.id || projects[0]?.id || null, "room")}><AppIcon name="people" size={17}/><span>{tr("Échanges")}</span></button>}
+          {onOpenMap && attachedProject && <button type="button" className="ghost agent-project-files-button" aria-label={tr("Carte du projet")} title={tr("Carte du projet")} onClick={() => onOpenMap(attachedProject.id)}><AppIcon name="map" size={17}/><span>{tr("Carte")}</span></button>}
+          {attachedProject && <button type="button" className="ghost agent-project-files-button" aria-label={tr("Fichiers du projet")} title={tr("Fichiers du projet")} onClick={() => setProjectFilesOpen(true)}><AppIcon name="folder" size={17}/><span>{tr("Fichiers")}</span></button>}
           {sessions.length > 1 && <button type="button" className="agent-chat-choose" aria-label={tr("Choisir un autre agent")} onClick={() => window.dispatchEvent(new Event("noyau:choose-agent"))}><AppIcon name="swap"/></button>}
           {session.assistant !== "shell" && <button type="button" className="ghost agent-chat-toggle" onClick={() => setConversationMode((value) => !value)}><AppIcon name={conversationMode ? "terminal" : "chat"} size={17}/><span>{conversationMode ? tr("Terminal") : tr("Conversation")}</span></button>}
           <ContextControl session={session} onRefresh={onRefresh} />
@@ -9822,6 +10022,7 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
         <div className="terminal-frame" ref={terminalNode} />
         {conversationMode && <AgentConversation session={session} connected={connected} api={api} onSubmit={(text) => { onInteract?.(); transmit({ type: "submit", data: text }); }} onForceSubmit={() => { onInteract?.(); sendSpecial("Enter"); sendSpecial("C-m"); }} onStop={() => sendSpecial("Escape")} onRestart={restart} onTerminal={() => setConversationMode(false)} agents={sessions} restarting={restarting} onTagTodo={() => setTodoPicker(true)} onCreateNote={() => setCreateFileModal(true)} insertRequest={conversationInsert} onInsertConsumed={() => setConversationInsert(null)} draftStore={draftStore} held={held} queued={queued} onDictation={async () => { setConversationMode(false); try { if (!voiceCapture.active) await voiceCapture.start(); const state = await api("/api/voice/dictation", { method: "POST", body: JSON.stringify({ sessionId: session.id, enabled: true }) }); onVoice?.(state); if (!state.listening) window.alert(state.error || tr("Micro indisponible.")); } catch (error) { window.alert(error.message); } }} />}
       </div>
+      {projectFilesOpen && attachedProject && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setProjectFilesOpen(false); }}><section className="modal agent-project-files-modal" role="dialog" aria-modal="true" aria-label={tr("Fichiers du projet")}><div className="modal-head"><h2>{tr("Fichiers du projet")} · {attachedProject.name}</h2><button className="icon-button" onClick={() => setProjectFilesOpen(false)} aria-label={tr("Fermer")}>×</button></div><ProjectFilesSection project={attachedProject} agents={sessions.filter((agent) => agent.projectId === attachedProject.id)} onOpenAgent={(id) => { setProjectFilesOpen(false); onSwitchAgent(id); }} startOpen /></section></div>}
       {snapshot !== null && (
         <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setSnapshot(null)}>
           <section className="modal terminal-snapshot">
@@ -9981,16 +10182,18 @@ function TerminalView({ session, sessions, onSwitchAgent, onBack, onKilled, onMi
   );
 }
 
-function NewSessionModal({ projects, sessions, assistants, onClose, onCreated }) {
+function NewSessionModal({ projects, sessions, assistants, initialProjectId = null, onClose, onCreated }) {
   const [assistant, setAssistant] = useState("codex");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [suggesting, setSuggesting] = useState(false);
-  const [yolo, setYolo] = useState(false);
+  const [yolo, setYolo] = useState(true);
   const [projectLogo, setProjectLogo] = useState(true);
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectId] = useState(initialProjectId || "");
   const [cwd, setCwd] = useState("");
   const [favorite, setFavorite] = useState(false);
+  const [autonomous, setAutonomous] = useState(false);
+  const canBeAutonomous = assistant === "claude" || assistant === "codex";
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -10010,6 +10213,7 @@ function NewSessionModal({ projects, sessions, assistants, onClose, onCreated })
           projectLogo,
           projectId: projectId || null,
           favorite,
+          ...(autonomous && canBeAutonomous ? { autonomy: { enabled: true, level: "normal" } } : {}),
         }),
       });
       onCreated(result.session);
@@ -10072,13 +10276,17 @@ function NewSessionModal({ projects, sessions, assistants, onClose, onCreated })
             setProjectId(nextProj);
             if (nextProj) setProjectLogo(true);
           }}><option value="">{tr("Sans projet")}</option>{projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select>
-          <label htmlFor="cwd">{tr("Dossier de travail")}</label>
-          <input id="cwd" list="agent-directories" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="/home/user/projects/mon-projet" autoComplete="off" spellCheck="false" />
+          {assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>{tr("Toutes les permissions")}</strong><small>{assistant === "codex" ? tr("Codex --yolo") : `${assistantMeta[assistant]?.label} --dangerously-skip-permissions`}</small></span></label>}
+          {canBeAutonomous && <label className="checkbox-option"><input type="checkbox" checked={autonomous} onChange={(event) => setAutonomous(event.target.checked)} /><span><strong>{tr("Agent autonome")}</strong><small>{projectId ? tr("Reste actif 24/24 et réagit seul aux incidents du projet") : tr("Reste actif 24/24 et réagit seul à ce que tu lui rattaches")}</small></span></label>}
+          <p className="form-hint">{cwd.trim() ? "" : projects.find((project) => project.id === projectId)?.rootPath ? tr("Dossier : celui du projet.") : projectId ? tr("Dossier : créé au nom du projet.") : name.trim() ? tr("Dossier : créé au nom de l’agent.") : tr("Dossier : dossier projets.")}</p>
+          <details className="new-agent-options"><summary>{tr("Options")}</summary>
+          <label htmlFor="cwd">{tr("Dossier de travail")}{" "}<small className="label-optional">{tr("(facultatif)")}</small></label>
+          <input id="cwd" list="agent-directories" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder={tr("mon-dossier")} autoComplete="off" spellCheck="false" />
           <datalist id="agent-directories">{[...new Set(sessions.map((session) => session.cwd).filter(Boolean))].map((directory) => <option value={directory} key={directory} />)}</datalist>
-          <p className="form-hint">{tr("Chemin existant sur ce PC. Vide = dossier projets par défaut. Projet sert seulement au classement.")}</p>
-          {assistant !== "shell" && <label className="checkbox-option"><input type="checkbox" checked={yolo} onChange={(event) => setYolo(event.target.checked)} /><span><strong>{tr("Sans confirmation")}</strong><small>{assistant === "codex" ? tr("Codex --yolo") : `${assistantMeta[assistant]?.label} --dangerously-skip-permissions`}</small></span></label>}
+          <p className="form-hint">{tr("Nom ou chemin. Créé automatiquement dans le dossier projets s’il n’existe pas.")}</p>
           <label className="checkbox-option"><input type="checkbox" checked={projectLogo} onChange={(event) => setProjectLogo(event.target.checked)} /><span><strong>{tr("Logo projet auto")}</strong><small>{tr("Cherche logo/icon dans dossier projet")}</small></span></label>
           <label className="checkbox-option"><input type="checkbox" checked={favorite} onChange={(event) => setFavorite(event.target.checked)} /><span><strong>{tr("Agent favori")}</strong><small>{tr("Affiché avant autres agents")}</small></span></label>
+          </details>
           {error && <p className="form-error">{error}</p>}
           <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>{tr("Annuler")}</button><button className="primary" disabled={loading}>{loading ? tr("Lancement…") : tr("Lancer")}</button></div>
         </form>
@@ -10537,13 +10745,14 @@ function VoiceOverlay({ voice, feed, sessions, onVoice, onOpenAgent }) {
 
 function App() {
   const [vpnError, setVpnError] = useState("");
-  const [auth, setAuth] = useState(null);
-  const [sessions, setSessions] = useState([]);
-  const [projects, setProjects] = useState([]);
-  const [modules, setModules] = useState([]);
+  // Le signe d'une session ouverte suffit a peindre le dernier etat connu: le reseau le corrige ensuite.
+  const [auth, setAuth] = useState(() => { try { return localStorage.getItem(SIGNED_IN_KEY) === "1" && cachedView("projects") ? true : null; } catch { return null; } });
+  const [sessions, setSessions] = useState(() => cachedView("sessions") || []);
+  const [projects, setProjects] = useState(() => cachedView("projects") || []);
+  const [modules, setModules] = useState(() => cachedView("modules") || []);
   const [moduleProposals, setModuleProposals] = useState([]);
-  const [quotas, setQuotas] = useState({ codex: null, claude: null });
-  const [assistants, setAssistants] = useState(null);
+  const [quotas, setQuotas] = useState(() => cachedView("quotas") || { codex: null, claude: null });
+  const [assistants, setAssistants] = useState(() => cachedView("assistants"));
   // Le flux vocal vit hors du rendu: il lui faut l'agent regarde a l'instant, pas celui du montage.
   const activeIdRef = React.useRef(null);
   const initialNativeNavigation = useState(() => isNative ? readNativeNavigation(sessionStorage, activeProfileId()) : null)[0];
@@ -10552,7 +10761,7 @@ function App() {
   const [view, setView] = useState(() => ["projects", "map", "groceries", "calendar", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "finance-banking", "settings"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : (!new URLSearchParams(location.search).has("session") && isNative && ["projects", "map", "groceries", "calendar", "todos", "finances", "finance-transactions", "finance-agent", "finance-modules", "finance-banking", "settings", "dashboard"].includes(initialNativeNavigation?.view) ? initialNativeNavigation.view : "dashboard"));
   useEffect(() => { if (isNative && auth) saveNativeNavigation(sessionStorage, activeProfileId(), activeId, view); }, [auth, activeId, view]);
   const enabledModules = useModules();
-  useEffect(() => { if (auth) api("/api/config").then((config) => setModules(config.modules)).catch(() => {}); }, [auth]);
+  useEffect(() => { if (auth) api("/api/config").then((config) => setFeatureModules(config.modules)).catch(() => {}); }, [auth]);
   // Module coupe: sa vue retombe sur l'accueil.
   useEffect(() => { const module = viewModule(view); if (module && enabledModules[module] === false) setView("dashboard"); }, [view, enabledModules]);
   const startupInteracted = React.useRef(false);
@@ -10577,6 +10786,7 @@ function App() {
     return () => window.removeEventListener("noyau:navigate-todo", onNavigateTodo);
   }, []);
   const [modal, setModal] = useState(false);
+  const [newAgentProject, setNewAgentProject] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [projectModalId, setProjectModalId] = useState(null);
   const [menu, setMenu] = useState(false);
@@ -10587,6 +10797,7 @@ function App() {
   }, [menu]);
   const [bootOffline, setBootOffline] = useState(false);
   const [offlineMode, setOfflineMode] = useState(false);
+  useEffect(() => { registerNativeOfflineShell({ native: isNative, origin: location.origin, server: nativeServer(), serviceWorker: navigator.serviceWorker }); }, []);
   const [nativeNetwork, setNativeNetwork] = useState(null);
   useEffect(() => { nativeReadOnlyOffline = Boolean(isNative && offlineMode); return () => { nativeReadOnlyOffline = false; }; }, [offlineMode]);
   useEffect(() => { if (!isNative) return; let disposed = false; const update = () => nativeNetworkStatus().then((value) => { if (!disposed) setNativeNetwork(value); }).catch(() => {}); update(); window.addEventListener("noyau:network-return", update); window.addEventListener("online", update); window.addEventListener("offline", update); return () => { disposed = true; window.removeEventListener("noyau:network-return", update); window.removeEventListener("online", update); window.removeEventListener("offline", update); }; }, []);
@@ -10601,11 +10812,12 @@ function App() {
   const [profileId, setProfileId] = useState(() => activeProfileId());
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [lastAgentId, setLastAgentId] = useState(() => { try { return sessionStorage.getItem(`noyau:last-agent:${activeProfileId()}`) || ""; } catch { return ""; } });
-  useEffect(() => { try { setLastAgentId(sessionStorage.getItem(`noyau:last-agent:${profileId}`) || ""); } catch { setLastAgentId(""); } setSelectedProjectId(null); }, [profileId]);
+  useEffect(() => { try { setLastAgentId(sessionStorage.getItem(`noyau:last-agent:${profileId}`) || ""); } catch { setLastAgentId(""); } setSelectedProjectId(null); setProjects(cachedView("projects") || []); setSessions(cachedView("sessions") || []); setQuotas(cachedView("quotas") || { codex: null, claude: null }); setModules(cachedView("modules") || []); }, [profileId]);
   useEffect(() => { if (!activeId || !profileId) return; setLastAgentId(activeId); try { sessionStorage.setItem(`noyau:last-agent:${profileId}`, activeId); } catch {} }, [activeId, profileId]);
   const draftServer = isNative ? nativeServer() : location.origin;
   const conversationDrafts = useMemo(() => createConversationDraftStore({ storage: localStorage, server: draftServer, profile: profileId }), [profileId, draftServer]);
   useEffect(() => { if (!isNative) return; setPermission(nativeLocalAlertsEnabled(profileId) ? "local" : localStorage.getItem(`noyau:push-active:${nativeServer()}:${profileId}`) ? "active" : "default"); setNotificationInfo(""); }, [profileId]);
+  useEffect(() => { if (!isNative || !auth) return; upgradeNativeBackgroundAlerts(api, activeProfileId(), deviceId()).catch(() => {}); }, [auth, profileId]);
   const [todoUnread, setTodoUnread] = useState(0);
   const [power, setPower] = useState(null);
   const [powerBusy, setPowerBusy] = useState(false);
@@ -10643,8 +10855,10 @@ function App() {
   }, [registerAgentInteraction]);
 
   const [mapProjectId, setMapProjectId] = useState(null);
-  const openProjectMap = useCallback((projectId) => {
+  const [mapMode, setMapMode] = useState("map");
+  const openProjectMap = useCallback((projectId, mode = "map") => {
     setMapProjectId(projectId);
+    setMapMode(mode);
     setActiveId(null);
     setView("map");
   }, []);
@@ -10783,8 +10997,10 @@ function App() {
   }
 
   const refresh = useCallback(async () => {
+    const expectedProfile = activeProfileId();
     try {
       const [{ sessions: nextSessions, quotas: nextQuotas, assistants: nextAssistants }, { projects: nextProjects }, nextModules] = await Promise.all([api("/api/sessions"), api("/api/projects"), api("/api/modules")]);
+      if (expectedProfile !== activeProfileId()) return;
       // Un agent qui passe en attente ou qui rend la main se signale a l'oreille.
       for (const session of nextSessions) {
         const previous = agentStatesRef.current.get(session.id);
@@ -10798,6 +11014,11 @@ function App() {
       setAssistants(nextAssistants || null);
       setQuotas(nextQuotas || { codex: null, claude: null });
       setProjects(nextProjects);
+      storeView("projects", nextProjects);
+      storeView("sessions", nextSessions);
+      storeView("quotas", nextQuotas || null);
+      storeView("assistants", nextAssistants || null);
+      storeView("modules", nextModules.modules || []);
       if (isNative) {
         for (const p of nextProjects || []) { if (p?.logoUrl) preloadProjectImage(p.logoUrl); }
         for (const s of nextSessions || []) { if (s?.logoUrl) preloadProjectImage(s.logoUrl); }
@@ -10861,12 +11082,14 @@ function App() {
           applyTheme(session.profile.theme);
           applyInstallIdentity(session.profile);
         }
+        try { localStorage.setItem(SIGNED_IN_KEY, "1"); } catch { /* ignore */ }
         setAuth(true);
       } catch (error) {
         if (disposed) return;
         clearInterval(creepTimer);
         if (error.status === 401) {
           if (isNative && nativeOfflineExplicit.current) { setAuth(true); setOfflineMode(true); return; }
+          try { localStorage.removeItem(SIGNED_IN_KEY); } catch { /* ignore */ }
           if (isNative) setOfflineMode(false);
           advance(100, tr("Authentification requise"));
           setBootOffline(false);
@@ -10940,11 +11163,14 @@ function App() {
   // Tant que cet ecran est au premier plan, il est aux commandes: les alertes lui reviennent.
   useEffect(() => {
     if (!auth) return undefined;
-    const ping = () => document.visibilityState === "visible" && api("/api/presence", { method: "POST", body: JSON.stringify({ sessionId: activeId, deviceId: deviceId() }) }).catch(() => {});
+    const sendPresence = (visible) => api("/api/presence", { method: "POST", body: JSON.stringify({ sessionId: activeId, deviceId: deviceId(), visible }) }).catch(() => {});
+    const ping = () => sendPresence(document.visibilityState === "visible");
+    const nativeState = (event) => sendPresence(event.detail?.isActive === true);
     ping();
     const timer = setInterval(ping, 30_000);
     document.addEventListener("visibilitychange", ping);
-    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", ping); };
+    window.addEventListener("noyau:app-state", nativeState);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", ping); window.removeEventListener("noyau:app-state", nativeState); };
   }, [auth, activeId]);
 
   useEffect(() => {
@@ -10969,6 +11195,7 @@ function App() {
   // Le profil pilote le theme et le cloisonnement des donnees: on l'aligne des l'ouverture de session.
   const refreshProfiles = useCallback(async () => {
     const { profiles: list, activeProfileId: current } = await api("/api/profiles");
+    setAssigneeProfiles(list);
     setProfiles(list);
     setProfileId(current);
     try { localStorage.setItem(PROFILE_KEY, current); } catch { /* stockage optionnel */ }
@@ -10999,13 +11226,16 @@ function App() {
         const version = info.release || info.build || info.version;
         if (!version || disposed) return;
         const known = localStorage.getItem(VERSION_KEY);
-        if (known && known !== version) {
+        const lastAttempt = sessionStorage.getItem("noyau:version-reload-attempt");
+        const decision = clientUpdateDecision({ runningVersion: RUNNING_VERSION, serverVersion: info.version, serverRelease: version, knownRelease: known, lastAttempt });
+        if (decision.reload) {
           if (document.fullscreenElement) return;
+          sessionStorage.setItem("noyau:version-reload-attempt", decision.attempt);
           localStorage.setItem(VERSION_KEY, version);
           if (window.caches?.keys) {
             try {
               const keys = await caches.keys();
-              await Promise.all(keys.map((k) => caches.delete(k)));
+              await Promise.all(keys.filter((k) => k.startsWith("noyau-")).map((k) => caches.delete(k)));
             } catch {}
           }
           // Une mise a jour ne doit pas fermer la conversation ouverte: on garde la destination courante.
@@ -11071,7 +11301,7 @@ function App() {
         if (known && known !== event.data.version) {
           localStorage.setItem(VERSION_KEY, event.data.version);
           if (window.caches?.keys) {
-            caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
+            caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith("noyau-")).map((k) => caches.delete(k)))).catch(() => {});
           }
           window.location.reload();
         } else if (!known) {
@@ -11174,6 +11404,7 @@ function App() {
   if (!auth) return <Login onLogin={() => { const destination = loginNavigation(location.search); if (!destination.explicit) { setActiveId(null); setView("dashboard"); history.replaceState({}, "", `${location.pathname}${destination.search ? `?${destination.search}` : ""}${location.hash}`); } nativeOfflineExplicit.current = false; setOfflineMode(false); setAuth(true); }} onOffline={isNative ? enterOffline : undefined} />;
 
   async function logout() {
+    try { localStorage.removeItem(SIGNED_IN_KEY); } catch { /* ignore */ }
     if (isNative) clearNativeNavigation(sessionStorage, profileId);
     if (isNative) { await forgetNativeSession(profileId, deviceId(), { beforeClear: () => disableBiometric(profileId) }); setProfileId(""); setOfflineMode(false); }
     else await api("/api/logout", { method: "POST" });
@@ -11248,7 +11479,7 @@ function App() {
     if (isNative) { try {
       const status = await api("/api/mobile/push-status");
       if (status.configured?.[window.Capacitor?.getPlatform?.()]) { if (await enableNativePush(api, deviceId())) { setPermission("active"); setNotificationInfo(tr("Alertes serveur activées sur cet appareil.")); } }
-      else { await enableNativeLocalAlerts(activeProfileId()); setPermission("local"); setNotificationInfo("Alertes locales activées quand l’app fonctionne ; alertes serveur en arrière-plan non configurées."); }
+      else { await enableNativeLocalAlerts(activeProfileId()); setPermission("local"); const background = await enableNativeBackgroundAlerts(api, activeProfileId(), deviceId()); setNotificationInfo(background ? tr("Alertes activées même app fermée. Autorisez la position « Toujours » pour qu’elles arrivent en arrière-plan.") : tr("Alertes locales activées quand l’app fonctionne. Installez la dernière version de l’app pour les recevoir en arrière-plan.")); }
     } catch (error) { window.alert(error.message); } return; }
     try {
       if (!window.isSecureContext) throw new Error("HTTPS requis pour notifications iPhone.");
@@ -11420,8 +11651,8 @@ function App() {
         {!active ? (
           <>
             {view === "dashboard" && <><Header title={tr("Accueil")} subtitle={tr("Vue générale")} onMenu={() => setMenu(true)} onAction={() => setModal(true)} /><Dashboard sessions={orderedSessions} projects={projects} profileName={profiles.find((profile) => profile.id === profileId)?.name} onProject={(id) => { setSelectedProjectId(id); setView("projects"); }} onView={setView} quotas={quotas} onSessionsChanged={refresh} onRefreshQuotas={refreshQuotas} onOpen={openAgentSession} onNew={() => setModal(true)} onEdit={setEditingId} onFavorite={toggleFavorite} onArchive={archiveAgent} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} onProjects={() => setView("projects")} onFinances={() => setView("finances")} power={power} onTogglePower={togglePower} powerBusy={powerBusy} sortMode={agentSortMode} onSetSortMode={changeAgentSortMode} profileId={profileId} lastInteractedMap={lastInteractedMap} /></>}
-            {view === "projects" && <><Header title={selectedProjectId ? projects.find((item) => item.id === selectedProjectId)?.name || tr("Projet") : tr("Projets")} subtitle={tr("Agents et modules")} onMenu={() => setMenu(true)} actionLabel={tr("Nouveau projet")} onAction={() => setProjectModalId("new")} /><ProjectsView projects={projects} selectedProjectId={selectedProjectId} onShowAllProjects={() => setSelectedProjectId(null)} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onModuleEnvironment={setModuleEnvironment} onModuleRemove={removeModule} onOpenAgent={openAgentSession} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onModuleBuild={buildModule} onModuleBuildRefresh={refreshModuleBuilds} onOpenTodos={() => setView("todos")} onOpenMap={openProjectMap} onReorder={reorderProjects} onRefresh={refresh} profileId={profileId} /></>}
-            {view === "map" && <><Header title={tr("Carte")} subtitle={tr("{0} · qui tourne, qui parle à qui", projects.find((project) => project.id === mapProjectId)?.name || tr("Projet"))} onMenu={() => setMenu(true)} /><AgentMapView projects={projects} projectId={mapProjectId} onProjectChange={setMapProjectId} api={api} onOpenAgent={openAgentSession} /></>}
+            {view === "projects" && <><Header title={selectedProjectId ? projects.find((item) => item.id === selectedProjectId)?.name || tr("Projet") : tr("Projets")} subtitle={tr("Agents et modules")} onMenu={() => setMenu(true)} actionLabel={tr("Nouveau projet")} onAction={() => setProjectModalId("new")} /><ProjectsView onNewAgent={(projectId) => { setNewAgentProject(projectId || null); setModal(true); }} projects={projects} selectedProjectId={selectedProjectId} onShowAllProjects={() => setSelectedProjectId(null)} onSelectProject={setSelectedProjectId} sessions={orderedSessions} modules={modules} moduleProposals={moduleProposals} onModuleEnvironment={setModuleEnvironment} onModuleRemove={removeModule} onOpenAgent={openAgentSession} onNew={() => setProjectModalId("new")} onEdit={setProjectModalId} onDelete={deleteProject} onInstallModule={installModule} onModuleToggle={toggleModule} onModuleAction={runModuleAction} onModuleSchedule={saveModuleSchedule} onModuleBuild={buildModule} onModuleBuildRefresh={refreshModuleBuilds} onOpenTodos={() => setView("todos")} onOpenMap={openProjectMap} onReorder={reorderProjects} onRefresh={refresh} profileId={profileId} /></>}
+            {view === "map" && <><Header title={tr("Carte")} subtitle={tr("{0} · qui tourne, qui parle à qui", projects.find((project) => project.id === mapProjectId)?.name || tr("Projet"))} onMenu={() => setMenu(true)} /><AgentMapView sessions={orderedSessions} initialMode={mapMode} projects={projects} projectId={mapProjectId} onProjectChange={setMapProjectId} api={api} onOpenAgent={openAgentSession} /></>}
             {view === "calendar" && <>{!offlineMode && <Header title={tr("Calendrier")} subtitle={tr("Agenda et échéances")} onMenu={() => setMenu(true)} />}<CalendarView projects={projects} onView={setView} /></>}
             {view === "groceries" && <>{!offlineMode && <Header title={tr("Courses")} subtitle={tr("À cuisiner, à aimer, à économiser")} onMenu={() => setMenu(true)} />}<GroceriesView profileId={profileId || activeProfileId() || "local"} /></>}
             {view === "todos" && <>{!offlineMode && <Header title={tr("Todo")} subtitle={tr("Obsidian · NAS")} onMenu={() => setMenu(true)} />}<TodosView projects={projects} onView={setView} /></>}
@@ -11433,11 +11664,11 @@ function App() {
             {view === "settings" && <><Header title={tr("Réglages")} subtitle={tr("Application")} onMenu={() => setMenu(true)} /><SettingsView notificationInfo={notificationInfo} voice={voice} onVoice={toggleVoice} muted={muted} onMuted={toggleMuted} permission={permission} onNotifications={enableNotifications} onRefresh={reloadLatest} onView={setView} profiles={profiles} profileId={profileId} onSwitchProfile={requestSwitchProfile} onProfilesChanged={refreshProfiles} /></>}
           </>
         ) : (
-          <TerminalView session={active} sessions={orderedSessions} draftStore={conversationDrafts} onSwitchAgent={(id) => { registerAgentInteraction(id); openAgentSession(id); }} quotas={quotas} assistants={assistants} voice={voice} onVoice={(next) => setVoice((current) => ({ ...current, ...next }))} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { registerAgentInteraction(id); openAgentSession(id); refresh(); }} onRefresh={refresh} onEdit={() => setEditingId(active.id)} onInteract={() => registerAgentInteraction(active.id)} />
+          <TerminalView session={active} sessions={orderedSessions} projects={projects} onOpenMap={openProjectMap} draftStore={conversationDrafts} onSwitchAgent={(id) => { registerAgentInteraction(id); openAgentSession(id); }} quotas={quotas} assistants={assistants} voice={voice} onVoice={(next) => setVoice((current) => ({ ...current, ...next }))} onBack={() => setActiveId(null)} onKilled={() => { setActiveId(null); refresh(); }} onMigrated={(id) => { registerAgentInteraction(id); openAgentSession(id); refresh(); }} onRefresh={refresh} onEdit={() => setEditingId(active.id)} onInteract={() => registerAgentInteraction(active.id)} />
         )}
         </ViewBoundary>
       </main>
-      {modal && <NewSessionModal projects={projects} sessions={orderedSessions} assistants={assistants} onClose={() => setModal(false)} onCreated={(session) => { setModal(false); registerAgentInteraction(session.id); openAgentSession(session.id); refresh(); }} />}
+      {modal && <NewSessionModal initialProjectId={newAgentProject} projects={projects} sessions={orderedSessions} assistants={assistants} onClose={() => { setModal(false); setNewAgentProject(null); }} onCreated={(session) => { setModal(false); setNewAgentProject(null); registerAgentInteraction(session.id); openAgentSession(session.id); refresh(); }} />}
       {editingSession && <EditSessionModal session={editingSession} projects={projects} onClose={() => setEditingId(null)} onSaved={(next, meta) => { setEditingId(null); if (meta?.switched && next?.id) { if (activeId === editingSession.id) openAgentSession(next.id); } refresh(); }} />}
       {!offlineMode && <WorkspaceNavigation projects={projects} sessions={orderedSessions} activeId={activeId} lastAgentId={lastAgentId} view={view} onNewAgent={() => setModal(true)} onLogout={logout} onProject={(id) => { setActiveId(null); setSelectedProjectId(id); setView("projects"); setMenu(false); }} projectIcon={(project) => <ProjectIcon project={project} small />} agentIcon={(agent) => <AgentIcon assistant={agent.assistant} logoUrl={projects.find((project) => project.id === agent.projectId)?.logoUrl || agent.logoUrl} small />} onAgent={(id) => { registerAgentInteraction(id); openAgentSession(id); }} onView={(next) => { setActiveId(null); if (next === "projects") setSelectedProjectId(null); setView(next); setMenu(false); }} />}
       <CloseAgentHost />

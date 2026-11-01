@@ -45,3 +45,7 @@ test("copie navigateur et champs ne sont pas détournés", () => {
     terminalSelection: "texte choisi",
   }), false);
 });
+
+test("Ctrl+C copie la sélection conversation même quand un agent est ouvert", () => {
+  assert.equal(shouldCopyTerminal({ event: { key: "c", ctrlKey: true }, targetInField: false, browserSelectionCollapsed: false, terminalSelection: "", assistant: "codex" }), false);
+});

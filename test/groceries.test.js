@@ -3,30 +3,30 @@ import assert from "node:assert/strict";
 import { RECIPES, INGREDIENTS, RECIPE_FAMILIES } from "../shared/recipes.js";
 import { recipeMatches } from "../shared/recipe-discovery.js";
 import fs from "node:fs";
-import { applyGroceryOperation as apply, compareBaskets, compatible, frequentProducts, initialGroceries, priceLine, shoppingList, suggestions } from "../shared/groceries.js";
+import { applyGroceryOperation as apply, compareBaskets, compatible, frequentProducts, initialGroceries, priceLine, shoppingList, suggestions, visibleMenuSlots } from "../shared/groceries.js";
 import { menuCalendar, parisInstant } from "../shared/grocery-calendar.js";
 
 const now = "2026-10-27T12:00:00Z";
 function configured() { const state = initialGroceries(); state.settings.householdConfirmed = true; state.stores = state.stores.map((store) => ({ ...store, minimumCents: 0, feesCents: 0, minimumConfirmed: true, storeConfirmed: true })); return state; }
 function offer(ingredientId, storeId, priceCents, extra = {}) { return { id: `${ingredientId}-${storeId}-${priceCents}`, ingredientId, storeId, priceCents, packQuantity: 1000, observedAt: now, sourceUrl: `https://${storeId === "carrefour" ? "www.carrefour.fr" : storeId === "leclerc" ? "www.leclercdrive.fr" : "picnic.app"}/produit`, ...extra }; }
 
-test("catalog has 256 distinct costed recipes and explicitly disclosed family illustrations", () => {
-  assert.equal(RECIPES.length, 256); assert.equal(new Set(RECIPES.map((recipe) => recipe.id)).size, 256); assert.equal(new Set(RECIPES.map((recipe) => recipe.title)).size, 256);
-  assert.equal(new Set(RECIPES.map((recipe) => recipe.ingredients.map((item) => `${item.ingredientId}:${item.quantity}`).sort().join(" "))).size, 256);
-  assert.equal(new Set(RECIPES.map((recipe) => `${recipe.image.atlas}:${recipe.image.cell}`)).size, 60);
+test("catalog has 377 distinct costed recipes and explicitly disclosed family illustrations", () => {
+  assert.equal(RECIPES.length, 377); assert.equal(new Set(RECIPES.map((recipe) => recipe.id)).size, 377); assert.equal(new Set(RECIPES.map((recipe) => recipe.title)).size, 377);
+  assert.equal(new Set(RECIPES.map((recipe) => recipe.ingredients.map((item) => `${item.ingredientId}:${item.quantity}`).sort().join(" "))).size, 377);
+  assert.ok(new Set(RECIPES.map((recipe) => `${recipe.image.atlas}:${recipe.image.cell}`)).size >= 91);
   assert.equal(RECIPE_FAMILIES.length, 28);
-  for (const family of RECIPE_FAMILIES) assert.equal(RECIPES.filter((recipe) => recipe.familyId === family.id).length, 8);
+  for (const family of RECIPE_FAMILIES) assert.ok(RECIPES.filter((recipe) => recipe.familyId === family.id).length >= 8, family.id);
   for (const recipe of RECIPES) {
     assert.ok(recipe.ingredients.every((item) => INGREDIENTS[item.ingredientId] && Number.isFinite(item.quantity) && item.quantity > 0)); assert.ok(recipe.steps.length >= 3); assert.ok(recipe.estimateCents > 0);
     assert.equal(new Set(recipe.ingredients.map((item) => item.ingredientId)).size, recipe.ingredients.length);
-    assert.ok(fs.existsSync(new URL(`../public/courses/recipes-atlas-${recipe.image.atlas}.png`, import.meta.url)));
-    if (recipe.familyId !== "essentials") assert.match(recipe.imageDisclosure, /partagée/);
+    assert.ok(fs.existsSync(new URL(`../public/courses/recipes-atlas-${recipe.image.atlas}.${recipe.image.atlas > 12 ? "webp" : "png"}`, import.meta.url)));
+    if (recipe.familyId !== "essentials" && !recipe.hasMatchedImage) assert.match(recipe.imageDisclosure, /partagée/);
   }
   assert.deepEqual(RECIPES.slice(0, 32).map((recipe) => recipe.id), Array.from({ length: 32 }, (_, index) => `recipe-${String(index + 1).padStart(2, "0")}`));
 });
 test("discovery searches all recipes, ingredients and families without accent sensitivity", () => {
   const peanuts = RECIPES.filter((recipe) => recipeMatches(recipe, { search: "cacahuetes" })); assert.ok(peanuts.length >= 3); assert.ok(peanuts.every((recipe) => recipe.ingredients.some((item) => item.ingredientId === "peanut")));
-  assert.equal(RECIPES.filter((recipe) => recipeMatches(recipe, { family: "tagine" })).length, 8);
+  assert.equal(RECIPES.filter((recipe) => recipeMatches(recipe, { family: "tagine" })).length, 12);
   assert.equal(RECIPES.filter((recipe) => recipeMatches(recipe, { search: "Risotto forestier" })).length, 1);
   assert.ok(RECIPES.filter((recipe) => recipeMatches(recipe, { search: "oeufs" })).length >= 10);
   assert.ok(RECIPES.filter((recipe) => recipeMatches(recipe, { filter: "vegan" })).length >= 30);
@@ -122,3 +122,32 @@ test("small exhaustive cases match the exact cheapest feasible assignment includ
     search(0, {}); const result = compareBaskets(state, now); assert.equal(result.optimal, true); assert.equal(result.best?.checkoutCents ?? Infinity, minimum);
   }
 });
+
+test('removing an ingredient updates basket without changing meals and can be undone', () => {
+  let state = configured(); state = apply(state, { type:'plan', payload:{start:'2026-10-27'} });
+  const id = state.plan[0].id; state = apply(state, {type:'slot',payload:{id,status:'accepted'}});
+  const ingredientId = shoppingList(state)[0].ingredientId;
+  state = apply(state,{type:'pantry',payload:{ingredientId,removed:true}});
+  assert.equal(state.plan[0].status,'accepted'); assert.equal(shoppingList(state).find(l=>l.ingredientId===ingredientId).needed,0);
+  state = apply(state,{type:'pantry',payload:{ingredientId,removed:false}});
+  assert.ok(shoppingList(state).find(l=>l.ingredientId===ingredientId).needed>0);
+  state = apply(state,{type:'pantry',payload:{ingredientId,removed:true}});
+  state = apply(state,{type:'extra',payload:{ingredientId,quantity:10}});
+  assert.equal(shoppingList(state).find(l=>l.ingredientId===ingredientId).removed,false);
+});
+
+
+test('dismissed meals disappear and remain hidden when preferences change', () => {
+ let state = configured(); state = apply(state, {type:'plan', payload:{start:'2026-10-27'}});
+ const slot=state.plan[0]; assert.equal(visibleMenuSlots(state).length, 0); state = apply(state,{type:'slot',payload:{id:slot.id,status:'rejected'}});
+ assert.equal(visibleMenuSlots(state).some(item=>item.id===slot.id),false);
+ const ingredientId=RECIPES.find(r=>r.id===slot.recipeId).ingredients[0].ingredientId;
+ state = apply(state,{type:'settings',payload:{excludedIngredients:[ingredientId]}});
+ assert.equal(state.plan.find(item=>item.id===slot.id).status,'rejected');
+ assert.equal(visibleMenuSlots(state).some(item=>item.id===slot.id),false);
+ state = apply(state,{type:'settings',payload:{excludedIngredients:[]}});
+ state = apply(state,{type:'slot',payload:{id:slot.id,recipeId:slot.recipeId,status:'accepted'}});
+ assert.ok(visibleMenuSlots(state).some(item=>item.id===slot.id));
+});
+
+test('completed basket archives the menu, empties the basket and keeps meals readable until their day passes',()=>{let state=configured();state=apply(state,{type:'plan',payload:{start:'2026-10-27'}});state=apply(state,{type:'slot',payload:{id:state.plan[0].id,status:'accepted'}});const original=state.plan[0].recipeId;state=apply(state,{type:'basket-complete',payload:{id:'basket-1',at:'2026-11-01T10:00:00Z'}});assert.equal(state.shoppingHistory.length,1);assert.equal(state.shoppingHistory[0].meals[0].recipeId,original);assert.ok(state.shoppingHistory[0].lines.length);assert.equal(shoppingList(state).length,0);assert.equal(visibleMenuSlots(state,'2026-10-27').length,1);assert.equal(state.plan[0].status,'shopped');assert.equal(visibleMenuSlots(state,'2026-10-28').length,0);state=apply(state,{type:'slot',payload:{id:state.plan[0].id,status:'rejected'}});assert.equal(visibleMenuSlots(state,'2026-10-27').length,0);assert.equal(state.shoppingHistory[0].meals[0].recipeId,original);});

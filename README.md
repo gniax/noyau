@@ -34,6 +34,22 @@ node scripts/noyau-agent.mjs create --name "Load tests" --prompt "…"
 ![Agent terminal](docs/screenshots/terminal.png)
 
 
+### Autonomous agents
+
+Tick "Autonomous agent" when creating a Claude or Codex agent, on a project or with no directory to pick. A deterministic loop, with no LLM and no tokens spent, watches the project's modules, services, timers and crons, or the systemd units you attach to it. On a lasting failure it wakes the agent with an `Incident` message, shown apart from your own messages.
+
+- Keeps the agent alive, resuming its conversation after a crash
+- Bounded wake-ups: 4 per hour, retries from 30 minutes to 6 hours, held back while the quota is exhausted
+- Intelligence slider, changeable at any time: model on Claude, reasoning effort on Codex
+- Pause at any time
+- Pessimistic weekly usage estimate per engine, measured from the transcripts, or "not enough data" until there is enough to measure
+
+An autonomous agent with full permissions acts on production on its own: enable it where that is what you want.
+
+### Delegate and restart without losing work
+
+The robot button in the composer hands a request to a new dedicated agent: the current agent creates it, briefs it with the relevant context and reads its report. When a context is full, "restart" starts a clean context that carries over the requests, open tasks, uncommitted files and interrupted subagents, then resumes the work, with a marker in the conversation.
+
 ### Project map
 
 Who runs what, and who talks to whom: agents, systemd services and timers, cron jobs, modules and the external APIs found in the code (`.env` key names, SDKs, hosts — never values). Nodes and links can also be declared in a module manifest (`.noyau/modules/*.json`, `map` key).

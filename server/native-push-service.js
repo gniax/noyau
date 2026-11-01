@@ -53,9 +53,11 @@ export class NativePushService {
 }
 
 export class NotificationGateway {
-  constructor(web, native) { this.web = web; this.native = native; }
+  constructor(web, native, background = null) { this.web = web; this.native = native; this.background = background; }
   publicKey() { return this.web.publicKey(); }
   subscribe(...args) { return this.web.subscribe(...args); }
   unsubscribe(...args) { return this.web.unsubscribe(...args); }
-  async send(...args) { const results = await Promise.allSettled([this.web.send(...args), this.native.send(...args)]); const count = results.reduce((sum, result) => sum + (result.status === "fulfilled" ? result.value : 0), 0); if (!count && results.some((result) => result.status === "rejected")) throw results.find((result) => result.status === "rejected").reason; return count; }
+  // L'ecran aux commandes peut ne rien savoir recevoir (onglet PC, kiosque): l'alerte ne doit pas se perdre avec lui.
+  reachable(profileId, deviceId) { return Boolean(this.web.devices(profileId, deviceId).length || this.native.devices(profileId, deviceId).length || this.background?.devices(profileId, deviceId).length); }
+  async send(payload, profileId = null, activeDeviceId = null) { const target = activeDeviceId && this.reachable(profileId, activeDeviceId) ? activeDeviceId : null; const args = [payload, profileId, target]; const results = await Promise.allSettled([this.web.send(...args), this.native.send(...args), ...(this.background ? [this.background.send(...args)] : [])]); const count = results.reduce((sum, result) => sum + (result.status === "fulfilled" ? result.value : 0), 0); if (!count && results.some((result) => result.status === "rejected")) throw results.find((result) => result.status === "rejected").reason; return count; }
 }

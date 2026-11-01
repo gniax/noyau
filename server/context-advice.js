@@ -8,6 +8,9 @@ const LEVELS = {
   critical: { level: "critical", rank: 3, label: "Repartir propre", message: "Contexte sature: compacter ne suffira plus, repars sur un contexte propre.", action: "clear" },
 };
 
+const SATURATED = { level: "saturated", rank: 4, label: "Contexte sature", message: "Plus de place: l'agent ne peut plus travailler correctement. Relance-le: il reprend seul ce qu'il faisait, rien n'est perdu.", action: "fresh" };
+const SATURATED_PERCENT = 5;
+
 const THRESHOLDS = [
   { max: 12, ...LEVELS.critical },
   { max: 25, ...LEVELS.warn },
@@ -44,6 +47,7 @@ export function contextAdvice(session) {
     estimated: Boolean(session.usage?.estimated),
     remainingTokens: Number.isFinite(Number(session.usage?.remainingTokens)) ? Number(session.usage.remainingTokens) : null,
   };
+  if (percent <= SATURATED_PERCENT || base.remainingTokens === 0) return { ...base, ...SATURATED };
   if (!match) return { ...base, level: "ok", rank: 0, label: "Contexte sain", message: "", action: null };
   return { ...base, level: match.level, rank: match.rank, label: match.label, message: match.message, action: match.action };
 }

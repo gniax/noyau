@@ -2,9 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import os from "node:os";
 
 const execFileAsync = promisify(execFile);
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+// Un ecran d'agent sans marqueur de travail passe "disponible" sous forte charge: un seul releve ne prouve rien.
+const AGENT_QUIET_MS = 10 * 60_000;
+const BUSY_LOAD_RATIO = 0.75;
+const defaultLoadRatio = () => os.loadavg()[0] / Math.max(1, os.cpus().length);
 
 export function isWithinTimeWindow(current, start, end) {
   if (!TIME_PATTERN.test(current) || !TIME_PATTERN.test(start) || !TIME_PATTERN.test(end)) return false;
@@ -26,10 +31,17 @@ export class PowerService {
     file = null,
     exec = execFileAsync,
     agentWorkingChecker = null,
+    loadRatio = defaultLoadRatio,
+    now = () => Date.now(),
   } = {}) {
     this.file = file ? path.resolve(file) : null;
     this.exec = exec;
     this.agentWorkingChecker = agentWorkingChecker;
+    this.loadRatio = loadRatio;
+    this.now = now;
+    this.startedAt = now();
+    this.lastBusyAt = this.startedAt;
+    this.lastClientAt = 0;
     this.queue = Promise.resolve();
     this.cache = null;
   }
@@ -53,7 +65,7 @@ export class PowerService {
         end: "07:30",
         idleMinutes: 120,
       },
-      lastActivityAt: Date.now(),
+      lastActivityAt: this.now(),
     };
     if (!this.file) {
       this.cache = initial;
@@ -69,6 +81,8 @@ export class PowerService {
         ...initial,
         ...parsed,
         schedule,
+        // Date figee au dernier enregistrement: un redemarrage ne doit pas la lire comme des heures d'absence.
+        lastActivityAt: this.now(),
       };
     } catch {
       this.cache = initial;
@@ -90,7 +104,11 @@ export class PowerService {
   }
 
   touchActivity() {
-    if (this.cache) this.cache.lastActivityAt = Date.now();
+    if (this.cache) this.cache.lastActivityAt = this.now();
+  }
+
+  touchClient() {
+    this.lastClientAt = this.now();
   }
 
   isSleeping() {
@@ -101,7 +119,7 @@ export class PowerService {
     if (!this.cache?.sleeping) return false;
     const since = this.cache?.sleepingSince ? Date.parse(this.cache.sleepingSince) : 0;
     // Période de grâce de 15 secondes après la mise en veille : aucun réveil automatique
-    return Date.now() - since > 15_000;
+    return this.now() - since > 15_000;
   }
 
   async getSystemIdleMs() {
@@ -121,20 +139,26 @@ export class PowerService {
     return null;
   }
 
-  async getEffectiveIdleMinutes(now = new Date()) {
+  async getEffectiveIdleMinutes(now = new Date(this.now())) {
     const state = await this.read();
     const systemIdleMs = await this.getSystemIdleMs();
-    const webIdleMs = state.lastActivityAt && state.lastActivityAt <= now.getTime()
-      ? now.getTime() - state.lastActivityAt
-      : Infinity;
+    const lastSeen = Math.max(Number(state.lastActivityAt) || 0, this.lastClientAt);
+    const webIdleMs = Math.max(0, now.getTime() - (lastSeen || this.startedAt));
+    const idleMs = systemIdleMs !== null && Number.isFinite(systemIdleMs) ? Math.min(systemIdleMs, webIdleMs) : webIdleMs;
+    return Math.floor(idleMs / 60_000);
+  }
 
-    if (systemIdleMs !== null && Number.isFinite(systemIdleMs)) {
-      if (webIdleMs !== Infinity) {
-        return Math.floor(Math.min(systemIdleMs, webIdleMs) / 60_000);
+  // Charge elevee = quelque chose tourne: elle retarde la veille, elle ne la declenche jamais.
+  async workInProgress() {
+    if (this.agentWorkingChecker) {
+      try {
+        const active = await this.agentWorkingChecker({ fresh: true });
+        if (!Array.isArray(active) || active.length) return true;
+      } catch {
+        return true;
       }
-      return Math.floor(systemIdleMs / 60_000);
     }
-    return webIdleMs === Infinity ? 9999 : Math.floor(webIdleMs / 60_000);
+    return this.loadRatio() >= BUSY_LOAD_RATIO;
   }
 
   async setDisplayPower(on = true) {
@@ -191,11 +215,14 @@ export class PowerService {
     });
   }
 
-  async enterSleep({ auto = false } = {}) {
+  async enterSleep({ auto = false, reason = null } = {}) {
     return this.enqueue(async () => {
       const state = await this.read();
-      // On ne bloque jamais la mise en veille : le statut "travail" des agents
-      // peut rester figé (tokens épuisés, hook manqué). L'utilisateur et le repos du laptop sont prioritaires.
+      // Automatic sleep must fail closed when an agent is busy or status cannot be checked.
+      if (auto && this.agentWorkingChecker) {
+        const active = await this.agentWorkingChecker({ fresh: true });
+        if (!Array.isArray(active) || active.length) return { sleeping: false, blocked: true, workingAgents: Array.isArray(active) ? active : [] };
+      }
       const containers = await this.getRunningContainers();
       const toPause = containers.filter((c) => !c.isPaused);
       const paused = [];
@@ -212,8 +239,9 @@ export class PowerService {
       const next = {
         ...state,
         sleeping: true,
-        sleepingSince: new Date().toISOString(),
+        sleepingSince: new Date(this.now()).toISOString(),
         autoTriggered: auto,
+        autoReason: auto ? reason : null,
         pausedContainers: paused,
       };
       await this.write(next);
@@ -242,7 +270,7 @@ export class PowerService {
         sleepingSince: null,
         autoTriggered: false,
         pausedContainers: [],
-        lastActivityAt: Date.now(),
+        lastActivityAt: this.now(),
       };
       await this.write(next);
       await this.setDisplayPower(true);
@@ -267,34 +295,34 @@ export class PowerService {
     });
   }
 
-  async tick(now = new Date()) {
+  async tick(now = new Date(this.now())) {
     const state = await this.read();
     if (!state.schedule?.enabled) return;
 
     const current = currentLocalTime(now);
     const inNight = isWithinTimeWindow(current, state.schedule.start || "00:00", state.schedule.end || "07:30");
+    const wake = (label) => this.wakeUp().catch((error) => console.warn(`Réveil automatique (${label}) échoué: ${error.message}`));
 
-    // Sortie de veille automatique à la fin de la plage de nuit
-    if (state.sleeping && state.autoTriggered && !inNight) {
-      return this.wakeUp().catch((error) => console.warn(`Réveil automatique échoué: ${error.message}`));
+    if (state.sleeping) {
+      if (!state.autoTriggered) return;
+      if (state.autoReason === "night" && !inNight) return wake("fin de nuit");
+      // Veille heritee d'avant un redemarrage: conteneurs relances, banniere fausse.
+      if (Date.parse(state.sleepingSince || "") < this.startedAt) return wake("redémarrage");
+      if (await this.workInProgress()) return wake("agent actif");
+      return;
     }
 
-    // Si déjà en veille, rien d'autre à faire
-    if (state.sleeping) return;
+    if (await this.workInProgress()) {
+      this.lastBusyAt = now.getTime();
+      return;
+    }
+    if (now.getTime() - this.lastBusyAt < AGENT_QUIET_MS) return;
 
     const idleMinutes = await this.getEffectiveIdleMinutes(now);
-
-    // Entrée en veille nocturne (dès 15 minutes d'inactivité pendant la plage nocturne)
-    if (inNight) {
-      if (idleMinutes >= 15) {
-        return this.enterSleep({ auto: true }).catch((error) => console.warn(`Mise en veille nocturne échouée: ${error.message}`));
-      }
-    }
-
-    // Entrée en veille pour inactivité : 2h (ou idleMinutes configuré)
     const threshold = state.schedule.idleMinutes > 0 ? state.schedule.idleMinutes : 120;
-    if (idleMinutes >= threshold) {
-      return this.enterSleep({ auto: true }).catch((error) => console.warn(`Mise en veille inactivité échouée: ${error.message}`));
-    }
+    const reason = inNight && idleMinutes >= 15 ? "night" : idleMinutes >= threshold ? "idle" : null;
+    if (!reason) return;
+    console.log(`Veille automatique (${reason}): aucune activité depuis ${idleMinutes} min, aucun agent actif depuis ${Math.floor((now.getTime() - this.lastBusyAt) / 60_000)} min.`);
+    return this.enterSleep({ auto: true, reason }).catch((error) => console.warn(`Veille automatique échouée: ${error.message}`));
   }
 }

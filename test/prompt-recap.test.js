@@ -19,3 +19,13 @@ test("summarizeRequestPrompt returns cached or fallback when proxy unreachable",
   assert.ok(Array.isArray(result.bullets));
   assert.ok(result.bullets.length >= 1);
 });
+
+test("recap keeps the corrected title and accepts a model ignoring the bullet format", async () => {
+  const reply = (content) => async () => ({ ok: true, json: async () => ({ choices: [{ message: { content } }] }) });
+  const titled = await summarizeRequestPrompt({ text: "corige le titr stp", fetchImpl: reply('{"title":"Corriger le titre","bullets":["Corriger le titre du récap"]}') });
+  assert.equal(titled.ai, true);
+  assert.equal(titled.title, "Corriger le titre");
+  const plain = await summarizeRequestPrompt({ text: "jai fai une fote", fetchImpl: reply("J'ai fait une faute.") });
+  assert.equal(plain.ai, true);
+  assert.deepEqual(plain.bullets, ["J'ai fait une faute."]);
+});

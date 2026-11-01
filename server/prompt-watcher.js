@@ -10,16 +10,20 @@ const CODEX_APPROVALS = [
   /respond to (?:the )?.{0,80} request to continue/i,
 ];
 
+const CHOICE_YES = /(?:^|\s)(?:[›❯>]\s*)?(?:1[.)]\s*)?(?:yes|oui|allow|autoriser|approve|approuver)\b/i;
+const CHOICE_NO = /\b(?:no|non|deny|refuser|reject|annuler)\b/i;
+// Footer shown only while no approval is open: quoted prompt text above it is not a prompt.
+const COMPOSER = /ask codex to do anything|\d+% context left|tab to queue|esc to interrupt|worked for \d/i;
+
 export function detectCodexApproval(screen) {
-  const visibleTail = String(screen || "")
-    .replace(ANSI, "")
-    .replace(/\r/g, "")
-    .split("\n")
-    .slice(-18)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return CODEX_APPROVALS.some((pattern) => pattern.test(visibleTail));
+  const lines = String(screen || "").replace(ANSI, "").replace(/\r/g, "").split("\n").slice(-18);
+  let promptLine = -1;
+  lines.forEach((line, index) => { if (CODEX_APPROVALS.some((pattern) => pattern.test(line))) promptLine = index; });
+  if (promptLine < 0) return false;
+  const after = lines.slice(promptLine);
+  if (after.some((line) => COMPOSER.test(line))) return false;
+  const choices = after.join(" ").replace(/\s+/g, " ");
+  return CHOICE_YES.test(choices) && CHOICE_NO.test(choices);
 }
 
 export function agentNotificationTitle(label, text) {
@@ -37,6 +41,7 @@ export class PromptWatcher {
     this.sessionLabel = sessionLabel;
     this.sessionIcon = sessionIcon;
     this.waiting = new Set();
+    this.ignored = new Set();
     this.running = false;
     this.timer = null;
   }
@@ -52,6 +57,8 @@ export class PromptWatcher {
     return this.waiting.has(id);
   }
 
+  dismiss(id) { this.waiting.delete(id); this.ignored.add(id); }
+
   async tick() {
     if (this.running) return;
     this.running = true;
@@ -59,13 +66,15 @@ export class PromptWatcher {
       const sessions = (await this.tmux.list()).filter((session) => session.managed && session.assistant === "codex");
       const active = new Set(sessions.map((session) => session.id));
       for (const id of this.waiting) if (!active.has(id)) this.waiting.delete(id);
+      for (const id of this.ignored) if (!active.has(id)) this.ignored.delete(id);
       await Promise.all(sessions.map(async (session) => {
         const pending = detectCodexApproval(await this.tmux.captureVisible(session.id));
         if (!pending) {
           this.waiting.delete(session.id);
+          this.ignored.delete(session.id);
           return;
         }
-        if (this.waiting.has(session.id)) return;
+        if (this.ignored.has(session.id) || this.waiting.has(session.id)) return;
         this.waiting.add(session.id);
         // Ecran deja ouvert sur cet agent: la demande de validation est visible sans notification.
         if (!this.shouldNotify(session.id, session.profileId)) return;

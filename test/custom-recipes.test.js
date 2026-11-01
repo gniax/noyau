@@ -18,3 +18,17 @@ test("personal recipes reject duplicate ingredients and remain conservative for 
  const state = initialGroceries(); assert.throws(() => applyGroceryOperation(state, { type: "custom-recipe", payload: { ...recipe, ingredients: [recipe.ingredients[0], recipe.ingredients[0]] } }), /Ingrédients/);
  const saved = applyGroceryOperation(state, { type: "custom-recipe", payload: recipe }); saved.settings.allergens = ["lait"]; assert.equal(suggestions(saved).some((item) => item.id === recipe.id), false);
 });
+
+test('imported AI estimate disclosures survive saving and editing', () => {
+ const source = {...recipe, inferredSteps:true, inferredQuantities:true};
+ const state = applyGroceryOperation(initialGroceries(), {type:'custom-recipe', payload:source});
+ assert.equal(state.customRecipes[0].inferredSteps,true); assert.equal(state.customRecipes[0].inferredQuantities,true);
+});
+
+test('new personal recipes become favorites but edits preserve explicit preference', () => {
+ let state = applyGroceryOperation(initialGroceries(), {type:'custom-recipe',payload:recipe});
+ assert.equal(state.preferences[recipe.id], 'favorite');
+ state = applyGroceryOperation(state, {type:'preference',payload:{recipeId:recipe.id,value:'neutral'}});
+ state = applyGroceryOperation(state, {type:'custom-recipe',payload:{...recipe,title:'Recette modifiée'}});
+ assert.equal(state.preferences[recipe.id], 'neutral');
+});

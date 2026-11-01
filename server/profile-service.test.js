@@ -8,17 +8,40 @@ class MemoryStore {
   get(id) { return this.data[id] || null; }
   async set(id, value) { this.data[id] = value; }
   async setMany(entries) { for (const [id, value] of entries) this.data[id] = value; }
+  async remove(id) { delete this.data[id]; }
 }
 
-test("profile service seeds isolated primary and partner profiles", async () => {
+test("fresh install seeds one admin waiting for setup, and no personal profile", async () => {
   const store = new MemoryStore();
-  const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main/TO DO.md", primaryTodoMountUri: "smb://nas/data" });
+  const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md", primaryName: "someone" });
   await service.initialize();
-  assert.equal(service.primaryId(), "main");
-  assert.equal(service.get("main").theme, "noyau");
-  assert.equal(service.get("aurora").theme, "moving-castle");
-  assert.equal(service.get("aurora").todoFile, "/tmp/noyau/profiles/aurora/TO DO.md");
-  assert.notEqual(service.get("main").todoFile, service.get("aurora").todoFile);
+  assert.deepEqual(service.list().map((p) => p.id), ["admin"]);
+  assert.equal(service.setupNeeded(), true);
+  await assert.rejects(() => service.completeSetup({ name: "Ada", password: "court" }));
+  assert.equal(service.setupNeeded(), true);
+  const admin = await service.completeSetup({ name: "Ada", password: "un-mot-de-passe-solide-42" });
+  assert.equal(admin.name, "Ada");
+  assert.equal(admin.hasPassword, true);
+  assert.equal(service.setupNeeded(), false);
+  assert.equal(service.authenticate("un-mot-de-passe-solide-42", "admin", "master")?.id, "admin");
+  await assert.rejects(() => service.completeSetup({ name: "Mallory", password: "un-autre-mot-de-passe-99" }), /déjà terminée/);
+});
+
+test("an existing install never enters setup", async () => {
+  const store = new MemoryStore({ main: { name: "Moi", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
+  const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
+  await service.initialize();
+  assert.equal(service.setupNeeded(), false);
+});
+
+test("an account can be removed, never the admin", async () => {
+  const store = new MemoryStore({ main: { name: "Moi", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
+  const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
+  await service.initialize();
+  const guest = await service.create({ name: "Invité" });
+  await service.remove(guest.id);
+  assert.equal(service.get(guest.id), null);
+  await assert.rejects(() => service.remove("main"), /administrateur/);
 });
 
 test("profile service creates and updates safe profile settings", async () => {
@@ -36,7 +59,7 @@ test("profile service creates and updates safe profile settings", async () => {
 });
 
 test("profile password management and authentication", async () => {
-  const store = new MemoryStore();
+  const store = new MemoryStore({ main: { name: "Main", primary: true, theme: "noyau", todoFile: "/vault/main.md" }, aurora: { name: "Aurora", theme: "moving-castle", todoFile: "/tmp/noyau/profiles/aurora/TO DO.md" } });
   const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
   await service.initialize();
 
@@ -69,7 +92,7 @@ test("profile password management and authentication", async () => {
 });
 
 test("profile service enforces password strength on setPassword and create", async () => {
-  const store = new MemoryStore();
+  const store = new MemoryStore({ main: { name: "Main", primary: true, theme: "noyau", todoFile: "/vault/main.md" } });
   const service = new ProfileService({ store, dataDir: "/tmp/noyau", primaryTodoFile: "/vault/main.md" });
   await service.initialize();
 

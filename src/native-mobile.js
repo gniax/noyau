@@ -1,9 +1,10 @@
+import { grocerySessionHeaders } from "./grocery-auth.js";
 import { Capacitor, CapacitorCookies, CapacitorHttp, registerPlugin } from "@capacitor/core";
 import { pinnedRead } from "./native-pinned-fetch.js";
 import { createPinnedSocket } from "./native-socket.js";
 import { shareProjectFile } from "./project-file-transport.js";
 import { saveAndShareRelease } from "./native-release-download.js";
-import { localAlertKey, enableLocalAgentAlerts, sendLocalAgentAlert } from "./local-agent-alerts.js";
+import { localAlertKey, backgroundAlertKey, enableBackgroundAgentAlerts, enableLocalAgentAlerts, sendLocalAgentAlert } from "./local-agent-alerts.js";
 import { App } from "@capacitor/app";
 import { Network } from "@capacitor/network";
 import { LocalNotifications } from "@capacitor/local-notifications";
@@ -64,8 +65,8 @@ if (isNative) {
     return original(input, options);
   };
   Network.addListener("networkStatusChange", () => window.dispatchEvent(new Event("noyau:network-return")));
-  App.addListener("appStateChange", ({ isActive }) => { if (isActive) window.dispatchEvent(new Event("noyau:network-return")); });
-  LocalNotifications.addListener("localNotificationActionPerformed", ({ notification }) => { if (notification.extra?.module === "groceries") window.dispatchEvent(new CustomEvent("noyau:native-navigation", { detail: { view: "groceries" } })); else if (notification.extra?.module === "agent" && notification.extra?.session) window.dispatchEvent(new CustomEvent("noyau:native-navigation", { detail: { session: notification.extra.session } })); });
+  App.addListener("appStateChange", ({ isActive }) => { window.dispatchEvent(new CustomEvent("noyau:app-state", { detail: { isActive } })); if (isActive) window.dispatchEvent(new Event("noyau:network-return")); });
+  LocalNotifications.addListener("localNotificationActionPerformed", ({ notification }) => { if (notification.extra?.module === "groceries") window.dispatchEvent(new CustomEvent("noyau:native-navigation", { detail: { view: "groceries" } })); else if (notification.extra?.module === "agent" && notification.extra?.session) window.dispatchEvent(new CustomEvent("noyau:native-navigation", { detail: { session: notification.extra.session } })); else if (notification.extra?.module === "server") { const target = new URL(notification.extra.url || "/", location.origin); window.dispatchEvent(new CustomEvent("noyau:native-navigation", { detail: { view: target.searchParams.get("view") || "dashboard", session: target.searchParams.get("session") } })); } });
   PushNotifications.addListener("pushNotificationActionPerformed", ({ notification }) => { const target = new URL(notification.data?.url || "/", location.origin); window.dispatchEvent(new CustomEvent("noyau:native-navigation", { detail: { view: target.searchParams.get("view") || "dashboard", session: target.searchParams.get("session") } })); });
 }
 
@@ -74,8 +75,21 @@ export async function enableNativeLocalAlerts(profileId) {
   if (!isNative) throw new Error("Notifications natives indisponibles.");
   return enableLocalAgentAlerts({ profileId, server: nativeServer(), storage: localStorage, notifications: LocalNotifications });
 }
+const backgroundAlerts = registerPlugin("NoyauBackgroundAlerts");
+export function nativeBackgroundAlertsEnabled(profileId) { return Boolean(isNative && profileId && localStorage.getItem(backgroundAlertKey(nativeServer(), profileId)) === "1"); }
+export async function enableNativeBackgroundAlerts(api, profileId, deviceId) {
+  if (!isNative || Capacitor.getPlatform() !== "ios") return false;
+  return enableBackgroundAgentAlerts({ profileId, server: nativeServer(), deviceId, api, plugin: backgroundAlerts, storage: localStorage });
+}
+// Une app mise a jour active seule le releve si les alertes etaient deja acceptees.
+export async function upgradeNativeBackgroundAlerts(api, profileId, deviceId) {
+  if (!nativeLocalAlertsEnabled(profileId) || nativeBackgroundAlertsEnabled(profileId)) return false;
+  return enableNativeBackgroundAlerts(api, profileId, deviceId);
+}
 export async function scheduleNativeAgentAlert(profileId, sessionId, type, agentName, projectName) {
   if (!isNative) return false;
+  // En arriere-plan le releve natif prend le relais: pas de doublon.
+  if (document.hidden && nativeBackgroundAlertsEnabled(profileId)) return false;
   return sendLocalAgentAlert({ profileId, server: nativeServer(), sessionId, type, agentName, projectName, storage: localStorage, notifications: LocalNotifications, randomId: () => crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff });
 }
 export async function enableNativePush(api, deviceId) {
@@ -102,6 +116,11 @@ export async function forgetNativeSession(profileId, deviceId, { beforeClear } =
   const device = await loadGroceryDevice(profileId);
   if (device?.id) await fetch(`/api/groceries/devices/${encodeURIComponent(device.id)}`, { method: "DELETE", credentials: "include", headers: { "X-Noyau-Profile": profileId } }).catch(() => {});
   if (deviceId) await fetch("/api/mobile/push", { method: "DELETE", credentials: "include", headers: { "content-type": "application/json", "X-Noyau-Profile": profileId }, body: JSON.stringify({ deviceId }) }).catch(() => {});
+  if (nativeBackgroundAlertsEnabled(profileId)) {
+    if (deviceId) await fetch("/api/mobile/background-alerts", { method: "DELETE", credentials: "include", headers: { "content-type": "application/json", "X-Noyau-Profile": profileId }, body: JSON.stringify({ deviceId }) }).catch(() => {});
+    await backgroundAlerts.disable().catch(() => {});
+    localStorage.removeItem(backgroundAlertKey(nativeServer(), profileId));
+  }
   const pushKey = `noyau:push-active:${nativeServer()}:${profileId}`;
   if (localStorage.getItem(pushKey)) await PushNotifications.unregister().catch(() => {});
   localStorage.removeItem(pushKey);
@@ -115,8 +134,8 @@ export async function forgetNativeSession(profileId, deviceId, { beforeClear } =
 }
 
 export async function groceryRequest(profileId, path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...(profileId ? { "X-Noyau-Profile": profileId } : {}), ...options.headers };
-  const fetchJson = async (url, settings) => { const response = await fetch(url, { ...settings, signal: AbortSignal.timeout(12000) }); const data = await response.json().catch(() => ({})); if (!response.ok && response.status !== 409) { const error = new Error(data.error || `Erreur ${response.status}`); error.status = response.status; throw error; } return data; };
+  const headers = { ...grocerySessionHeaders(profileId), ...options.headers };
+  const fetchJson = async (url, settings) => { const response = await fetch(url, { ...settings, signal: AbortSignal.timeout(path.split("?")[0] === "/api/groceries/recipe-import" ? 120000 : 12000) }); const data = await response.json().catch(() => ({})); if (!response.ok && response.status !== 409 && !(response.status === 422 && data.invalid)) { const error = new Error(data.error || `Erreur ${response.status}`); error.status = response.status; throw error; } return data; };
   try { return await fetchJson(path, { credentials: "include", ...options, headers }); }
   catch (error) {
     if (error.status && error.status !== 401) throw error;

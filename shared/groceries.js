@@ -1,14 +1,14 @@
-import { INGREDIENTS, RECIPES, RECIPE_BY_ID, enrichRecipe } from "./recipes.js";
+import { INGREDIENTS, RECIPES, RECIPE_BY_ID, enrichRecipe, recipeHasMeat } from "./recipes.js";
 
 export const RETAILERS = [
   { id: "carrefour", name: "Carrefour", color: "#2374c6", icon: "C", mode: "drive", url: "https://www.carrefour.fr/courses", locator: "https://www.carrefour.fr/magasin/type/drive/le-chesnay-rocquencourt-78158", leaflet: "https://www.carrefour.fr/catalogue", source: "https://www.carrefour.fr/courses", minimumCents: null, note: "Minimum et préparation à confirmer pour le magasin choisi ; conditions officielles variables." },
-  { id: "leclerc", name: "E.Leclerc DRIVE", color: "#ef8a24", icon: "E", mode: "drive", url: "https://www.leclercdrive.fr/", locator: "https://www.leclercdrive.fr/region-ile-de-france/paris/", leaflet: "https://www.e.leclerc/e/catalogue", source: "https://www.leclercdrive.fr/region-ile-de-france/paris/", minimumCents: null, note: "Bois-d'Arcy figure dans la liste officielle autour de Paris ; tarifs du point de retrait requis." },
+  { id: "leclerc", name: "E.Leclerc DRIVE", color: "#ef8a24", icon: "E", mode: "drive", url: "https://www.leclercdrive.fr/", locator: "https://www.leclercdrive.fr/region-ile-de-france/paris/", leaflet: "https://www.e.leclerc/prospectus?type=001", source: "https://www.leclercdrive.fr/region-ile-de-france/paris/", minimumCents: null, note: "Bois-d'Arcy figure dans la liste officielle autour de Paris ; tarifs du point de retrait requis." },
   { id: "picnic", name: "Picnic", color: "#eb575b", icon: "P", mode: "delivery", url: "https://picnic.app/fr/", locator: "https://picnic.app/fr/", leaflet: "https://picnic.app/fr/", source: "https://picnic.app/fr/faq", minimumCents: 5000, note: "Livraison, pas un drive ; éligibilité de l'adresse et minimum du créneau à confirmer dans l'application." },
 ];
 
 export function initialGroceries() {
   return { version: 1, revision: 0, settings: { address: "", postalCode: "78150", city: "Le Chesnay-Rocquencourt", people: 2, diet: "all", allergens: [], excludedIngredients: [], householdConfirmed: false, days: 7, budgetCents: 8000, meal: "dinner", remindAt: "18:30", reminders: false, priceMaxAgeHours: 48 },
-    preferences: {}, plan: [], pantry: {}, extras: [], offers: [], orders: [], customRecipes: [], stores: RETAILERS.map((retailer) => ({ id: retailer.id, enabled: true, storeName: "", storeConfirmed: false, minimumCents: retailer.minimumCents, feesCents: null, minimumConfirmed: false, loyalty: false })), updatedAt: null };
+    preferences: {}, plan: [], pantry: {}, extras: [], offers: [], orders: [], shoppingHistory: [], customRecipes: [], stores: RETAILERS.map((retailer) => ({ id: retailer.id, enabled: true, storeName: "", storeConfirmed: false, minimumCents: retailer.minimumCents, feesCents: null, minimumConfirmed: false, loyalty: false })), updatedAt: null };
 }
 
 export function dateParis(date = new Date()) { return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit" }).format(date); }
@@ -23,12 +23,12 @@ export function recipeFor(state, id) { return RECIPE_BY_ID[id] || (state.customR
 export function allRecipes(state) { return [...RECIPES, ...(state.customRecipes || [])]; }
 export function selectedIngredientIds(state) { return new Set(state.plan.filter((slot) => slot.status === "accepted").flatMap((slot) => recipeFor(state, slot.recipeId)?.ingredients.map((item) => item.ingredientId) || [])); }
 export function sharedIngredientCount(recipe, ids) { return recipe.ingredients.filter((item) => ids.has(item.ingredientId)).length; }
-export function compatible(recipe, settings) {
+export function compatible(recipe, settings, approvedExcludedIngredients = []) {
   if (!recipe) return false;
   return !(settings.diet === "vegetarian" && !recipe.vegetarian) && !(settings.diet === "vegan" && !recipe.vegan)
     && !(settings.allergens.length && recipe.allergens.includes("à vérifier sur l'étiquette"))
     && !recipe.allergens.some((item) => settings.allergens.includes(item))
-    && !recipe.ingredients.some(({ ingredientId }) => settings.excludedIngredients.includes(ingredientId));
+    && !recipe.ingredients.some(({ ingredientId }) => settings.excludedIngredients.includes(ingredientId) && !approvedExcludedIngredients.includes(ingredientId));
 }
 
 export function suggestions(state, date = dateParis()) {
@@ -36,7 +36,7 @@ export function suggestions(state, date = dateParis()) {
   const promoted = new Set(state.offers.filter((offer) => { const store = state.stores.find((item) => item.id === offer.storeId); return store?.enabled && (offer.instantDiscountCents > 0 || offer.bundleQuantity || store.loyalty && offer.loyaltyCents > 0) && offerUsable(offer, store, new Date().toISOString(), state.settings.priceMaxAgeHours); }).map((offer) => offer.ingredientId));
   const selected = selectedIngredientIds(state); const accepted = new Set(state.plan.filter((slot) => slot.status === "accepted").map((slot) => slot.recipeId));
   return allRecipes(state).filter((recipe) => compatible(recipe, state.settings) && state.preferences[recipe.id] !== "disliked")
-    .map((recipe, index) => { const owned = recipe.ingredients.filter((item) => state.pantry[item.ingredientId]?.skip || state.pantry[item.ingredientId]?.quantity >= item.quantity).length / recipe.ingredients.length; const promotions = recipe.ingredients.filter((item) => promoted.has(item.ingredientId)).length / recipe.ingredients.length; return { recipe, shared: sharedIngredientCount(recipe, selected), accepted: accepted.has(recipe.id), score: (index * 19 + seed) % 53 + owned * 8 + promotions * 8 + (state.preferences[recipe.id] === "favorite" ? 12 : 0) }; })
+    .map((recipe, index) => { const owned = recipe.ingredients.filter((item) => state.pantry[item.ingredientId]?.skip || state.pantry[item.ingredientId]?.quantity >= item.quantity).length / recipe.ingredients.length; const promotions = recipe.ingredients.filter((item) => promoted.has(item.ingredientId)).length / recipe.ingredients.length; return { recipe, shared: sharedIngredientCount(recipe, selected), accepted: accepted.has(recipe.id), score: (index * 19 + seed) % 53 + owned * 8 + promotions * 8 + (state.preferences[recipe.id] === "favorite" ? 12 : 0) + (state.settings.diet === "all" && recipeHasMeat(recipe) ? 30 : 0) }; })
     .sort((a, b) => selected.size ? Number(a.accepted) - Number(b.accepted) || b.shared - a.shared || b.score - a.score : b.score - a.score).map(({ recipe }) => recipe);
 }
 
@@ -54,6 +54,10 @@ export function proposePlan(state, start = dateParis()) {
   });
 }
 
+// Bought meals stay visible until their day has passed; removed ones never come back.
+export function visibleMenuSlots(state, today = dateParis()) { return state.plan.filter((slot) => slot.status === "accepted" || slot.status === "shopped" && slot.date >= today); }
+export function firstFreeMenuDate(state, today = dateParis()) { const taken = new Set(state.plan.filter((slot) => slot.status === "accepted" || slot.status === "shopped").map((slot) => slot.date)); let date = today; while (taken.has(date)) date = addDays(date, 1); return date; }
+
 export function shoppingList(state) {
   const lines = new Map();
   const add = (ingredientId, quantity, source) => {
@@ -64,14 +68,14 @@ export function shoppingList(state) {
   };
   for (const slot of state.plan.filter((item) => item.status === "accepted")) {
     const recipe = recipeFor(state, slot.recipeId);
-    if (!recipe || !compatible(recipe, state.settings)) continue;
+    if (!recipe || !compatible(recipe, state.settings, slot.approvedExcludedIngredients || [])) continue;
     for (const ingredient of recipe.ingredients) add(ingredient.ingredientId, ingredient.quantity * slot.portions / recipe.servings, recipe.id);
   }
   for (const extra of state.extras) add(extra.ingredientId, extra.quantity, null);
   return [...lines.values()].map((line) => {
     const pantry = state.pantry[line.ingredientId] || {};
-    const needed = pantry.skip ? 0 : Math.max(0, Math.round((line.quantity - (pantry.quantity || 0)) * 100) / 100);
-    return { ...line, needed, owned: line.quantity - needed, skipped: Boolean(pantry.skip), estimateCents: Math.round(needed / line.referenceQuantity * line.referenceCents) };
+    const needed = pantry.skip || pantry.removed ? 0 : Math.max(0, Math.round((line.quantity - (pantry.quantity || 0)) * 100) / 100);
+    return { ...line, needed, owned: line.quantity - needed, skipped: Boolean(pantry.skip), removed: Boolean(pantry.removed), estimateCents: Math.round(needed / line.referenceQuantity * line.referenceCents) };
   }).sort((a, b) => a.label.localeCompare(b.label, "fr"));
 }
 
@@ -160,7 +164,11 @@ export function applyGroceryOperation(state, operation) {
       assert(["all", "vegetarian", "vegan"].includes(settings.diet) && ["dinner", "lunch"].includes(settings.meal) && Array.isArray(settings.allergens) && settings.allergens.length <= 20 && settings.allergens.every((item) => safeText(item, 50)), "Contraintes alimentaires invalides.");
       assert(Array.isArray(settings.excludedIngredients) && settings.excludedIngredients.every((id) => INGREDIENTS[id]) && /^([01]\d|2[0-3]):[0-5]\d$/.test(settings.remindAt) && [true, false].includes(settings.reminders) && integer(settings.priceMaxAgeHours, 1, 168) && typeof settings.householdConfirmed === "boolean", "Préférences invalides.");
       next.settings = settings;
-      next.plan = next.plan.map((slot) => compatible(recipeFor(next, slot.recipeId), settings) ? slot : { ...slot, status: "proposed" });
+      next.plan = next.plan.map((slot) => {
+        const approvedExcludedIngredients = (slot.approvedExcludedIngredients || []).filter((id) => settings.excludedIngredients.includes(id));
+        const updated = slot.approvedExcludedIngredients ? { ...slot, approvedExcludedIngredients } : slot;
+        return slot.status === "rejected" || slot.status === "shopped" || compatible(recipeFor(next, slot.recipeId), settings, approvedExcludedIngredients) ? updated : { ...updated, status: "proposed" };
+      });
       break;
     }
     case "custom-recipe": {
@@ -170,28 +178,47 @@ export function applyGroceryOperation(state, operation) {
       assert(Array.isArray(payload.steps) && payload.steps.length > 0 && payload.steps.length <= 30 && payload.steps.every((step) => safeText(step, 500) && step.trim()), "Étapes invalides.");
       let sourceUrl = ""; if (payload.sourceUrl) { const url = new URL(payload.sourceUrl); assert(url.protocol === "https:" && !url.username && !url.password && url.href.length <= 2000, "Lien HTTPS de recette invalide."); sourceUrl = url.href; }
       const raw = payload.ingredients.map((item) => `${item.ingredientId}:${item.quantity}`).join(" ");
-      const recipe = enrichRecipe({ id: payload.id, title: payload.title.trim(), subtitle: (payload.subtitle || "").trim(), minutes: payload.minutes, category: "personnel", raw, steps: payload.steps.map((step) => step.trim()), familyId: "personal", image: { atlas: 1, cell: 0 }, imageDisclosure: "Illustration générique, non contractuelle", sourceUrl });
+      const imageData = payload.imageData || ""; assert(typeof imageData === "string" && (!imageData || /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(imageData) && imageData.length <= 270000), "Image de recette invalide.");
+      const recipe = enrichRecipe({ imageData, inferredSteps: payload.inferredSteps === true, inferredQuantities: payload.inferredQuantities === true, id: payload.id, title: payload.title.trim(), subtitle: (payload.subtitle || "").trim(), minutes: payload.minutes, category: "personnel", raw, steps: payload.steps.map((step) => step.trim()), familyId: "personal", image: { atlas: 1, cell: 0 }, imageDisclosure: "Illustration générique, non contractuelle", sourceUrl });
       recipe.servings = payload.servings; recipe.vegetarian = payload.vegetarian === true && recipe.vegetarian; recipe.vegan = payload.vegan === true && recipe.vegan && recipe.vegetarian; recipe.allergens = [...new Set([...recipe.allergens, "à vérifier sur l'étiquette"])];
-      assert(!next.plan.some((slot) => slot.recipeId === recipe.id && slot.status === "accepted") || compatible(recipe, next.settings), "La recette modifiée ne respecte plus les contraintes du menu.");
-      const recipes = next.customRecipes || []; assert(recipes.length < 100 || recipes.some((item) => item.id === recipe.id), "Maximum 100 recettes personnelles.");
-      next.customRecipes = [...recipes.filter((item) => item.id !== recipe.id), recipe]; break;
+      assert(!next.plan.some((slot) => slot.recipeId === recipe.id && slot.status === "accepted" && !compatible(recipe, next.settings, slot.approvedExcludedIngredients || [])), "La recette modifiée ne respecte plus les contraintes du menu.");
+      const recipes = next.customRecipes || []; const exists = recipes.some((item) => item.id === recipe.id); assert(recipes.length < 100 || exists, "Maximum 100 recettes personnelles.");
+      next.customRecipes = [...recipes.filter((item) => item.id !== recipe.id), recipe];
+      if (!exists && !Object.hasOwn(next.preferences, recipe.id)) next.preferences[recipe.id] = "favorite";
+      break;
     }
     case "custom-recipe-delete": {
       assert((next.customRecipes || []).some((item) => item.id === payload.id), "Recette personnelle introuvable.");
-      assert(!next.plan.some((slot) => slot.recipeId === payload.id), "Retirez d'abord cette recette du menu.");
+      assert(!next.plan.some((slot) => slot.recipeId === payload.id && slot.status === "accepted"), "Retirez d'abord cette recette du menu.");
+      next.plan = next.plan.filter((slot) => slot.recipeId !== payload.id);
       next.customRecipes = next.customRecipes.filter((item) => item.id !== payload.id); delete next.preferences[payload.id]; break;
     }
-    case "preference": assert(recipeFor(next, payload.recipeId) && ["favorite", "disliked", "neutral"].includes(payload.value), "Préférence recette invalide."); next.preferences[payload.recipeId] = payload.value; break;
+    case "preference": assert(recipeFor(next, payload.recipeId) && ["favorite", "disliked", "neutral"].includes(payload.value), "Préférence recette invalide."); next.preferences[payload.recipeId] = payload.value; if (payload.value === "disliked") next.plan = next.plan.map((slot) => slot.recipeId === payload.recipeId && slot.status === "accepted" ? { ...slot, status: "rejected" } : slot); break;
     case "plan": assert(validDate(payload.start), "Date de menu invalide."); next.plan = proposePlan(next, payload.start); break;
+    case "slot-add": {
+      const chosen = recipeFor(next, payload.recipeId); const approvals = payload.approvedExcludedIngredients || [];
+      // Removed meals are history-free: pruning them keeps the 100-meal cap from silently blocking additions.
+      if (next.plan.length >= 100) next.plan = next.plan.filter((slot) => slot.status !== "rejected" && slot.status !== "proposed");
+      assert(safeText(payload.id, 100) && payload.id && !next.plan.some((slot) => slot.id === payload.id) && validDate(payload.date) && ["dinner", "lunch"].includes(payload.meal) && integer(payload.portions, 1, 12) && next.plan.length < 100, "Repas invalide.");
+      assert(chosen && Array.isArray(approvals) && approvals.length <= chosen.ingredients.length && new Set(approvals).size === approvals.length && approvals.every((id) => next.settings.excludedIngredients.includes(id) && chosen.ingredients.some((item) => item.ingredientId === id)), "Dérogation alimentaire invalide.");
+      assert(next.settings.householdConfirmed && compatible(chosen, next.settings, approvals), "Recette incompatible.");
+      next.plan.push({ id: payload.id, date: payload.date, meal: payload.meal, recipeId: chosen.id, portions: payload.portions, status: "accepted", approvedExcludedIngredients: approvals }); break;
+    }
     case "slot": {
       const slot = next.plan.find((item) => item.id === payload.id); assert(slot, "Repas introuvable.");
-      if (payload.recipeId !== undefined) { assert(recipeFor(next, payload.recipeId) && compatible(recipeFor(next, payload.recipeId), next.settings), "Recette incompatible."); slot.recipeId = payload.recipeId; slot.status = "proposed"; }
-      if (payload.status !== undefined) { assert(["proposed", "accepted", "rejected"].includes(payload.status), "Statut repas invalide."); assert(payload.status !== "accepted" || next.settings.householdConfirmed, "Confirmez le foyer et les contraintes alimentaires avant de valider les repas."); assert(payload.status !== "accepted" || compatible(recipeFor(next, slot.recipeId), next.settings), "Recette incompatible."); slot.status = payload.status; }
+      if (payload.status === "rejected" && payload.recipeId === undefined && payload.portions === undefined) { slot.status = "rejected"; break; }
+      const chosen = recipeFor(next, payload.recipeId === undefined ? slot.recipeId : payload.recipeId);
+      assert(chosen, "Recette incompatible.");
+      const approvals = payload.approvedExcludedIngredients === undefined ? (payload.recipeId !== undefined && payload.recipeId !== slot.recipeId ? [] : slot.approvedExcludedIngredients || []) : payload.approvedExcludedIngredients;
+      assert(Array.isArray(approvals) && approvals.length <= chosen.ingredients.length && approvals.every((id) => next.settings.excludedIngredients.includes(id) && chosen.ingredients.some((item) => item.ingredientId === id)) && new Set(approvals).size === approvals.length, "Dérogation alimentaire invalide.");
+      if (payload.recipeId !== undefined) { assert(compatible(chosen, next.settings, approvals), "Recette incompatible."); slot.recipeId = payload.recipeId; slot.status = "proposed"; }
+      if (payload.approvedExcludedIngredients !== undefined || payload.recipeId !== undefined) slot.approvedExcludedIngredients = approvals;
+      if (payload.status !== undefined) { assert(["proposed", "accepted", "rejected", "shopped"].includes(payload.status), "Statut repas invalide."); assert(payload.status !== "accepted" || next.settings.householdConfirmed, "Confirmez le foyer et les contraintes alimentaires avant de valider les repas."); assert(payload.status !== "accepted" || compatible(chosen, next.settings, approvals), "Recette incompatible."); slot.status = payload.status; }
       if (payload.portions !== undefined) { assert(integer(payload.portions, 1, 12), "Nombre de portions invalide."); slot.portions = payload.portions; }
       break;
     }
-    case "pantry": assert(INGREDIENTS[payload.ingredientId] && (payload.quantity === undefined || Number.isFinite(payload.quantity) && payload.quantity >= 0 && payload.quantity <= 100000) && (payload.skip === undefined || typeof payload.skip === "boolean"), "Stock invalide."); next.pantry[payload.ingredientId] = { ...next.pantry[payload.ingredientId], ...payload }; break;
-    case "extra": assert(INGREDIENTS[payload.ingredientId] && Number.isFinite(payload.quantity) && payload.quantity >= 0 && payload.quantity <= 100000, "Produit supplémentaire invalide."); next.extras = next.extras.filter((item) => item.ingredientId !== payload.ingredientId); if (payload.quantity > 0) next.extras.push({ ingredientId: payload.ingredientId, quantity: payload.quantity }); break;
+    case "pantry": assert(INGREDIENTS[payload.ingredientId] && (payload.quantity === undefined || Number.isFinite(payload.quantity) && payload.quantity >= 0 && payload.quantity <= 100000) && (payload.skip === undefined || typeof payload.skip === "boolean") && (payload.removed === undefined || typeof payload.removed === "boolean"), "Stock invalide."); next.pantry[payload.ingredientId] = { ...next.pantry[payload.ingredientId], ...payload }; break;
+    case "extra": assert(INGREDIENTS[payload.ingredientId] && Number.isFinite(payload.quantity) && payload.quantity >= 0 && payload.quantity <= 100000, "Produit supplémentaire invalide."); next.extras = next.extras.filter((item) => item.ingredientId !== payload.ingredientId); if (payload.quantity > 0) { next.extras.push({ ingredientId: payload.ingredientId, quantity: payload.quantity }); if (next.pantry[payload.ingredientId]?.removed) next.pantry[payload.ingredientId] = { ...next.pantry[payload.ingredientId], removed: false }; } break;
     case "store": {
       const store = next.stores.find((item) => item.id === payload.id); assert(store, "Enseigne inconnue.");
       assert(Object.keys(payload).every((key) => ["id", "enabled", "storeName", "storeConfirmed", "minimumCents", "feesCents", "minimumConfirmed", "loyalty"].includes(key)), "Réglage enseigne invalide.");
@@ -200,6 +227,18 @@ export function applyGroceryOperation(state, operation) {
     }
     case "offer": { const offer = validateOffer(payload); next.offers = [...next.offers.filter((item) => item.id !== offer.id), offer].slice(-2000); break; }
     case "offer-delete": next.offers = next.offers.filter((item) => item.id !== payload.id); break;
+    case "basket-complete": {
+      assert(safeText(payload.id, 100) && payload.id && typeof payload.at === "string" && Number.isFinite(Date.parse(payload.at)), "Panier invalide.");
+      const meals = next.plan.filter((slot) => slot.status === "accepted").map((slot) => { const recipe = recipeFor(next, slot.recipeId); return recipe ? { recipeId: recipe.id, title: recipe.title, date: slot.date, meal: slot.meal, portions: slot.portions } : null; }).filter(Boolean);
+      const lines = shoppingList(next).filter((line) => line.needed > 0).map((line) => ({ ingredientId: line.ingredientId, label: line.label, quantity: line.needed, unit: line.unit }));
+      assert(meals.length || lines.length, "Le panier est vide.");
+      assert(payload.estimateCents === undefined || integer(payload.estimateCents, 0, 10000000), "Montant du panier invalide.");
+      next.shoppingHistory = [...(next.shoppingHistory || []).filter((item) => item.id !== payload.id), { id: payload.id, at: payload.at, meals, lines, ...(payload.estimateCents === undefined ? {} : { estimateCents: payload.estimateCents }) }].slice(-104);
+      // The trip is done: the basket restarts empty, the chosen meals stay readable in the menu.
+      next.plan = next.plan.filter((slot) => slot.status !== "rejected" && slot.status !== "proposed").map((slot) => slot.status === "accepted" ? { ...slot, status: "shopped" } : slot);
+      next.extras = []; next.pantry = {};
+      break;
+    }
     case "order": {
       assert(safeText(payload.id, 100) && RETAILERS.some((store) => store.id === payload.storeId) && validDate(payload.date) && Array.isArray(payload.lines) && payload.lines.length > 0 && payload.lines.length <= 200, "Commande importée invalide.");
       const lines = payload.lines.map((line) => { assert(INGREDIENTS[line.ingredientId] && Number.isFinite(line.quantity) && line.quantity > 0 && line.quantity <= 100000 && integer(line.priceCents, 0, 1000000), "Ligne de commande invalide."); return { ingredientId: line.ingredientId, quantity: line.quantity, priceCents: line.priceCents }; });

@@ -83,3 +83,11 @@ test("fin de tour Claude: l'etoile d'un recapitulatif n'est pas du travail", () 
   const spinning = ["✻ Cooking… (12s · esc to interrupt)", "❯ "].join("\n");
   assert.equal(paneAgentState(spinning), "working");
 });
+
+test("a waiting hook is ignored once the screen offers no choice", () => {
+  const session = { assistant: "claude" };
+  const now = Date.parse("2026-08-25T10:00:00.000Z");
+  const metadata = { agentState: "waiting", agentStateUpdatedAt: "2026-08-25T09:59:30.000Z" };
+  assert.equal(agentStatus(session, metadata, false, now, "Fait.\n> \n bypass permissions on").state, "available");
+  assert.equal(agentStatus(session, metadata, false, now, "Do you want to proceed?\n❯ 1. Yes\n  2. No").state, "waiting");
+});

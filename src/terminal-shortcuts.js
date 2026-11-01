@@ -2,6 +2,7 @@ export function shouldCopyTerminal({ event, targetInField, browserSelectionColla
   const copyKey = String(event?.key || "").toLowerCase() === "c";
   const modifier = Boolean(event?.metaKey || event?.ctrlKey);
   if (!copyKey || !modifier || event?.altKey || targetInField) return false;
+  if (!browserSelectionCollapsed) return false;
   if (assistant && assistant !== "shell") return true;
   return browserSelectionCollapsed && Boolean(terminalSelection);
 }

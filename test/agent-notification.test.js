@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {claudeNeedsAttention} from '../server/agent-notification.js';
+test('only genuine user action prompts report waiting',()=>{for(const type of ['idle_prompt','auth_success','info',''])assert.equal(claudeNeedsAttention({hook_event_name:'Notification',notification_type:type}),false);for(const type of ['permission_prompt','elicitation_dialog'])assert.equal(claudeNeedsAttention({hook_event_name:'Notification',notification_type:type}),true);});

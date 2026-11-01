@@ -1,3 +1,9 @@
+import { answeredQuestions } from "./question-status.js";
+import { claudeNeedsAttention } from "./agent-notification.js";
+import { autoCloseCandidates, finishedTodos } from "./todo-autoclose.js";
+import { ensureLocalTls } from "./local-tls.js";
+import { totalTodoUnread } from "../shared/todo-unread.js";
+import { DevicePresence } from "./device-presence.js";
 import crypto from "node:crypto";
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
@@ -17,7 +23,7 @@ import { WebSocketServer } from "ws";
 import { SessionStore } from "./session-store.js";
 import { InputGate, draftAfterInput } from "./input-gate.js";
 import { resolveModules, sanitizeModules } from "./app-modules.js";
-import { TmuxController, chainCommands, literalKeyCommands, validSessionId } from "./tmux.js";
+import { TmuxController, batchTmuxCommands, literalKeyCommands, validSessionId } from "./tmux.js";
 import { PushService } from "./push-service.js";
 import { UsageService, lastClaudeMessage, parseClaudeRateLimits, refreshExpiredQuota } from "./usage.js";
 import { ProjectLogoService, IMAGE_EXTENSIONS } from "./project-logo.js";
@@ -48,7 +54,7 @@ import { normalizeProjectOrder, sortProjects } from "./project-order.js";
 import { FinanceService } from "./finance-service.js";
 import { FinanceAdvisor } from "./finance-advisor.js";
 import { EnableBankingService } from "./enable-banking.js";
-import { agentStatus } from "./agent-status.js";
+import { agentStatus, withSubagents, paneAgentState } from "./agent-status.js";
 import { ROOT_FOLDER, TodoService } from "./todo-service.js";
 import { CalendarService, generateICal } from "./calendar-service.js";
 import { TextCorrector } from "./text-corrector.js";
@@ -60,11 +66,21 @@ import { AgentCommunicationService } from "./agent-tools.js";
 import { initializeAgentIdentities } from "./agent-identity.js";
 import { AgentMemoryService } from "./agent-memory.js";
 import { GroceriesService } from "./groceries-service.js";
+import { RecipeImportJobs } from "./recipe-import-jobs.js";
 import { groceryRoutes, publicGroceryRoutes } from "./groceries-routes.js";
 import { NATIVE_ORIGINS, NativeWebSocketTickets } from "./native-websocket.js";
 import { NativePushService, NotificationGateway } from "./native-push-service.js";
+import { BackgroundAlertService } from "./background-alerts.js";
+import { staticCacheHeaders } from "./static-cache.js";
 import { BiometricAuthService, biometricSessionRoutes } from "./biometric-auth.js";
 import { AgentMapService } from "./agent-map.js";
+import { AutonomousAgents } from "./autonomous-agents.js";
+import { AutonomyEstimator } from "./autonomy-estimate.js";
+import { AUTONOMY_ASSISTANTS, newAutonomy } from "./autonomy.js";
+import { SubagentReader } from "./subagents.js";
+import { AiJobs } from "./ai-jobs.js";
+import { resolveAgentDirectory } from "./agent-directory.js";
+import { freshStartPrompt } from "./fresh-start.js";
 import { readAgentConversation, liveActivity } from "./agent-conversation.js";
 import { MapScanStore } from "./map-scanner.js";
 import { summarizeRequestPrompt } from "./prompt-recap.js";
@@ -79,6 +95,7 @@ const root = path.resolve(here, "..");
 const packageMetadata = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
 const appVersion = String(packageMetadata.version || "0.0.0");
 const dataDir = path.resolve(process.env.NOYAU_DATA_DIR || path.join(root, ".data"));
+await ensureLocalTls(dataDir).catch((error) => console.warn(`HTTPS local non généré (openssl requis) : ${error.message}`));
 const workspaceRoot = path.resolve(process.env.NOYAU_WORKSPACE_ROOT || path.join(os.homedir(), "projects"));
 const port = Number(process.env.PORT || 4242);
 const host = process.env.HOST || "0.0.0.0";
@@ -135,6 +152,8 @@ await store.load();
 await initializeAgentIdentities(store);
 const groceries = new GroceriesService({ file: path.join(dataDir, "groceries.json"), automaticScans: true });
 await groceries.load();
+const recipeImportJobs = new RecipeImportJobs({ file: path.join(dataDir, "recipe-import-jobs.json"), importer: (url) => groceries.importRecipe(url) });
+await recipeImportJobs.load();
 const projects = new SessionStore(path.join(dataDir, "projects.json"));
 await projects.load();
 const moduleStore = new SessionStore(path.join(dataDir, "modules.json"));
@@ -160,6 +179,7 @@ const profileService = new ProfileService({
   primaryName: os.userInfo().username,
 });
 await profileService.initialize();
+if (profileService.setupNeeded()) console.log(`\nInstallation : ouvre Noyau et saisis ce code d'installation pour créer le compte administrateur :\n\n    ${accessToken}\n\n(Il reste aussi dans ${path.join(dataDir, "access-token")}.)\n`);
 const biometricAuth = new BiometricAuthService({ file: path.join(dataDir, "biometric-devices.json"), profiles: profileService, secret: accessToken });
 await biometricAuth.load();
 const primaryProfileId = profileService.primaryId();
@@ -179,7 +199,9 @@ const webPush = new PushService({ dataDir, defaultProfileId: primaryProfileId })
 await webPush.load();
 const nativePush = new NativePushService({ file: path.join(dataDir, "native-push-devices.json") });
 await nativePush.load();
-const push = new NotificationGateway(webPush, nativePush);
+const backgroundAlerts = new BackgroundAlertService({ file: path.join(dataDir, "background-alerts.json") });
+await backgroundAlerts.load();
+const push = new NotificationGateway(webPush, nativePush, backgroundAlerts);
 const todoService = new TodoService({
   file: process.env.NOYAU_TODO_FILE || path.join(dataDir, "TO DO.md"),
   mountUri: process.env.NOYAU_TODO_MOUNT_URI || null,
@@ -257,26 +279,9 @@ const projectLogos = new ProjectLogoService();
 const migrations = new Map();
 const notificationTestCursor = new Map();
 // Presence: on sait quel appareil est aux commandes, et quel agent il regarde.
-const presence = new Map();
-const PRESENCE_TTL = 90_000;
-
-function livePresence(profileId) {
-  const now = Date.now();
-  for (const [id, seen] of presence) if (now - seen.at > PRESENCE_TTL) presence.delete(id);
-  return [...presence.entries()]
-    .filter(([, seen]) => seen.profileId === profileId)
-    .sort(([, left], [, right]) => right.at - left.at)
-    .map(([deviceId, seen]) => ({ deviceId, ...seen }));
-}
-
-function watchingSession(profileId, sessionId) {
-  return livePresence(profileId).some((seen) => seen.sessionId && seen.sessionId === sessionId);
-}
-
-// Appareil actif: il capte seul les alertes; sans appareil actif, tout le monde est prevenu.
-function activeDevice(profileId) {
-  return livePresence(profileId)[0]?.deviceId || null;
-}
+const presence = new DevicePresence();
+function watchingSession(profileId, sessionId) { return presence.watching(profileId, sessionId); }
+function activeDevice(profileId) { return presence.active(profileId); }
 const weatherCache = new Map();
 const moduleService = new ModuleService({
   workspaceRoot,
@@ -489,6 +494,9 @@ async function mapSheetLlm(prompt) {
   const text = (await response.json())?.choices?.[0]?.message?.content || "";
   return JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
 }
+const subagentReader = new SubagentReader();
+const aiJobs = new AiJobs();
+const CONTEXT_TRANSITION_MAX_MS = 3 * 60_000;
 const agentMap = new AgentMapService({
   scanStore: mapScanStore,
   llm: mapSheetLlm,
@@ -501,27 +509,74 @@ const agentMap = new AgentMapService({
   workspaceRoot,
   noyauRoot: root,
   run: (file, args, options = {}) => execFileAsync(file, args, { maxBuffer: 4 * 1024 * 1024, ...options }),
-  agentState: async (session, metadata) => agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), await tmux.capture(session.id))?.state || null,
+  agentState: async (session, metadata) => {
+    const status = agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), await tmux.capture(session.id));
+    return (metadata.transcriptPath && (await subagentReader.list(metadata.transcriptPath)).some((item) => item.running)) ? "working" : status?.state || null;
+  },
+  subagents: (metadata) => subagentReader.list(metadata.transcriptPath),
 });
-const powerService = new PowerService({
-  file: path.join(dataDir, "power-state.json"),
-  agentWorkingChecker: async () => {
-    try {
-      const active = [];
-      const sessions = await tmux.list();
-      const promptStatuses = await Promise.all(sessions.map((s) => promptWatcher.isWaiting(s.id)));
-      for (let i = 0; i < sessions.length; i++) {
-        const session = sessions[i];
-        const metadata = store.get(session.id) || {};
-        const status = agentStatus(session, metadata, promptStatuses[i]);
-        if (status.state === "working") {
-          active.push({ id: session.id, name: session.name || session.assistant });
+const autonomyEstimator = new AutonomyEstimator({ quota: (provider) => providerState.get(provider) });
+const FAILED_NODE_TYPES = new Set(["service", "timer", "cron", "module"]);
+const autonomousAgents = new AutonomousAgents({
+  store,
+  tmux,
+  estimator: autonomyEstimator,
+  isMigrating: (id) => migrations.has(id),
+  sources: {
+    modules: async (projectId, entry) => (scopedProjects(entry.profileId)[projectId] ? moduleService.failedModules([projectId]) : []),
+    map: async (projectId, entry) => {
+      const visibleProjects = scopedProjects(entry.profileId);
+      if (!visibleProjects[projectId]) return [];
+      const snapshot = await agentMap.snapshot({ projectId, window: "24h", visibleProjects, sessionVisible: (id) => sessionVisible(entry.profileId, id) });
+      const foreign = projectId !== entry.projectId ? visibleProjects[projectId].name : null;
+      return snapshot.nodes.filter((node) => node.status === "err" && FAILED_NODE_TYPES.has(node.type) && !node.archived).map((node) => ({ id: node.id, type: node.type, label: node.label, project: foreign }));
+    },
+    units: async (units) => {
+      const failed = [];
+      for (const scope of [["--user"], []]) {
+        const { stdout } = await execFileAsync("/usr/bin/systemctl", [...scope, "show", ...units, "--no-pager", "--property=Id,ActiveState,Result"], { timeout: 15_000, maxBuffer: 1024 * 1024 });
+        for (const block of stdout.split(/\n\s*\n/)) {
+          const fields = Object.fromEntries(block.split("\n").filter(Boolean).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+          if (fields.Id && fields.ActiveState === "failed") failed.push({ id: fields.Id, result: fields.Result && fields.Result !== "success" ? fields.Result : null });
         }
       }
-      return active;
-    } catch {
-      return [];
-    }
+      return failed;
+    },
+  },
+  agentBusy: async (id, metadata) => {
+    const session = (await tmux.list()).find((item) => item.id === id);
+    if (!session) return true;
+    const pane = await tmux.capture(id).catch(() => "");
+    if (agentStatus(session, metadata, promptWatcher.isWaiting(id), Date.now(), pane).state !== "available") return true;
+    const subagents = metadata.transcriptPath ? await subagentReader.list(metadata.transcriptPath).catch(() => []) : [];
+    return subagents.some((item) => item.running);
+  },
+  // Limite atteinte: le message partirait dans le vide.
+  quotaBlocked: (entry) => {
+    const quota = refreshExpiredQuota(providerState.get(entry.assistant));
+    const windows = entry.assistant === "claude" ? [quota?.fiveHour, quota?.sevenDay] : quota?.windows || [];
+    return windows.some((window) => window && window.remainingPercent === 0);
+  },
+  currentThread: async (id) => {
+    const session = (await tmux.list()).find((item) => item.id === id);
+    return session?.panePid ? usage.discoverCodexThread(session.panePid) : null;
+  },
+  notify: (entry, title, body) => push.send({ title, body, tag: `autonomy-${entry.agentId || "agent"}`, url: "/" }, entry.profileId),
+});
+let powerAgentSnapshot = null; let powerAgentSnapshotAt = 0;
+const powerService = new PowerService({
+  file: path.join(dataDir, "power-state.json"),
+  agentWorkingChecker: async ({ fresh = false } = {}) => {
+    if (!fresh && powerAgentSnapshot && Date.now() - powerAgentSnapshotAt < 20000) return powerAgentSnapshot;
+    const sessions = await tmux.list();
+    const states = await Promise.all(sessions.filter((session) => session.managed && session.assistant !== "shell").map(async (session) => {
+      const metadata = store.get(session.id) || {};
+      const pane = await tmux.captureVisible(session.id);
+      if (!pane.trim()) return { id: session.id, name: session.name || session.assistant, state: "unknown" };
+      return { id: session.id, name: session.name || session.assistant, state: agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane).state };
+    }));
+    powerAgentSnapshot = states.filter((item) => item.state !== "available"); powerAgentSnapshotAt = Date.now();
+    return powerAgentSnapshot;
   },
 });
 setInterval(() => {
@@ -905,7 +960,7 @@ async function todosView(profile) {
   }
   const seen = await todoSeenService.bootstrap(profile.id, merged.todos);
   merged.todos = todoSeenService.decorate(merged.todos, seen);
-  merged.unread = merged.todos.reduce((total, todo) => total + todo.unread, 0);
+  merged.unread = totalTodoUnread(merged.todos);
   return merged;
 }
 
@@ -1040,7 +1095,7 @@ function authenticated(request) {
       return true;
     }
     const verified = verifySessionToken(bearer, accessToken, SESSION_MAX_AGE_MS);
-    if (verified && (!verified.biometricDeviceId || biometricAuth.active(verified.biometricDeviceId, verified.profileId))) {
+    if (verified && profileService.get(verified.profileId) && (!verified.biometricDeviceId || biometricAuth.active(verified.biometricDeviceId, verified.profileId))) {
       request.sessionProfileId = verified.profileId;
       request.rawSessionToken = bearer;
       return true;
@@ -1057,7 +1112,7 @@ function authenticated(request) {
   const cookie = parseCookies(request.headers.cookie).noyau_session;
   if (cookie) {
     const verified = verifySessionToken(cookie, accessToken, SESSION_MAX_AGE_MS);
-    if (verified && (!verified.biometricDeviceId || biometricAuth.active(verified.biometricDeviceId, verified.profileId))) {
+    if (verified && profileService.get(verified.profileId) && (!verified.biometricDeviceId || biometricAuth.active(verified.biometricDeviceId, verified.profileId))) {
       request.sessionProfileId = verified.profileId;
       request.rawSessionToken = cookie;
       return true;
@@ -1166,11 +1221,20 @@ app.use((request, response, next) => {
 const jsonBody = express.json({ limit: "32kb" });
 const rawTodoBody = express.json({ limit: "4mb" });
 const groceryBody = express.json({ limit: "512kb" });
+const questionBody = express.json({ limit: "256kb" });
 // Rapports de suivi: fichier encode en base64 dans le JSON (10 Mo max une fois decode).
 const trackingReportBody = express.json({ limit: `${Math.ceil(MAX_REPORT_BYTES * 1.4 / 1024 / 1024)}mb` });
-app.use((request, response, next) => (/^\/api\/(?:mobile\/)?groceries(?:\/|$)/.test(request.path) ? groceryBody : request.path === "/api/todos/raw" ? rawTodoBody : /^\/api\/projects\/[^/]+\/tracking\/[^/]+\/reports$/.test(request.path) && request.method === "POST" ? trackingReportBody : jsonBody)(request, response, next));
+app.use((request, response, next) => (/^\/api\/(?:mobile\/)?groceries(?:\/|$)/.test(request.path) ? groceryBody : request.path === "/api/agent/question-status" ? questionBody : request.path === "/api/todos/raw" ? rawTodoBody : /^\/api\/projects\/[^/]+\/tracking\/[^/]+\/reports$/.test(request.path) && request.method === "POST" ? trackingReportBody : jsonBody)(request, response, next));
 // The only remotely exposable mobile surface: a revocable, profile-bound grocery capability.
 app.use("/api/mobile/groceries", publicGroceryRoutes(groceries));
+// Avant le controle de session: l'app en arriere-plan releve ses alertes avec son seul jeton d'appareil.
+app.get("/api/mobile/background-alerts/poll", (request, response) => {
+  const token = String(request.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const result = backgroundAlerts.poll(token, request.query.after);
+  response.set("Cache-Control", "no-store");
+  if (!result) return response.status(401).json({ error: "Appareil non enregistré." });
+  response.json(result);
+});
 app.use("/api/auth/biometric", biometricSessionRoutes({ service: biometricAuth, profiles: profileService, secret: accessToken, throttle: createLoginThrottle() }));
 
 app.get("/api/auth/profiles", (_request, response) => {
@@ -1184,7 +1248,33 @@ app.get("/api/auth/profiles", (_request, response) => {
       hasPassword,
     })),
     primaryProfileId,
+    setupNeeded: profileService.setupNeeded(),
   });
+});
+
+// First admin of a fresh install. The setup code is the access key printed at startup:
+// whoever reaches the port first must not become admin of a machine that runs agents.
+app.post("/api/setup", async (request, response, next) => {
+  try {
+    const remote = String(request.socket.remoteAddress || "inconnu");
+    const retryAfter = loginThrottle.retryAfter(remote);
+    if (retryAfter) {
+      response.setHeader("Retry-After", String(retryAfter));
+      return response.status(429).json({ error: "Trop de tentatives. Réessaie plus tard.", retryAfter });
+    }
+    if (!profileService.setupNeeded()) return response.status(409).json({ error: "Installation déjà terminée." });
+    if (!tokenMatches(request.body?.code)) {
+      loginThrottle.fail(remote);
+      return response.status(401).json({ error: "Code d'installation incorrect." });
+    }
+    loginThrottle.clear(remote);
+    const profile = await profileService.completeSetup(request.body);
+    const sessionToken = createSessionToken({ profileId: profile.id, issuedAt: Date.now() }, accessToken);
+    response.setHeader("Set-Cookie", `noyau_session=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/; ${request.secure ? "Secure" : ""}`);
+    response.json({ ok: true, profile, token: sessionToken, expiresAt: Date.now() + SESSION_MAX_AGE_MS });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post("/api/auth", (request, response) => {
@@ -1437,12 +1527,24 @@ app.post("/api/mobile/ws-ticket", async (request, response, next) => {
     response.set("Cache-Control", "no-store").json(nativeWebSocketTickets.issue(request.profile.id, target));
   } catch (error) { next(error); }
 });
-app.get("/api/mobile/push-status", (request, response) => response.json({ configured: nativePush.status(), devices: nativePush.devices(request.profile.id).map(({ token, ...device }) => device) }));
+app.get("/api/mobile/push-status", (request, response) => response.json({ configured: nativePush.status(), devices: nativePush.devices(request.profile.id).map(({ token, ...device }) => device), backgroundDevices: backgroundAlerts.devices(request.profile.id).length }));
+app.post("/api/mobile/background-alerts", async (request, response, next) => { try { response.set("Cache-Control", "no-store").status(201).json(await backgroundAlerts.register(request.profile.id, request.body || {})); } catch (error) { next(error); } });
+app.delete("/api/mobile/background-alerts", async (request, response, next) => { try { await backgroundAlerts.unregister(request.profile.id, request.body?.deviceId); response.sendStatus(204); } catch (error) { next(error); } });
 app.post("/api/mobile/push", async (request, response, next) => { try { await nativePush.subscribe(request.profile.id, request.body || {}); response.sendStatus(204); } catch (error) { next(error); } });
 app.delete("/api/mobile/push", async (request, response, next) => { try { await nativePush.unsubscribe(request.profile.id, request.body?.deviceId); response.sendStatus(204); } catch (error) { next(error); } });
 app.get("/api/groceries/devices", (request, response) => response.json({ devices: groceries.devices(request.profile.id) }));
 app.post("/api/groceries/devices", async (request, response, next) => { try { response.status(201).json(await groceries.addDevice(request.profile.id, request.body?.name)); } catch (error) { next(error); } });
 app.delete("/api/groceries/devices/:id", async (request, response, next) => { try { await groceries.revokeDevice(request.profile.id, request.params.id); response.sendStatus(204); } catch (error) { next(error); } });
+app.post("/api/groceries/share", async (request, response, next) => { try {
+  if (request.profile.id !== primaryProfileId) return response.status(403).json({ error: "Seul le profil principal peut partager Courses." });
+  const memberId = String(request.body?.profileId || ""); if (!profileService.get(memberId)) return response.status(404).json({ error: "Profil introuvable." });
+  response.json(await groceries.shareProfiles(primaryProfileId, memberId));
+} catch (error) { next(error); } });
+app.get("/api/groceries/import-jobs", (request, response) => response.set("Cache-Control", "no-store").json({ jobs: recipeImportJobs.list(request.profile.id) }));
+app.post("/api/groceries/import-jobs", async (request, response, next) => { try { response.status(202).json({ job: await recipeImportJobs.enqueue(request.profile.id, request.body?.url) }); } catch (error) { next(error); } });
+app.get("/api/groceries/import-jobs/:id", (request, response) => { const job = recipeImportJobs.get(request.profile.id, request.params.id); if (!job) return response.status(404).json({ error: "Import introuvable." }); return response.set("Cache-Control", "no-store").json({ job }); });
+app.delete("/api/groceries/import-jobs/:id", async (request, response, next) => { try { if (!await recipeImportJobs.remove(request.profile.id, request.params.id)) return response.status(404).json({ error: "Import introuvable." }); response.sendStatus(204); } catch (error) { next(error); } });
+app.post("/api/groceries/import-jobs/:id/retry", async (request, response, next) => { try { if (!await recipeImportJobs.retry(request.profile.id, request.params.id)) return response.status(400).json({ error: "Import non réessayable." }); response.json({ ok: true }); } catch (error) { next(error); } });
 app.post("/api/groceries/recipe-import", async (request, response, next) => { try { response.json(await groceries.importRecipe(request.body?.url)); } catch (error) { next(error); } });
 app.post("/api/groceries/product-page", async (request, response, next) => { try { response.json(await groceries.publicProduct(request.body?.url, request.body?.storeId)); } catch (error) { next(error); } });
 
@@ -1462,8 +1564,9 @@ app.put("/api/config/modules", async (request, response, next) => {
 app.post("/api/presence", (request, response) => {
   const deviceId = String(request.body?.deviceId || "").slice(0, 64);
   const sessionId = validSessionId(String(request.body?.sessionId || "")) ? request.body.sessionId : null;
-  if (deviceId) presence.set(deviceId, { at: Date.now(), sessionId, profileId: request.profile.id });
-  livePresence(request.profile.id);
+  presence.update(request.profile.id, deviceId, sessionId, request.body?.visible !== false);
+  // Ecran distant ouvert = quelqu'un lit. Le kiosque local reste allume sans personne devant: il ne compte pas.
+  if (request.body?.visible !== false && !loopbackRequest(request)) powerService.touchClient();
   response.status(204).end();
 });
 
@@ -1473,6 +1576,7 @@ app.get("/api/profiles", (request, response) => {
 
 app.post("/api/profiles", async (request, response, next) => {
   try {
+    if (request.profile.id !== primaryProfileId) return response.status(403).json({ error: "Réservé au profil administrateur." });
     const profile = await profileService.create(request.body);
     await ensureProfileRuntime(profile.id);
     response.status(201).json({ profile });
@@ -1489,6 +1593,16 @@ app.patch("/api/profiles/:id", async (request, response, next) => {
     const profile = await profileService.update(request.params.id, request.body);
     resetProfileTodo(profile.id);
     response.json({ profile });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/profiles/:id", async (request, response, next) => {
+  try {
+    if (request.profile.id !== primaryProfileId) return response.status(403).json({ error: "Réservé au profil administrateur." });
+    await profileService.remove(request.params.id);
+    response.json({ ok: true });
   } catch (error) {
     next(error);
   }
@@ -2231,6 +2345,23 @@ function trackComposerPrompt(sessionId, profileId, text) {
   queuePromptTriage(profileService.resolve(profileId), clean, projectId);
 }
 
+// Fin de tour: l'agent coche lui-meme ce que sa reponse declare livre, le fondateur n'a pas a repasser.
+async function closeFinishedTodos(metadata, reply) {
+  if (!metadata?.projectId || metadata.todoTracking === false || projects.get(metadata.projectId)?.todoTracking === false) return;
+  const profile = profileService.resolve(metadata.profileId || primaryProfileId);
+  const view = await todosView(profile);
+  const candidates = autoCloseCandidates(view.todos, metadata.projectId);
+  const finished = await finishedTodos({ todos: candidates, reply });
+  if (!finished.length) return;
+  const { columns } = await boardService.settings(profile.id);
+  const status = columns?.find((column) => column.id === "review" || column.kind === "review")?.enabled === false ? "done" : "review";
+  for (const { id, evidence } of finished) {
+    const runtime = await todoRuntime(profile, { todoId: id });
+    await runtime.todoService.addComment(id, { text: `Coché à la fin du tour : ${evidence}`, author: metadata.name || "Agent", kind: "agent" });
+    await runtime.todoService.update(id, { status });
+  }
+}
+
 // Tri d'une demande: le modele local decide, Noyau ecrit la tache. Vaut pour tout agent.
 function queuePromptTriage(profile, text, projectId) {
     return todoTriage.enqueue(async () => {
@@ -2666,6 +2797,24 @@ app.get("/api/map", async (request, response, next) => {
   try {
     const { chats, ...snapshot } = await agentMap.snapshot(mapRequest(request));
     response.json(snapshot);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/map/exchanges", async (request, response, next) => {
+  try {
+    const visibleProjects = scopedProjects(request.profile.id);
+    const raw = String(request.query.project || "all");
+    if (raw !== "all" && !visibleProjects[raw]) throw Object.assign(new Error("Projet introuvable."), { statusCode: 404 });
+    const exchanges = await agentMap.exchanges({
+      projectId: raw === "all" ? null : raw,
+      window: request.query.window === "7d" ? "7d" : "24h",
+      agentId: request.query.agent ? String(request.query.agent) : null,
+      visibleProjects,
+      sessionVisible: (id) => sessionVisible(request.profile.id, id),
+    });
+    response.json({ exchanges, generatedAt: new Date().toISOString() });
   } catch (error) {
     next(error);
   }
@@ -3205,7 +3354,8 @@ app.get("/api/projects/:id/logo", async (request, response, next) => {
     if (!project || (project.profileId !== request.profile.id && !project.shared)) return response.status(404).end();
     const file = await projectLogoFile(request.params.id);
     if (!file) return response.status(404).end();
-    response.setHeader("Cache-Control", "private, max-age=60");
+    response.setHeader("Cache-Control", "private, max-age=86400, stale-while-revalidate=604800");
+    response.vary("Cookie"); response.vary("Authorization");
     response.sendFile(file);
   } catch (error) {
     next(error);
@@ -3630,7 +3780,8 @@ app.post("/api/hooks/notify", async (request, response, next) => {
   try {
     const { source, sessionId, event = {} } = request.body || {};
     const completion = (source === "codex" && event.type === "agent-turn-complete") || (source === "claude" && event.hook_event_name === "Stop");
-    const attention = source === "claude" && event.hook_event_name === "Notification";
+    const attention = source === "claude" && claudeNeedsAttention(event);
+    const idleNotice = source === "claude" && event.hook_event_name === "Notification" && event.notification_type === "idle_prompt";
     const existing = sessionId && validSessionId(sessionId) ? store.get(sessionId) : null;
     if (!existing) return response.status(202).json({ sent: false, reason: "unmanaged-session" });
     if (source !== existing.assistant && !(source === "claude" && existing.assistant === "claude-design")) return response.status(202).json({ sent: false, reason: "previous-provider" });
@@ -3641,8 +3792,8 @@ app.post("/api/hooks/notify", async (request, response, next) => {
         threadId: source === "codex" ? event["thread-id"] || existing.threadId : existing.threadId,
         transcriptPath: source === "claude" ? event.transcript_path || existing.transcriptPath : existing.transcriptPath,
         agentSessionId: source === "claude" ? event.session_id || existing.agentSessionId : existing.agentSessionId,
-        agentState: completion ? "available" : attention ? "waiting" : existing.agentState,
-        agentStateUpdatedAt: completion || attention ? new Date().toISOString() : existing.agentStateUpdatedAt,
+        agentState: completion || idleNotice ? "available" : attention ? "waiting" : existing.agentState,
+        agentStateUpdatedAt: completion || attention || idleNotice ? new Date().toISOString() : existing.agentStateUpdatedAt,
       };
       await store.set(sessionId, metadata);
     }
@@ -3654,6 +3805,7 @@ app.post("/api/hooks/notify", async (request, response, next) => {
       ? event.last_assistant_message || await lastClaudeMessage(event.transcript_path)
       : event["last-assistant-message"] || "";
     if (completion && lastMessage) await agentMemory.checkpoint(sessionId, { assistant: source, text: lastMessage }).catch((error) => console.warn(`Mémoire agent ${sessionId}: ${error.message}`));
+    if (completion && lastMessage) void closeFinishedTodos(metadata, lastMessage).catch((error) => console.warn(`Fin de tour todos ${sessionId}: ${error.message}`));
     const notificationLabel = agentAlertTitle(metadata?.projectId ? projects.get(metadata.projectId)?.name : null, metadata?.name);
     let payload = null;
     if (completion) {
@@ -3725,6 +3877,26 @@ app.post("/api/hooks/notify", async (request, response, next) => {
   }
 });
 
+app.post("/api/sessions/:id/dismiss-waiting", async (request, response, next) => {
+  try { const id = request.params.id; if (!validSessionId(id) || !sessionOwned(request.profile.id, id)) return response.status(404).json({ error: "Agent introuvable." }); const current = store.get(id); if (!current) return response.status(404).json({ error: "Agent introuvable." }); promptWatcher.dismiss(id); if (current.agentState === "waiting") await store.set(id, { ...current, agentState: "available", agentStateUpdatedAt: new Date().toISOString() }); response.json({ ok: true }); } catch (error) { next(error); }
+});
+
+app.get("/api/sessions/:id/autonomy", (request, response, next) => {
+  try {
+    const id = request.params.id;
+    if (!validSessionId(id) || !sessionVisible(request.profile.id, id)) return response.status(404).json({ error: "Agent introuvable." });
+    response.set("Cache-Control", "no-store").json({ autonomy: autonomousAgents.view(id) });
+  } catch (error) { next(error); }
+});
+
+app.patch("/api/sessions/:id/autonomy", async (request, response, next) => {
+  try {
+    const id = request.params.id;
+    if (!validSessionId(id) || !sessionOwned(request.profile.id, id)) return response.status(404).json({ error: "Agent introuvable." });
+    response.json({ autonomy: await autonomousAgents.update(id, request.body || {}, { projectAllowed: (projectId) => projectVisible(request.profile.id, projectId) }) });
+  } catch (error) { next(error); }
+});
+
 // Read only the transcript explicitly bound to this agent; never guess by cwd.
 app.get("/api/sessions/:id/conversation", async (request, response, next) => {
   try {
@@ -3742,7 +3914,10 @@ app.get("/api/sessions/:id/conversation", async (request, response, next) => {
     const pane = await tmux.capture(id).catch(() => "");
     const state = agentStatus(metadata, metadata, promptWatcher.isWaiting(id), Date.now(), pane).state;
     const result = await readAgentConversation(metadata, { handover, agentMap, working: state === "working" });
-    response.set("Cache-Control", "no-store").json({ ...result, activity: state === "working" ? liveActivity(pane) : "" });
+    const quotaProvider = session?.assistant === "claude-design" ? "claude" : session?.assistant;
+    const quota = ["codex", "claude", "antigravity"].includes(quotaProvider) ? providerState.get(quotaProvider) || null : null;
+    const subagents = metadata.transcriptPath ? await subagentReader.list(metadata.transcriptPath) : [];
+    response.set("Cache-Control", "no-store").json({ ...result, quota, subagents, autonomy: autonomousAgents.view(id), contextEvents: metadata.contextEvents || [], contextTransition: Date.now() - Date.parse(metadata.contextTransition?.startedAt || 0) < CONTEXT_TRANSITION_MAX_MS ? metadata.contextTransition : null, activity: state === "working" ? liveActivity(pane) : "" });
   } catch (error) { next(error); }
 });
 
@@ -3779,7 +3954,7 @@ app.get("/api/sessions", async (request, response, next) => {
       const project = session.projectId ? projects.get(session.projectId) : null;
       const owner = profileService.resolve(session.profileId);
       const pane = await tmux.capture(session.id);
-      const enrichedSession = { ...session, canEdit: session.profileId === request.profile.id, owner: { id: owner.id, name: owner.name }, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session, request.profile.id), agentStatus: agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane), usage: await usage.get({ ...session, ...metadata }, pane) };
+      const enrichedSession = { ...session, canEdit: session.profileId === request.profile.id, owner: { id: owner.id, name: owner.name }, project: project ? { id: session.projectId, name: project.name } : null, logoUrl: logoUrl(session, request.profile.id), agentStatus: withSubagents(agentStatus(session, metadata, promptWatcher.isWaiting(session.id), Date.now(), pane), metadata.transcriptPath ? await subagentReader.list(metadata.transcriptPath) : []), usage: await usage.get({ ...session, ...metadata }, pane) };
       return { ...enrichedSession, contextAdvice: contextAdvice(enrichedSession) };
     }));
     // Les quotas sont ceux du compte: on préserve le relevé direct (live) s'il existe.
@@ -3858,16 +4033,22 @@ app.post("/api/sessions", async (request, response, next) => {
     const projectLogo = request.body?.projectLogo !== undefined
       ? Boolean(request.body.projectLogo)
       : Boolean(request.body?.projectId);
-    response.status(201).json({ session: await tmux.create({ ...(request.body || {}), projectLogo, description, profileId: request.profile.id, shared }) });
+    const cwd = await resolveAgentDirectory({ cwd: request.body?.cwd, name: request.body?.name, project, workspaceRoot });
+    const wantsAutonomy = request.body?.autonomy?.enabled === true;
+    if (wantsAutonomy && !AUTONOMY_ASSISTANTS.includes(request.body?.assistant)) throw new Error("Autonomie réservée aux agents Claude et Codex.");
+    if (wantsAutonomy && request.body.autonomy.watch?.projectIds?.some((id) => !projectVisible(request.profile.id, id))) throw new Error("Projet introuvable.");
+    response.status(201).json({ session: await tmux.create({ ...(request.body || {}), cwd, projectLogo, description, profileId: request.profile.id, shared, autonomy: wantsAutonomy ? newAutonomy(request.body.autonomy) : null }) });
   } catch (error) {
     next(error);
   }
 });
 
+app.post("/api/agent/question-status", async (request, response, next) => { try { response.json(await aiJobs.run(AiJobs.key("questions", request.body?.questions), async () => ({ answered: await answeredQuestions(request.body?.questions) }))); } catch (error) { next(error); } });
+
 app.post("/api/agent/recap-prompt", async (request, response, next) => {
   try {
     const text = request.body?.text ? String(request.body.text) : "";
-    response.json(await summarizeRequestPrompt({ text }));
+    response.json(await aiJobs.run(AiJobs.key("recap", request.body?.kind, text), () => summarizeRequestPrompt({ text, kind: request.body?.kind, cacheFile: path.join(dataDir, "prompt-recaps.json") })));
   } catch (error) {
     next(error);
   }
@@ -3991,7 +4172,8 @@ app.get("/api/sessions/:id/logo", async (request, response, next) => {
     if (!session?.projectLogo || !sessionVisible(request.profile.id, request.params.id)) return response.status(404).end();
     const file = (session.projectId ? await projectLogoFile(session.projectId) : null) || await projectLogos.find(session.cwd).catch(() => null);
     if (!file) return response.status(404).end();
-    response.setHeader("Cache-Control", "private, max-age=60");
+    response.setHeader("Cache-Control", "private, max-age=86400, stale-while-revalidate=604800");
+    response.vary("Cookie"); response.vary("Authorization");
     response.sendFile(file);
   } catch (error) {
     next(error);
@@ -4109,7 +4291,11 @@ async function handoverPrompt({ session, metadata, target }) {
 }
 
 async function spawnHandoverSession({ sessionId, session, metadata, target, prompt, replace = false }) {
-  if (replace) await agentMemory.capture(sessionId, metadata);
+  let conversationHistory = [];
+  if (replace) {
+    await agentMemory.capture(sessionId, metadata);
+    conversationHistory = (await readAgentConversation(metadata, { handover, agentMap }).catch(() => ({ messages: metadata.conversationHistory || [] }))).messages;
+  }
   const created = await tmux.create({
     name: replace ? metadata.name || session.name : `${metadata.name || session.name} · ${assistantLabel(target)}`,
     assistant: target,
@@ -4125,7 +4311,8 @@ async function spawnHandoverSession({ sessionId, session, metadata, target, prom
     favorite: Boolean(metadata.favorite),
     prompt,
   });
-  await store.set(created.id, { ...store.get(created.id), switchedFrom: session.assistant, switchedAt: new Date().toISOString() });
+  const switchedAt = new Date().toISOString();
+  await store.set(created.id, { ...store.get(created.id), ...(replace ? { conversationHistory, contextEvents: [...(metadata.contextEvents || []), { kind: "switch", from: session.assistant, to: target, at: switchedAt }].slice(-30) } : {}), contextTransition: null, switchedFrom: session.assistant, switchedAt });
   if (!replace) await store.set(sessionId, { ...store.get(sessionId), migrationState: "complete", migrationTarget: target, migratedTo: created.id });
   return { ...store.get(created.id), id: created.id, managed: true };
 }
@@ -4140,6 +4327,7 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
     if (installedAssistants[target] === false) throw new Error(`${assistantLabel(target)} n'est pas installé sur ce PC.`);
     const metadata = store.get(session.id) || {};
     const mode = ["auto", "agent", "transcript"].includes(request.body?.mode) ? request.body.mode : "auto";
+    await store.set(session.id, { ...store.get(session.id), contextTransition: { kind: "switch", from: session.assistant, to: target, startedAt: new Date().toISOString() } });
     const pending = migrations.get(session.id);
     // Bascule directe depuis l'historique des fichiers locaux par défaut (auto / transcript)
     // sans consommer de tokens sur un récapitulatif superflu.
@@ -4185,7 +4373,8 @@ app.post("/api/sessions/:id/migrate", async (request, response, next) => {
   } catch (error) {
     migrations.delete(request.params.id);
     const current = store.get(request.params.id);
-    if (current?.migrationState === "summarizing") await store.set(request.params.id, { ...current, migrationState: "failed", migrationError: error.message });
+    if (current?.contextTransition) await store.set(request.params.id, { ...store.get(request.params.id), contextTransition: null });
+    if (current?.migrationState === "summarizing") await store.set(request.params.id, { ...store.get(request.params.id), migrationState: "failed", migrationError: error.message });
     next(error);
   }
 });
@@ -4225,6 +4414,48 @@ app.post("/api/sessions/:id/restart", async (request, response, next) => {
       agentStateUpdatedAt: new Date().toISOString(),
     });
     response.json({ ok: true, resumed: Boolean(threadId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Same agent, empty context: requests, last answer and displayed history all survive.
+app.post("/api/sessions/:id/fresh", async (request, response, next) => {
+  try {
+    const id = request.params.id;
+    if (!sessionOwned(request.profile.id, id)) throw new Error("Agent appartient à autre profil.");
+    const current = store.get(id);
+    if (!current) throw new Error("Session Noyau introuvable.");
+    if (current.assistant === "shell") throw new Error("Un terminal n'a pas de contexte à renouveler.");
+    const pane = await tmux.capture(id).catch(() => "");
+    const wasWorking = paneAgentState(pane) === "working" || current.agentState === "working";
+    const subagents = await subagentReader.list(current.transcriptPath).catch(() => []);
+    // Stop the running turn first, so its last messages reach the transcript before the process is replaced.
+    if (wasWorking) {
+      await interruptSession(id).catch(() => {});
+      for (let attempt = 0; attempt < 8 && paneAgentState(await tmux.capture(id).catch(() => "")) === "working"; attempt += 1) await new Promise((resolve) => { setTimeout(resolve, 500); });
+    }
+    const { messages } = await readAgentConversation(current, { handover, agentMap, working: false });
+    const git = (args) => execFileAsync("git", ["-C", current.cwd, ...args], { timeout: 5000 }).then(({ stdout }) => stdout, () => "");
+    const [gitStatus, gitLog, todoView] = await Promise.all([git(["status", "--short"]), git(["log", "--oneline", "-5"]), current.projectId ? todosView(request.profile).catch(() => null) : null]);
+    const todos = (todoView?.todos || []).filter((todo) => todo.projectId === current.projectId && !["done", "archived"].includes(todo.status));
+    await tmux.restartAgent({ id, assistant: current.assistant, model: current.model, cwd: current.cwd, threadId: null, yolo: Boolean(current.yolo), resume: false });
+    const { threadId, agentSessionId, transcriptPath, conversationId, ...kept } = store.get(id) || current;
+    await store.set(id, { ...kept, conversationHistory: messages, runningYolo: Boolean(current.yolo), contextTransition: { kind: "fresh", startedAt: new Date().toISOString() }, agentState: "working", agentStateUpdatedAt: new Date().toISOString() });
+    response.json({ ok: true });
+    // Answered already: the new process needs some seconds before it accepts input.
+    void (async () => {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise((resolve) => { setTimeout(resolve, 1000); });
+        if (attempt >= 3 && paneAgentState(await tmux.capture(id).catch(() => "")) === "available") break;
+      }
+      await tmux.submit(id, freshStartPrompt({ messages, name: current.name, transcriptPath: current.transcriptPath || null, wasWorking, gitStatus, gitLog, todos, subagents }));
+      const latest = store.get(id) || {};
+      await store.set(id, { ...latest, contextTransition: null, contextEvents: [...(latest.contextEvents || []), { kind: "fresh", at: new Date().toISOString() }].slice(-30) });
+    })().catch(async (error) => {
+      console.warn(`Reprise à neuf ${id}: ${error.message}`);
+      await store.set(id, { ...store.get(id), contextTransition: null });
+    });
   } catch (error) {
     next(error);
   }
@@ -4340,6 +4571,7 @@ app.post("/api/sessions/clear-history", async (request, response, next) => {
       delete updatedMetadata.agentSessionId;
       delete updatedMetadata.transcriptPath;
       delete updatedMetadata.conversationId;
+      delete updatedMetadata.conversationHistory;
       updatedMetadata.agentState = "available";
       updatedMetadata.agentStateUpdatedAt = new Date().toISOString();
       await store.set(session.id, updatedMetadata);
@@ -4551,7 +4783,7 @@ app.use((error, _request, response, _next) => {
 });
 
 if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(root, "dist"), { index: false }));
+  app.use(express.static(path.join(root, "dist"), { index: false, setHeaders: staticCacheHeaders }));
   app.use((request, response, next) => {
     if (request.method !== "GET" || request.path.startsWith("/api/")) return next();
     // Asset hashe absent (rebuild) => 404, sinon le navigateur recoit du HTML comme module JS et l'app reste blanche.
@@ -4649,7 +4881,7 @@ sockets.on("connection", (websocket, request) => {
   };
   let mobileCopyMode = false;
   let keyQueue = tmux.run(["send-keys", "-X", "-t", request.sessionId, "cancel"]).catch(() => {});
-  const terminal = pty.spawn(tmux.binary, ["attach-session", "-t", `=${request.sessionId}`], {
+  const terminal = pty.spawn(tmux.binary, ["-u", "attach-session", "-t", `=${request.sessionId}`], {
     name: "xterm-256color",
     cols: initialCols,
     rows: initialRows,
@@ -4677,12 +4909,13 @@ sockets.on("connection", (websocket, request) => {
     let commands = [];
     let acks = [];
     let working = false;
+    let lastSubmitText = "";
     const flush = async () => {
       try {
         if (commands.length) {
           await leaveMobileCopyMode();
           if (working) await setAgentState(request.sessionId, "working");
-          await tmux.run(chainCommands(commands));
+          for (const args of batchTmuxCommands(commands)) await tmux.run(args);
         }
       } finally {
         for (const payload of acks) reply(payload);
@@ -4717,15 +4950,18 @@ sockets.on("connection", (websocket, request) => {
       } else if (message.type === "key" && specialKeys[message.key]) {
         commands.push(["send-keys", "-t", request.sessionId, specialKeys[message.key]]);
         if (message.key === "Enter") working = true;
+        // The pane still decides if the agent keeps working; this only drops the remembered state.
+        if (message.key === "Escape") void setAgentState(request.sessionId, "available");
         if (message.key === "Enter") inputGate.typed(request.sessionId, false);
         else if (message.key === "Backspace") inputGate.typed(request.sessionId, true);
         acks.push({ type: "key-ack", key: message.key });
       } else if (message.type === "submit" && typeof message.data === "string" && message.data.length) {
         const data = message.data.slice(0, 16384);
+        lastSubmitText = data;
         commands.push(...literalKeyCommands(request.sessionId, data));
         working = true;
         inputGate.typed(request.sessionId, false);
-        await flush().catch(() => {});
+        try { await flush(); } catch (error) { error.failedPrompt = data; throw error; }
         // Meme pause que pour une passation: l'agent doit avoir fini d'absorber le texte colle.
         await new Promise((resolve) => { setTimeout(resolve, data.length > 200 ? 600 : 350); });
         commands.push(["send-keys", "-t", request.sessionId, "C-m"]);
@@ -4733,7 +4969,7 @@ sockets.on("connection", (websocket, request) => {
       }
       if (ack) acks.push(ack);
     }
-    await flush();
+    try { await flush(); } catch (error) { if (lastSubmitText) error.failedPrompt = lastSubmitText; throw error; }
   };
   websocket.on("message", (raw) => {
     try {
@@ -4745,7 +4981,7 @@ sockets.on("connection", (websocket, request) => {
       };
       if (["input", "submit", "key"].includes(message.type)) {
         pendingTyping.push(message);
-        if (pendingTyping.length === 1) keyQueue = keyQueue.then(() => drainTyping(leaveMobileCopyMode)).catch(() => {});
+        if (pendingTyping.length === 1) keyQueue = keyQueue.then(() => drainTyping(leaveMobileCopyMode)).catch((error) => { reply({ type: "input-error", message: "Envoi au terminal échoué. Vérifiez le terminal avant de renvoyer.", text: error.failedPrompt || "" }); });
         if (message.type === "submit" && typeof message.data === "string" && message.data.length) trackComposerPrompt(request.sessionId, request.profileId, message.data.slice(0, 16384));
       }
       if (message.type === "scroll" && ["up", "down"].includes(message.direction)) {
@@ -4868,6 +5104,7 @@ antigravityQuota.start();
 codexQuota.start();
 quotaNotifier.start();
 codexCapacityRetry.start();
+autonomousAgents.start();
 // Synchro bancaire du matin: une seule passe par profil et par jour, des 6h heure de Paris.
 let morningSyncRunning = false;
 async function morningBankSync() {

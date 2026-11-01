@@ -33,6 +33,7 @@ async function fixture({ working = [], dockerOutput = "" } = {}) {
   const service = new PowerService({
     file,
     exec: mockExec,
+    loadRatio: () => 0,
     agentWorkingChecker: async () => working,
   });
   return { file, service, executed };
@@ -87,24 +88,97 @@ test("wakeUp dégèle les conteneurs qui ont été mis en pause", async () => {
   assert.equal(status.pausedContainers.length, 0);
 });
 
-test("tick déclenche la veille nocturne et réveille au matin", async () => {
-  const dockerOutput = "c1\tatlas_nginx\tUp 24 hours\n";
-  const { service } = await fixture({ dockerOutput });
+function at(value) { return new Date(value).getTime(); }
 
-  await service.updateSchedule({ enabled: true, start: "00:00", end: "07:30" });
+async function clocked({ startedAt = "2026-09-14T03:00:00", working = [], load = 0, stored = null, systemIdleMs = null } = {}) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "noyau-power-"));
+  const file = path.join(directory, "power-state.json");
+  if (stored) await fs.writeFile(file, JSON.stringify(stored));
+  const clock = { now: at(startedAt), working, load };
+  const service = new PowerService({
+    file,
+    now: () => clock.now,
+    loadRatio: () => clock.load,
+    agentWorkingChecker: async () => clock.working,
+    exec: async (cmd) => {
+      if (cmd === "docker") return { stdout: "c1\tatlas_nginx\tUp 24 hours\n" };
+      if (cmd === "gdbus" && systemIdleMs !== null) return { stdout: `(uint64 ${systemIdleMs},)` };
+      return { stdout: "" };
+    },
+  });
+  const advance = async (minutes) => { clock.now += minutes * 60_000; await service.tick(); return (await service.getStatus()).sleeping; };
+  return { service, clock, advance };
+}
 
-  // 03:00 -> doit entrer en veille
-  const nightTime = new Date("2026-09-14T03:00:00");
-  await service.tick(nightTime);
-  let status = await service.getStatus();
-  assert.equal(status.sleeping, true);
+test("tick entre en veille de nuit après inactivité réelle et réveille au matin", async () => {
+  const { service, clock, advance } = await clocked();
+  await service.tick();
+  assert.equal(await advance(14), false);
+  assert.equal(await advance(1), true);
+  const status = await service.getStatus();
   assert.equal(status.autoTriggered, true);
+  clock.now = at("2026-09-14T08:00:00");
+  await service.tick();
+  assert.equal((await service.getStatus()).sleeping, false);
+});
 
-  // 08:00 -> doit sortir de veille
-  const morningTime = new Date("2026-09-14T08:00:00");
-  await service.tick(morningTime);
-  status = await service.getStatus();
-  assert.equal(status.sleeping, false);
+test("un redémarrage ne compte pas l'ancienne date d'activité comme de l'absence", async () => {
+  const { service, advance } = await clocked({ startedAt: "2026-09-14T15:00:00", stored: { schedule: { enabled: true, start: "00:00", end: "07:30", idleMinutes: 120 }, lastActivityAt: at("2026-09-13T15:00:00") } });
+  await service.tick();
+  assert.equal(await advance(11), false);
+  assert.equal(await advance(100), false);
+  assert.equal(await advance(10), true);
+});
+
+test("la charge système ne déclenche jamais la veille et la retarde", async () => {
+  const { service, clock, advance } = await clocked({ startedAt: "2026-09-14T15:00:00", load: 3 });
+  await service.tick();
+  for (let i = 0; i < 20; i += 1) assert.equal(await advance(30), false);
+  clock.load = 0;
+  assert.equal(await advance(1), false, "période calme requise après la charge");
+  assert.equal(await advance(10), true);
+});
+
+test("un agent lu « disponible » une seule fois entre deux travaux ne déclenche pas la veille", async () => {
+  const busy = [{ id: "a", name: "Agent", state: "working" }];
+  const { service, clock, advance } = await clocked({ startedAt: "2026-09-14T15:00:00", working: busy });
+  await service.tick();
+  assert.equal(await advance(300), false);
+  clock.working = [];
+  assert.equal(await advance(1), false);
+  clock.working = busy;
+  assert.equal(await advance(1), false);
+  clock.working = [];
+  assert.equal(await advance(9), false);
+  assert.equal(await advance(1), true);
+});
+
+test("le contrôle des agents en échec bloque la veille", async () => {
+  const { service, clock } = await clocked({ startedAt: "2026-09-14T15:00:00" });
+  service.agentWorkingChecker = async () => { throw new Error("tmux saturé"); };
+  clock.now += 600 * 60_000;
+  await service.tick();
+  assert.equal(service.isSleeping(), false);
+});
+
+test("un écran distant ouvert retient la veille, puis son départ compte", async () => {
+  const { service, clock, advance } = await clocked({ startedAt: "2026-09-14T15:00:00" });
+  for (let i = 0; i < 6; i += 1) { clock.now += 30 * 60_000; service.touchClient(); await service.tick(); }
+  assert.equal(service.isSleeping(), false);
+  assert.equal(await advance(119), false);
+  assert.equal(await advance(1), true);
+});
+
+test("la veille automatique cède dès qu'un agent reprend ou après un redémarrage", async () => {
+  const { service, clock, advance } = await clocked({ startedAt: "2026-09-14T15:00:00" });
+  await service.tick();
+  assert.equal(await advance(130), true);
+  clock.working = [{ id: "a", name: "Agent", state: "working" }];
+  assert.equal(await advance(1), false);
+
+  const inherited = await clocked({ startedAt: "2026-09-14T15:00:00", stored: { sleeping: true, autoTriggered: true, autoReason: "idle", sleepingSince: "2026-09-14T01:00:00Z", pausedContainers: [] } });
+  await inherited.service.tick();
+  assert.equal(inherited.service.isSleeping(), false);
 });
 
 test("enterSleep et wakeUp gèrent l'alimentation de l'écran via xset", async () => {
@@ -125,6 +199,7 @@ test("tick déclenche la veille après dépassement du délai d'inactivité", as
   // Activité récente (1 heure): pas de mise en veille
   const now = new Date("2026-09-14T14:00:00");
   service.cache.lastActivityAt = now.getTime() - 60 * 60_000;
+  service.lastBusyAt = 0;
   await service.tick(now);
   let status = await service.getStatus();
   assert.equal(status.sleeping, false);
@@ -167,4 +242,12 @@ test("getEffectiveIdleMinutes utilise le délai d'inactivité Mutter ou web", as
   service.cache.lastActivityAt = now.getTime() - 130 * 60_000;
   const idle = await service.getEffectiveIdleMinutes(now);
   assert.equal(idle, 120);
+});
+
+test('automatic sleep never pauses workloads when an agent is active or check fails', async () => {
+  const calls=[]; const exec=async (file,args)=>{calls.push([file,args]);return {stdout:''};};
+  const active=new PowerService({exec,agentWorkingChecker:async()=>[{id:'agent'}]});
+  const result=await active.enterSleep({auto:true}); assert.equal(result.blocked,true); assert.equal(calls.some(([f,a])=>f==='docker'&&a[0]==='pause'),false);
+  const unavailable=new PowerService({exec,agentWorkingChecker:async()=>{throw new Error('unavailable');}});
+  await assert.rejects(()=>unavailable.enterSleep({auto:true}),/unavailable/); assert.equal(unavailable.isSleeping(),false);
 });

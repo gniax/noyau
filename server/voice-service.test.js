@@ -88,19 +88,19 @@ test("un alias appris rattrape un nom propre mal transcrit", async () => {
     onAction: (action) => actions.push(action),
     // Plusieurs noms voisins: sans alias, rien ne se detache.
     listAgents: () => [
-      { id: "noyau-codex-1", name: "Optimo" },
-      { id: "noyau-codex-2", name: "Optimo Scraper" },
-      { id: "noyau-codex-3", name: "Optimo Faker" },
+      { id: "noyau-codex-1", name: "Octanix" },
+      { id: "noyau-codex-2", name: "Octanix Scraper" },
+      { id: "noyau-codex-3", name: "Octanix Faker" },
     ],
     spawnFn: () => fakeChild(),
   });
 
   await service.loadAliases();
-  await service.handle("noyau ouvre l'agent obtenez");
+  await service.handle("noyau ouvre l'agent ouistiti");
   assert.equal(actions.at(-1).action, "unknown");
 
-  await service.addAlias("Optimo", "obtenez");
-  await service.handle("noyau ouvre l'agent obtenez");
+  await service.addAlias("Octanix", "ouistiti");
+  await service.handle("noyau ouvre l'agent ouistiti");
   assert.equal(actions.at(-1).action, "open-agent");
   assert.equal(actions.at(-1).id, "noyau-codex-1");
 

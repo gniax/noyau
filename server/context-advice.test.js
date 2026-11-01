@@ -9,7 +9,8 @@ test("le niveau suit ce qu'il reste de contexte", () => {
   assert.equal(contextAdvice(session("a", "claude", 50)).level, "watch");
   assert.equal(contextAdvice(session("a", "claude", 25)).level, "warn");
   assert.equal(contextAdvice(session("a", "claude", 12)).level, "critical");
-  assert.equal(contextAdvice(session("a", "claude", 0)).action, "clear");
+  assert.equal(contextAdvice(session("a", "claude", 0)).action, "fresh");
+  assert.equal(contextAdvice(session("a", "claude", 10)).action, "clear");
   assert.equal(contextAdvice(session("a", "claude", 30)).action, "compact");
 });
 

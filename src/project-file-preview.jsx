@@ -1,3 +1,4 @@
+import { FileTypeIcon } from "./file-type-icon.jsx";
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { AppIcon } from "./app-icon.jsx";
@@ -178,7 +179,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
       <section className="modal project-file-preview-modal" role="dialog" aria-modal="true" aria-label={tr("Aperçu de {0}", file.name)}>
         <header className="project-file-preview-head">
           <div className="project-file-preview-title-area">
-            <span className="project-file-preview-icon">{getFileIcon(ext)}</span>
+            <span className="project-file-preview-icon"><FileTypeIcon extension={ext} size={24}/></span>
             <div className="project-file-preview-titles">
               <div className="project-file-preview-name">
                 <h3 title={file.name}>{file.name}</h3>
@@ -421,7 +422,7 @@ export function ProjectFilePreviewModal({ file, files = [], project, onClose, on
 
           {category === "other" && (
             <div className="project-file-preview-unsupported">
-              <span className="project-file-preview-unsupported-icon">{getFileIcon(ext)}</span>
+              <span className="project-file-preview-unsupported-icon"><FileTypeIcon extension={ext} size={40}/></span>
               <h3>{file.name}</h3>
               <p>
                 {tr("L'aperçu direct de ce type de fichier (")}<strong>{ext || "binaire"}</strong>{tr(") n'est pas pris en charge dans le navigateur.")}

@@ -1,3 +1,4 @@
+import { levelLaunch } from "./autonomy.js";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -36,13 +37,19 @@ export function classifyAssistant(command, storedAssistant) {
 // Saisie tapee en texte litteral. tmux prend un ";" final pour un separateur de commandes
 // et l'avale: on envoie ces points-virgules en hexa.
 export function literalKeyCommands(target, data) {
-  const text = String(data ?? "");
-  const tail = text.match(/;+$/)?.[0] || "";
-  const head = text.slice(0, text.length - tail.length);
+  const text = String(data ?? ""); const chunks = []; let chunk = "", bytes = 0;
+  for (const character of text) { const size = Buffer.byteLength(character); if (bytes + size > 3000 && chunk) { chunks.push(chunk); chunk = ""; bytes = 0; } chunk += character; bytes += size; }
+  if (chunk) chunks.push(chunk);
   const commands = [];
-  if (head) commands.push(["send-keys", "-t", target, "-l", "--", head]);
-  if (tail) commands.push(["send-keys", "-t", target, "-H", ...Array.from(tail, () => "3b")]);
+  for (const part of chunks) { const tail = part.match(/;+$/)?.[0] || ""; const head = part.slice(0, part.length - tail.length); if (head) commands.push(["send-keys", "-t", target, "-l", "--", head]); if (tail) for (let i = 0; i < tail.length; i += 1000) commands.push(["send-keys", "-t", target, "-H", ...Array.from(tail.slice(i, i + 1000), () => "3b")]); }
   return commands;
+}
+
+// Bound each tmux command message, not just each individual argument.
+export function batchTmuxCommands(commands, maxBytes = 6000) {
+  const batches = []; let batch = [], bytes = 0;
+  for (const command of commands) { const size = command.reduce((sum, value) => sum + Buffer.byteLength(String(value)) + 1, 0) + 1; if (batch.length && bytes + size > maxBytes) { batches.push(chainCommands(batch)); batch = []; bytes = 0; } batch.push(command); bytes += size; }
+  if (batch.length) batches.push(chainCommands(batch)); return batches;
 }
 
 // Plusieurs commandes tmux en un seul appel, executees dans l'ordre.
@@ -94,7 +101,8 @@ export class TmuxController {
   }
 
   async run(args) {
-    return execFileAsync(this.binary, args, { maxBuffer: 1024 * 1024 });
+    // -u: sans locale UTF-8 (service systemd, install neuve) tmux remplace les tabulations de -F par "_".
+    return execFileAsync(this.binary, ["-u", ...args], { maxBuffer: 1024 * 1024 });
   }
 
   // Lance un agent; une commande trop longue (memoire, passation) passe par un script ephemere.
@@ -209,48 +217,64 @@ export class TmuxController {
     for (const [id, entry] of Object.entries(this.store.all())) {
       if (!entry.autoRestore || live.has(id) || !validSessionId(id) || !id.startsWith("noyau-")) continue;
       try {
-        if (!["codex", "claude", "claude-design", "shell", "antigravity"].includes(entry.assistant)) throw new Error("Assistant invalide.");
-        const cwd = path.resolve(entry.cwd || this.workspaceRoot);
-        const stat = await fs.stat(cwd);
-        if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
-        const memory = await this.memoryLaunch(id, { ...entry, cwd });
-        const args = ["new-session", "-d", "-s", id, "-c", cwd, "-e", `NOYAU_SESSION_ID=${id}`];
-        if (entry.assistant === "codex") {
-          args.push(this.commands.codex, "--no-alt-screen");
-          if (entry.yolo) args.push("--yolo");
-          if (entry.model) args.push("-m", String(entry.model));
-          args.push("-c", "check_for_update_on_startup=false", ...memory.args);
-          if (!this.memory || (entry.threadId && await this.codexThreadResumable(entry.threadId))) args.push("resume", entry.threadId ? String(entry.threadId) : "--last");
-          if (memory.initial) args.push(memory.initial);
-        } else if (["claude", "claude-design"].includes(entry.assistant)) {
-          args.push(this.commands.claude, ...(entry.model ? ["--model", String(entry.model)] : []), ...(await this.agentSettingsArgs(id)));
-          args.push(...memory.args);
-          if (entry.yolo) args.push("--dangerously-skip-permissions");
-          if (entry.agentSessionId) args.push("--resume", String(entry.agentSessionId));
-          else if (entry.assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
-          else if (!this.memory) args.push("--continue");
-        } else if (entry.assistant === "antigravity") {
-          args.push(this.commands.antigravity, ...this.antigravityArgs);
-          args.push(...memory.args);
-          if (entry.model) args.push("--model", String(entry.model));
-          if (entry.yolo) args.push("--dangerously-skip-permissions");
-          if (entry.conversationId || entry.agentSessionId) args.push("--conversation", String(entry.conversationId || entry.agentSessionId));
-          else if (!this.memory) args.push("--continue");
-          if (memory.initial) args.push("--prompt-interactive", memory.initial);
-        }
-        await this.spawn(args);
+        await this.restoreOne(id, entry);
         live.add(id);
-        await this.store.set(id, { ...entry, runningYolo: Boolean(entry.yolo), agentState: "available", agentStateUpdatedAt: new Date().toISOString(), restoredAt: new Date().toISOString(), restoreError: null });
         restored.push(id);
       } catch (error) {
-        await this.store.set(id, { ...entry, restoreError: error.message, restoreFailedAt: new Date().toISOString() });
         failed.push({ id, error: error.message });
       }
     }
     return { restored, failed };
   }
 
-  async create({ name, description = null, assistant, model = null, cwd, prompt, migratedFrom, yolo = false, projectLogo = null, projectId = null, profileId = null, shared = false, favorite = false, threadId = null, agentSessionId = null, transcriptPath = null, replaceId = null, agentId = null, agentAliases = [] }) {
+  // Relance un agent absent de tmux en reprenant sa conversation, niveau d'autonomie compris.
+  async restoreOne(id, entry = this.store.get(id)) {
+    try {
+      if (!entry) throw new Error("Session introuvable.");
+      if (!["codex", "claude", "claude-design", "shell", "antigravity"].includes(entry.assistant)) throw new Error("Assistant invalide.");
+      const cwd = path.resolve(entry.cwd || this.workspaceRoot);
+      const stat = await fs.stat(cwd);
+      if (!stat.isDirectory()) throw new Error("Dossier de travail invalide.");
+      const memory = await this.memoryLaunch(id, { ...entry, cwd });
+      const level = levelLaunch(entry.assistant, entry.autonomy);
+      const model = level.model || entry.model;
+      const args = ["new-session", "-d", "-s", id, "-c", cwd, "-e", `NOYAU_SESSION_ID=${id}`];
+      if (entry.assistant === "codex") {
+        args.push(this.commands.codex, "--no-alt-screen");
+        if (entry.yolo) args.push("--yolo");
+        if (model) args.push("-m", String(model));
+        args.push("-c", "check_for_update_on_startup=false", ...level.args, ...memory.args);
+        // Same flag as create/restart: a keep-alive restart nobody watches must not stop on a hook trust prompt.
+        if (entry.yolo) args.push("--dangerously-bypass-hook-trust");
+        if (!this.memory || (entry.threadId && await this.codexThreadResumable(entry.threadId))) args.push("resume", entry.threadId ? String(entry.threadId) : "--last");
+        if (memory.initial) args.push(memory.initial);
+      } else if (["claude", "claude-design"].includes(entry.assistant)) {
+        args.push(this.commands.claude, ...(model ? ["--model", String(model)] : []), ...(await this.agentSettingsArgs(id)));
+        args.push(...memory.args);
+        if (entry.yolo) args.push("--dangerously-skip-permissions");
+        if (entry.agentSessionId) args.push("--resume", String(entry.agentSessionId));
+        else if (entry.assistant === "claude-design") args.push(CLAUDE_DESIGN_PROMPT);
+        else if (!this.memory) args.push("--continue");
+      } else if (entry.assistant === "antigravity") {
+        args.push(this.commands.antigravity, ...this.antigravityArgs);
+        args.push(...memory.args);
+        if (entry.model) args.push("--model", String(entry.model));
+        if (entry.yolo) args.push("--dangerously-skip-permissions");
+        if (entry.conversationId || entry.agentSessionId) args.push("--conversation", String(entry.conversationId || entry.agentSessionId));
+        else if (!this.memory) args.push("--continue");
+        if (memory.initial) args.push("--prompt-interactive", memory.initial);
+      }
+      await this.spawn(args);
+      const latest = this.store.get?.(id) || entry;
+      await this.store.set(id, { ...latest, ...(latest.autonomy ? { autonomy: { ...latest.autonomy, appliedLevel: entry.autonomy?.level ?? latest.autonomy.appliedLevel } } : {}), runningYolo: Boolean(entry.yolo), agentState: "available", agentStateUpdatedAt: new Date().toISOString(), restoredAt: new Date().toISOString(), restoreError: null });
+      return true;
+    } catch (error) {
+      if (entry) await this.store.set(id, { ...(this.store.get?.(id) || entry), restoreError: error.message, restoreFailedAt: new Date().toISOString() });
+      throw error;
+    }
+  }
+
+  async create({ name, description = null, assistant, model = null, cwd, prompt, migratedFrom, yolo = false, projectLogo = null, projectId = null, profileId = null, shared = false, favorite = false, threadId = null, agentSessionId = null, transcriptPath = null, replaceId = null, agentId = null, agentAliases = [], autonomy = null }) {
     if (!["codex", "claude", "claude-design", "shell", "antigravity"].includes(assistant)) throw new Error("Assistant invalide.");
     const resolvedCwd = path.resolve(cwd || this.workspaceRoot);
     let stat;
@@ -267,6 +291,9 @@ export class TmuxController {
     const previous = replaceId ? this.store.get(replaceId) : null;
     const memory = await this.memoryLaunch(id, { ...(previous || {}), agentId: agentId || previous?.agentId || id, assistant, cwd: resolvedCwd, profileId, projectId });
     const unrestricted = assistant !== "shell" && Boolean(yolo);
+    const autonomyState = autonomy || previous?.autonomy || null;
+    const level = levelLaunch(assistant, autonomyState);
+    const launchModel = level.model || model;
     const args = replaceId
       ? ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", resolvedCwd, "-e", `NOYAU_SESSION_ID=${id}`]
       : ["new-session", "-d", "-s", id, "-c", resolvedCwd, "-e", `NOYAU_SESSION_ID=${id}`];
@@ -279,15 +306,15 @@ export class TmuxController {
       if (assistant === "codex") {
         args.push("--no-alt-screen");
         if (unrestricted) args.push("--yolo");
-        if (model) args.push("-m", String(model));
-        args.push("-c", "check_for_update_on_startup=false");
+        if (launchModel) args.push("-m", String(launchModel));
+        args.push("-c", "check_for_update_on_startup=false", ...level.args);
         args.push(...memory.args);
         // Les hooks Noyau (suivi to-do) sont locaux: sans ce drapeau, chaque session redemande leur validation.
         if (unrestricted) args.push("--dangerously-bypass-hook-trust");
         if (threadId && await this.codexThreadResumable(threadId)) args.push("resume", String(threadId));
       }
       if (["claude", "claude-design"].includes(assistant)) {
-        if (assistant === "claude" && model) args.push("--model", String(model));
+        if (assistant === "claude" && launchModel) args.push("--model", String(launchModel));
         args.push(...(await this.agentSettingsArgs(id)));
         args.push(...memory.args);
         if (unrestricted) args.push("--dangerously-skip-permissions");
@@ -327,6 +354,7 @@ export class TmuxController {
       shared: Boolean(shared),
       favorite: Boolean(favorite),
       autoRestore: true,
+      ...(autonomyState ? { autonomy: { ...autonomyState, appliedLevel: autonomyState.level } } : {}),
       agentState: prompt || (assistant === "claude-design" && !agentSessionId) ? "working" : "available",
       agentStateUpdatedAt: new Date().toISOString(),
       ...(threadId ? { threadId: String(threadId) } : {}),
@@ -383,7 +411,7 @@ export class TmuxController {
     const previous = this.submitQueues.get(id) || Promise.resolve();
     const run = previous.catch(() => {}).then(async () => {
       if (!force) await this.inputGate?.waitFree(id);
-      await this.run(chainCommands(literalKeyCommands(id, data)));
+      for (const args of batchTmuxCommands(literalKeyCommands(id, data))) await this.run(args);
       await wait(data.length > 200 ? 600 : 350);
       await this.run(["send-keys", "-t", id, "C-m"]);
     });
@@ -401,6 +429,8 @@ export class TmuxController {
     const metadata = { ...this.store.get?.(id), assistant, cwd: workingDirectory };
     if (this.memory) await this.memory.capture(id, metadata);
     const memory = await this.memoryLaunch(id, metadata);
+    const level = levelLaunch(assistant, metadata.autonomy);
+    const launchModel = level.model || model;
     if (assistant === "antigravity") {
       const args = ["respawn-pane", "-k", "-t", `=${id}:0.0`, "-c", workingDirectory, this.commands.antigravity, ...this.antigravityArgs];
       args.push(...memory.args);
@@ -419,8 +449,8 @@ export class TmuxController {
     if (assistant === "codex") {
       args.push("--no-alt-screen");
       if (yolo) args.push("--yolo");
-      if (model) args.push("-m", String(model));
-      args.push("-c", "check_for_update_on_startup=false");
+      if (launchModel) args.push("-m", String(launchModel));
+      args.push("-c", "check_for_update_on_startup=false", ...level.args);
       args.push(...memory.args);
       if (yolo) args.push("--dangerously-bypass-hook-trust");
       if (resume && (!this.memory || (threadId && await this.codexThreadResumable(threadId)))) {
@@ -429,7 +459,7 @@ export class TmuxController {
       }
       if (memory.initial) args.push(memory.initial);
     } else {
-      if (model && assistant === "claude") args.push("--model", String(model));
+      if (launchModel && assistant === "claude") args.push("--model", String(launchModel));
       args.push(...(await this.agentSettingsArgs(id)));
       args.push(...memory.args);
       if (yolo) args.push("--dangerously-skip-permissions");
@@ -443,6 +473,8 @@ export class TmuxController {
     }
     await this.spawn(args);
     void this.acceptTrustPrompt(id).catch(() => {});
+    const latest = this.store.get?.(id);
+    if (latest?.autonomy && latest.autonomy.appliedLevel !== metadata.autonomy?.level) await this.store.set(id, { ...latest, autonomy: { ...latest.autonomy, appliedLevel: metadata.autonomy?.level ?? latest.autonomy.appliedLevel } });
   }
 
   async clearHistory(id) {

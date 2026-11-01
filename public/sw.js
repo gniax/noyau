@@ -2,12 +2,18 @@ const CACHE_PREFIX = "noyau-";
 const SHELL = ["/manifest.webmanifest", "/icon.svg", "/favicon-32.png", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png"];
 const NAVIGATION = "/__noyau-shell";
 
+// Chaque mise en cache lisait la version sur le reseau: une lecture par minute suffit.
+let knownVersion = null;
+let knownVersionAt = 0;
 async function currentVersion() {
+  if (knownVersion && Date.now() - knownVersionAt < 60_000) return knownVersion;
   try {
     const response = await fetch("/version.json", { cache: "no-store" });
     if (response.ok) {
       const data = await response.json();
-      return data.release || data.build || data.version || "dev";
+      knownVersion = data.release || data.build || data.version || "dev";
+      knownVersionAt = Date.now();
+      return knownVersion;
     }
   } catch { /* hors ligne: on garde le cache existant */ }
   return null;
@@ -109,6 +115,22 @@ self.addEventListener("fetch", (event) => {
         cacheCopy(event.request, response);
         return response;
       })),
+    );
+    return;
+  }
+
+  // Images et polices: affichage immediat depuis le cache, rafraichi en fond.
+  if (/\.(?:png|jpe?g|svg|webp|gif|ico|woff2?)$/i.test(url.pathname)) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        const network = fetch(event.request).then((response) => {
+          cacheCopy(event.request, response);
+          return response;
+        });
+        if (!cached) return network;
+        event.waitUntil(network.catch(() => {}));
+        return cached;
+      }),
     );
     return;
   }
